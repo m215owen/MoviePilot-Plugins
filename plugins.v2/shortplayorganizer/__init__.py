@@ -58,7 +58,7 @@ class ShortPlayOrganizer(_PluginBase):
     plugin_version = "1.0.0"
     plugin_author = "AI"
     author_url = "https://github.com/thsrite"
-    plugin_config_prefix = "shortplayorganizerv2_"
+    plugin_config_prefix = "shortplayorganizer_"
     plugin_order = 26
     auth_level = 1
 
@@ -82,7 +82,7 @@ class ShortPlayOrganizer(_PluginBase):
 
     def init_plugin(self, config: dict = None):
         """初始化插件"""
-        logger.info(f"短剧整理器初始化开始，config: {config}")
+        logger.info(f"短剧整理器初始化开始")
         
         if config:
             self._enabled = config.get("enabled", False)
@@ -91,10 +91,37 @@ class ShortPlayOrganizer(_PluginBase):
             self._transfer_type = config.get("transfer_type", "link")
             self._exclude_keywords = config.get("exclude_keywords", "")
             self._notify = config.get("notify", False)
-            self._interval = config.get("interval", 10)
-            self._scan_interval = config.get("scan_interval", 60)
+            
+            # 类型转换：防止配置存储为字符串
+            interval = config.get("interval")
+            if interval is not None:
+                try:
+                    self._interval = int(interval)
+                except (ValueError, TypeError):
+                    self._interval = 10
+            else:
+                self._interval = 10
+                
+            scan_interval = config.get("scan_interval")
+            if scan_interval is not None:
+                try:
+                    self._scan_interval = int(scan_interval)
+                except (ValueError, TypeError):
+                    self._scan_interval = 60
+            else:
+                self._scan_interval = 60
+        else:
+            # 默认值
+            self._enabled = False
+            self._onlyonce = False
+            self._monitor_confs = ""
+            self._transfer_type = "link"
+            self._exclude_keywords = ""
+            self._notify = False
+            self._interval = 10
+            self._scan_interval = 60
         
-        logger.info(f"短剧整理器配置: enabled={self._enabled}, monitor_confs={self._monitor_confs}")
+        logger.info(f"短剧整理器配置: enabled={self._enabled}, scan_interval={self._scan_interval}")
 
         # 清空配置
         self._dirconf = {}
