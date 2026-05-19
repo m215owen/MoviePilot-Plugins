@@ -1,4 +1,5 @@
-  "ShortPlayMonitormod1": {
+{
+"ShortPlayMonitormod1": {
     "name": "短剧刮削自用版",
     "description": "监控视频短剧创建，刮削。(支持ptskit)",
     "labels": "刮削",
