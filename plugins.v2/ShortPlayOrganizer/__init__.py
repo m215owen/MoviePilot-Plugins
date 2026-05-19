@@ -1,0 +1,656 @@
+import datetime
+import os
+import re
+import shutil
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from threading import Lock
+from typing import Any, List, Dict, Tuple, Optional
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
+
+from app.core.config import settings
+from app.log import logger
+from app.plugins import _PluginBase
+from app.schemas.types import NotificationType
+from app.utils.system import SystemUtils
+
+lock = Lock()
+
+
+class FileMonitorHandler(FileSystemEventHandler):
+    """目录监控响应类"""
+
+    def __init__(self, watching_path: str, file_change: Any, **kwargs):
+        super(FileMonitorHandler, self).__init__(**kwargs)
+        self._watch_path = watching_path
+        self.file_change = file_change
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self.file_change.event_handler(
+                event=event,
+                source_dir=self._watch_path,
+                event_path=event.src_path
+            )
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            self.file_change.event_handler(
+                event=event,
+                source_dir=self._watch_path,
+                event_path=event.dest_path
+            )
+
+
+class ShortPlayOrganizer(_PluginBase):
+    """短剧整理器插件"""
+
+    plugin_name = "短剧整理器"
+    plugin_desc = "读取tvshow.nfo中的片名，按Emby标准格式整理短剧文件"
+    plugin_icon = "Amule_B.png"
+    plugin_version = "1.0.0"
+    plugin_author = "thsrite"
+    author_url = "https://github.com/thsrite"
+    plugin_config_prefix = "shortplayorganizer_"
+    plugin_order = 26
+    auth_level = 1
+
+    # 私有属性
+    _enabled = False
+    _onlyonce = False
+    _monitor_confs = None
+    _transfer_type = "link"
+    _exclude_keywords = ""
+    _observer = []
+    _notify = False
+    _interval = 10
+    _dirconf = {}
+    _renameconf = {}
+    _medias = {}
+
+    # 定时器
+    _scheduler: Optional[BackgroundScheduler] = None
+
+    def init_plugin(self, config: dict = None):
+        """初始化插件"""
+        if config:
+            self._enabled = config.get("enabled")
+            self._onlyonce = config.get("onlyonce")
+            self._monitor_confs = config.get("monitor_confs")
+            self._transfer_type = config.get("transfer_type") or "link"
+            self._exclude_keywords = config.get("exclude_keywords") or ""
+            self._notify = config.get("notify")
+            self._interval = config.get("interval") or 10
+
+        # 停止现有任务
+        self.stop_service()
+
+        if self._enabled or self._onlyonce:
+            # 读取目录配置
+            monitor_confs = self._monitor_confs.split("\n") if self._monitor_confs else []
+            if not monitor_confs:
+                logger.error("未配置监控目录")
+                return
+
+            for monitor_conf in monitor_confs:
+                if not monitor_conf:
+                    continue
+                # 格式：监控方式#监控目录#目的目录#是否重命名
+                parts = monitor_conf.split("#")
+                if len(parts) < 3:
+                    logger.error(f"{monitor_conf} 格式错误，应为：监控方式#监控目录#目的目录#是否重命名")
+                    continue
+
+                mode = parts[0].strip()
+                source_dir = parts[1].strip()
+                target_dir = parts[2].strip()
+                rename_conf = parts[3].strip() if len(parts) > 3 else "true"
+
+                self._dirconf[source_dir] = target_dir
+                self._renameconf[source_dir] = rename_conf
+
+                if self._enabled:
+                    self._start_monitor(mode, source_dir)
+
+            # 定时服务
+            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+
+            if self._notify:
+                self._scheduler.add_job(
+                    func=self.send_msg,
+                    trigger=IntervalTrigger(seconds=15),
+                    id="shortplayorganizer_notify"
+                )
+
+            # 全量同步
+            if self._onlyonce:
+                logger.info("短剧整理服务启动，立即运行一次")
+                self._scheduler.add_job(
+                    func=self.sync_all,
+                    trigger='date',
+                    run_date=datetime.datetime.now(
+                        datetime.timezone.utc
+                    ) + datetime.timedelta(seconds=3),
+                    id="shortplayorganizer_sync"
+                )
+                self._onlyonce = False
+                self.__update_config()
+
+            # 启动任务
+            if self._scheduler.get_jobs():
+                self._scheduler.start()
+
+    def _start_monitor(self, mode: str, source_dir: str):
+        """启动目录监控"""
+        try:
+            if mode == "compatibility":
+                observer = PollingObserver(timeout=10)
+            else:
+                observer = Observer(timeout=10)
+
+            self._observer.append(observer)
+            observer.schedule(
+                FileMonitorHandler(source_dir, self),
+                path=source_dir,
+                recursive=False
+            )
+            observer.daemon = True
+            observer.start()
+            logger.info(f"{source_dir} 的目录监控服务启动")
+        except Exception as e:
+            logger.error(f"{source_dir} 启动目录监控失败：{str(e)}")
+
+    def get_state(self) -> bool:
+        """返回插件状态"""
+        return self._enabled
+
+    def sync_all(self):
+        """全量同步所有监控目录"""
+        logger.info("开始全量同步短剧整理目录...")
+        for mon_path in self._dirconf.keys():
+            for file_path in SystemUtils.list_files(Path(mon_path), settings.RMT_MEDIAEXT):
+                self._organize_file(event_path=str(file_path), source_dir=mon_path)
+        logger.info("全量同步短剧整理目录完成！")
+
+    def event_handler(self, event, source_dir: str, event_path: str):
+        """处理文件变化事件"""
+        # 过滤排除关键词
+        if self._exclude_keywords:
+            for keyword in self._exclude_keywords.split("\n"):
+                if keyword and keyword in event_path:
+                    logger.info(f"{event_path} 命中排除关键词 {keyword}，跳过处理")
+                    return
+
+        # 只处理媒体文件
+        if Path(event_path).suffix.lower() not in settings.RMT_MEDIAEXT:
+            return
+
+        logger.debug(f"检测到文件: {event_path}")
+        self._organize_file(event_path=event_path, source_dir=source_dir)
+
+    def _organize_file(self, event_path: str, source_dir: str):
+        """整理单个文件"""
+        try:
+            source_path = Path(event_path)
+            dest_dir = self._dirconf.get(source_dir)
+
+            if not dest_dir:
+                logger.error(f"未找到监控目录 {source_dir} 对应的目的目录")
+                return
+
+            # 获取所在目录
+            source_folder = source_path.parent
+            source_folder_name = source_folder.name
+
+            # 查找 tvshow.nfo 文件
+            nfo_path = source_folder / "tvshow.nfo"
+            if not nfo_path.exists():
+                logger.debug(f"{source_folder} 没有 tvshow.nfo，跳过")
+                return
+
+            # 解析 nfo 获取片名
+            title = self._parse_title_from_nfo(nfo_path)
+            if not title:
+                logger.warning(f"无法从 {nfo_path} 解析片名")
+                return
+
+            # 清理片名中的非法字符
+            title = self._sanitize_filename(title)
+
+            # 构建目标文件夹路径
+            target_folder = Path(dest_dir) / title
+
+            # 是否重命名
+            rename_conf = self._renameconf.get(source_dir)
+
+            # 处理视频文件
+            if source_path.suffix.lower() in settings.RMT_MEDIAEXT:
+                self._organize_video_file(
+                    source_path=source_path,
+                    target_folder=target_folder,
+                    rename_conf=rename_conf
+                )
+
+            # 复制 nfo 和海报文件
+            self._copy_metadata_files(
+                source_folder=source_folder,
+                target_folder=target_folder,
+                source_path=source_path
+            )
+
+            # 发送通知
+            if self._notify:
+                self._add_to_notify_queue(title, str(source_path))
+
+        except Exception as e:
+            logger.error(f"整理文件失败 {event_path}: {str(e)}")
+
+    def _parse_title_from_nfo(self, nfo_path: Path) -> Optional[str]:
+        """从 nfo 文件中解析片名"""
+        try:
+            tree = ET.parse(nfo_path)
+            root = tree.getroot()
+
+            # 优先取 title 标签
+            title_elem = root.find("title")
+            if title_elem is not None and title_elem.text:
+                return title_elem.text.strip()
+
+            # 其次取 originaltitle
+            original_elem = root.find("originaltitle")
+            if original_elem is not None and original_elem.text:
+                return original_elem.text.strip()
+
+        except ET.ParseError as e:
+            logger.error(f"解析 NFO 文件失败 {nfo_path}: {str(e)}")
+        except Exception as e:
+            logger.error(f"读取 NFO 文件失败 {nfo_path}: {str(e)}")
+
+        return None
+
+    def _sanitize_filename(self, filename: str) -> str:
+        """清理文件名中的非法字符"""
+        # Windows 非法字符: \ / : * ? " < > |
+        illegal_chars = r'[\\/*?:"<>|]'
+        cleaned = re.sub(illegal_chars, '', filename)
+        # 去除首尾空格和点
+        cleaned = cleaned.strip('. ')
+        return cleaned
+
+    def _organize_video_file(self, source_path: Path, target_folder: Path, rename_conf: str):
+        """整理视频文件，按 Emby 标准格式命名"""
+        try:
+            # 创建目标文件夹
+            target_folder.mkdir(parents=True, exist_ok=True)
+
+            # 获取集数信息（从文件名中提取 SXXEYY 格式）
+            episode_num = self._extract_episode_number(source_path.name)
+
+            if rename_conf == "true" and episode_num:
+                # Emby 标准格式：剧名 - S01E01.mp4
+                season_num = "01"
+                if episode_num < 10:
+                    episode_str = f"E0{episode_num}"
+                else:
+                    episode_str = f"E{episode_num}"
+
+                new_name = f"{target_folder.name} - S{season_num}{episode_str}{source_path.suffix}"
+                target_path = target_folder / new_name
+            else:
+                # 保持原文件名
+                target_path = target_folder / source_path.name
+
+            # 转移文件
+            if target_path.exists():
+                logger.debug(f"目标文件已存在: {target_path}")
+                return
+
+            retcode = self._transfer_file(source_path, target_path)
+
+            if retcode == 0:
+                logger.info(f"文件整理完成: {source_path} -> {target_path}")
+            else:
+                logger.error(f"文件整理失败: {source_path}")
+
+        except Exception as e:
+            logger.error(f"整理视频文件失败: {str(e)}")
+
+    def _extract_episode_number(self, filename: str) -> Optional[int]:
+        """从文件名中提取集数"""
+        # 匹配 S01E01 格式
+        match = re.search(r'[sS](\d+)[eE](\d+)', filename)
+        if match:
+            return int(match.group(2))
+
+        # 匹配 E01 格式
+        match = re.search(r'[eE](\d+)', filename)
+        if match:
+            return int(match.group(1))
+
+        # 匹配 第01集 格式
+        match = re.search(r'第(\d+)集', filename)
+        if match:
+            return int(match.group(1))
+
+        # 匹配 01 开头（两数字后跟非数字）
+        match = re.search(r'(\d{2})(?:[^0-9]|$)', filename)
+        if match and int(match.group(1)) <= 99:
+            return int(match.group(1))
+
+        return None
+
+    def _copy_metadata_files(self, source_folder: Path, target_folder: Path, source_path: Path):
+        """复制 nfo 和海报文件到目标文件夹"""
+        # 创建目标文件夹
+        target_folder.mkdir(parents=True, exist_ok=True)
+
+        # 复制 tvshow.nfo
+        source_nfo = source_folder / "tvshow.nfo"
+        target_nfo = target_folder / "tvshow.nfo"
+        if source_nfo.exists() and not target_nfo.exists():
+            self._transfer_file(source_nfo, target_nfo)
+            logger.debug(f"复制 NFO: {target_nfo}")
+
+        # 复制 poster.jpg
+        source_poster = source_folder / "poster.jpg"
+        target_poster = target_folder / "poster.jpg"
+        if source_poster.exists() and not target_poster.exists():
+            self._transfer_file(source_poster, target_poster)
+            logger.debug(f"复制海报: {target_poster}")
+
+        # 尝试其他常见的海报文件名
+        for poster_name in ["folder.jpg", "cover.jpg", "thumb.jpg"]:
+            source_img = source_folder / poster_name
+            if source_img.exists() and not target_poster.exists():
+                self._transfer_file(source_img, target_poster)
+                logger.debug(f"复制海报: {source_img} -> {target_poster}")
+                break
+
+    def _transfer_file(self, source: Path, target: Path) -> int:
+        """转移文件"""
+        with lock:
+            if self._transfer_type == "link":
+                retcode, retmsg = SystemUtils.link(source, target)
+            elif self._transfer_type == "softlink":
+                retcode, retmsg = SystemUtils.softlink(source, target)
+            elif self._transfer_type == "move":
+                retcode, retmsg = SystemUtils.move(source, target)
+            else:
+                retcode, retmsg = SystemUtils.copy(source, target)
+
+            if retcode != 0:
+                logger.error(retmsg)
+            return retcode
+
+    def _add_to_notify_queue(self, title: str, file_path: str):
+        """添加到通知队列"""
+        media_list = self._medias.get(title) or {}
+        if media_list:
+            files = media_list.get("files", [])
+            if file_path not in files:
+                files.append(file_path)
+            media_list = {
+                "files": files,
+                "time": datetime.datetime.now()
+            }
+        else:
+            media_list = {
+                "files": [file_path],
+                "time": datetime.datetime.now()
+            }
+        self._medias[title] = media_list
+
+    def send_msg(self):
+        """发送通知消息"""
+        if not self._notify or not self._medias:
+            return
+
+        for title in list(self._medias.keys()):
+            media_list = self._medias.get(title)
+            if not media_list:
+                continue
+
+            last_time = media_list.get("time")
+            files = media_list.get("files", [])
+
+            if not last_time or not files:
+                continue
+
+            # 延迟发送，等待文件完整写入
+            if (datetime.datetime.now() - last_time).total_seconds() > int(self._interval):
+                self.post_message(
+                    mtype=NotificationType.Organize,
+                    title=f"{title} 已入库",
+                    text=f"共 {len(files)} 个文件"
+                )
+                del self._medias[title]
+
+    def __update_config(self):
+        """更新配置"""
+        self.update_config({
+            "enabled": self._enabled,
+            "onlyonce": self._onlyonce,
+            "monitor_confs": self._monitor_confs,
+            "transfer_type": self._transfer_type,
+            "exclude_keywords": self._exclude_keywords,
+            "notify": self._notify,
+            "interval": self._interval
+        })
+
+    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        """返回配置页 JSON 和默认配置模型"""
+        return [
+            {
+                "component": "VForm",
+                "content": [
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "enabled",
+                                            "label": "启用插件"
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "onlyonce",
+                                            "label": "立即运行一次"
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "notify",
+                                            "label": "发送通知"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "transfer_type",
+                                            "label": "转移方式",
+                                            "items": [
+                                                {"title": "移动", "value": "move"},
+                                                {"title": "复制", "value": "copy"},
+                                                {"title": "硬链接", "value": "link"},
+                                                {"title": "软链接", "value": "softlink"}
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "interval",
+                                            "label": "入库消息延迟（秒）",
+                                            "placeholder": "10"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "monitor_confs",
+                                            "label": "监控目录配置",
+                                            "rows": 5,
+                                            "placeholder": "监控方式#监控目录#目的目录#是否重命名（每行一条）\nauto#/downloads/短剧#/media/短剧#true\ncompatibility#/mnt/smb/share#/media/短剧#false"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "exclude_keywords",
+                                            "label": "排除关键词",
+                                            "rows": 2,
+                                            "placeholder": "每行一个关键词，匹配到的文件不处理"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "text": "工作流程：1. 监控目录中出现视频文件 → 2. 查找同目录下的 tvshow.nfo → 3. 解析 NFO 中的片名作为文件夹名 → 4. 复制 NFO 和海报 → 5. 按 Emby 格式重命名视频文件（S01E01）"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ], {
+            "enabled": False,
+            "onlyonce": False,
+            "monitor_confs": "",
+            "transfer_type": "link",
+            "exclude_keywords": "",
+            "notify": False,
+            "interval": 10
+        }
+
+    def get_page(self) -> List[dict]:
+        """返回详情页 JSON"""
+        return [
+            {
+                "component": "VCard",
+                "content": [
+                    {
+                        "component": "VCardText",
+                        "props": {
+                            "class": "pa-4"
+                        },
+                        "content": [
+                            {
+                                "component": "div",
+                                "content": [
+                                    f"监控目录: {self._monitor_confs}",
+                                    f"转移方式: {self._transfer_type}",
+                                    f"发送通知: {'是' if self._notify else '否'}"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+
+    def get_command(self) -> List[Dict[str, Any]]:
+        """没有远程命令时直接返回空列表"""
+        return []
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        """没有插件 API 时直接返回空列表"""
+        return []
+
+    def stop_service(self):
+        """停止服务"""
+        try:
+            if self._scheduler:
+                self._scheduler.remove_all_jobs()
+                if self._scheduler.running:
+                    self._scheduler.shutdown()
+                self._scheduler = None
+        except Exception as e:
+            logger.error(f"退出插件失败：{str(e)}")
+
+        if self._observer:
+            for observer in self._observer:
+                try:
+                    observer.stop()
+                    observer.join()
+                except Exception as e:
+                    logger.debug(str(e))
+            self._observer = []
