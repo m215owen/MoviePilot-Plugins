@@ -299,7 +299,7 @@ class ShortPlayOrganizer(_PluginBase):
                 else:
                     episode_str = f"E{episode_num}"
 
-                new_name = f"{target_folder.name} - S{season_num}{episode_str}{source_path.suffix}"
+                new_name = f"S{season_num}{episode_str}{source_path.suffix}"
                 target_path = target_folder / new_name
             else:
                 # 保持原文件名
