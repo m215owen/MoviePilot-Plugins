@@ -1,14 +1,14 @@
 {
   "ShortPlayMonitorx": {
     "name": "短剧刮削自用版",
-    "description": "支持ptsk",
+    "description": "监控视频短剧创建，从PT站（PTSKit/AGSV/萝莉站）刮削元数据，生成NFO和海报",
     "labels": "刮削",
     "version": "5.0",
     "icon": "Amule_B.png",
     "author": "thsrite",
     "level": 1,
     "history": {
-      "v5.0": "支持ptsk",
+      "v5.0": "支持PTSKit站点，从详情页提取完整元数据（片名、类别、集数、主演、简介）",
       "v4.0.3": "修复主程序依赖调整",
       "v4.0.2": "修复软连接bug",
       "v4.0.1": "适配主程序调整",
@@ -16,6 +16,18 @@
       "v3.2": "支持消息发送",
       "v3.1": "支持自定义转移方式",
       "v3.0": "默认从tmdb刮削，刮削失败则从pt站刮削"
+    }
+  },
+  "ShortPlayOrganizer": {
+    "name": "短剧整理器",
+    "description": "读取tvshow.nfo中的片名，按Emby标准格式整理短剧文件",
+    "labels": "整理,短剧,Emby",
+    "version": "1.0.0",
+    "icon": "Amule_B.png",
+    "author": "thsrite",
+    "level": 1,
+    "history": {
+      "v1.0.0": "首次发布：读取NFO片名，Emby格式重命名，复制海报和元数据"
     }
   }
 }
