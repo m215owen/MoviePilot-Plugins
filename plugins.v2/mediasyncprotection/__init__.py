@@ -50,6 +50,7 @@ class MediaSyncProtection(_PluginBase):
                 "summary": "接收Emby Webhook",
                 "description": "处理Emby的收藏和删除事件",
                 "auth": "none"
+                "response_model": None  # <--- 添加这一行，禁用响应模型生成
             }
         ]
     
