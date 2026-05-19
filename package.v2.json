@@ -1,7 +1,7 @@
 {
   "ShortPlayMonitorx": {
-    "name": "短剧刮削",
-    "description": "监控视频短剧创建，刮削。",
+    "name": "短剧刮削魔改",
+    "description": "支持ptsk",
     "labels": "刮削",
     "version": "5.0",
     "icon": "Amule_B.png",
