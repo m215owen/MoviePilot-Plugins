@@ -29,5 +29,17 @@
     "history": {
       "v1.0.0": "首次发布：读取NFO片名，Emby格式重命名，复制海报和元数据"
     }
+  },
+  "MediaSyncProtection": {
+    "name": "媒体同步保护",
+    "description": "Emby收藏时从刷流插件移除种子，Emby删除媒体时标记种子待删除（由刷流插件执行）",
+    "labels": "保护,同步,刷流,Emby",
+    "version": "1.0.0",
+    "icon": "sync_protect.png",
+    "author": "AI",
+    "level": 1,
+    "history": {
+      "v1.0.0": "首次发布：支持Emby Webhook，收藏移除刷流记录，删除标记待删除"
+    }
   }
 }
