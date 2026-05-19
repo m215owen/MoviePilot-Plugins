@@ -55,7 +55,7 @@ class FileMonitorHandler(FileSystemEventHandler):
         self.file_change.event_handler(event=event, source_dir=self._watch_path, event_path=event.dest_path)
 
 
-  class ShortPlayMonitorx(_PluginBase):
+class ShortPlayMonitorx(_PluginBase):
     # 插件名称
     plugin_name = "短剧刮削"
     # 插件描述
