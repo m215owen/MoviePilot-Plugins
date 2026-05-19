@@ -58,7 +58,7 @@ class ShortPlayOrganizer(_PluginBase):
     plugin_version = "1.0.0"
     plugin_author = "AI"
     author_url = "https://github.com/thsrite"
-    plugin_config_prefix = "shortplayorganizer_"
+    plugin_config_prefix = "shortplayorganizerv2_"
     plugin_order = 26
     auth_level = 1
 
