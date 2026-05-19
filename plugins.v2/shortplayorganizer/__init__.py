@@ -80,15 +80,15 @@ class ShortPlayOrganizer(_PluginBase):
 
     # 统计数据
     _statistics = {
-        "success_count": 0,      # 成功整理数量
-        "failed_count": 0,       # 失败整理数量
-        "success_folders": [],   # 成功整理的目录
-        "failed_records": []     # 失败记录
+        "success_count": 0,
+        "failed_count": 0,
+        "success_folders": [],
+        "failed_records": []
     }
     
     # 去重缓存
-    _success_cache = set()   # 已成功处理的文件路径
-    _failed_cache = set()    # 已失败的文件路径
+    _success_cache = set()
+    _failed_cache = set()
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -198,14 +198,12 @@ class ShortPlayOrganizer(_PluginBase):
 
     def _build_cache(self):
         """构建去重缓存"""
-        # 成功缓存
         self._success_cache = set()
         for record in self._statistics["success_folders"]:
             source = record.get("source", "")
             if source:
                 self._success_cache.add(source)
         
-        # 失败缓存
         self._failed_cache = set()
         for record in self._statistics["failed_records"]:
             source = record.get("source", "")
@@ -228,7 +226,6 @@ class ShortPlayOrganizer(_PluginBase):
 
     def _save_statistics(self):
         """保存统计数据"""
-        # 只保留最近100条记录
         if len(self._statistics["success_folders"]) > 100:
             self._statistics["success_folders"] = self._statistics["success_folders"][-100:]
         if len(self._statistics["failed_records"]) > 100:
@@ -239,7 +236,6 @@ class ShortPlayOrganizer(_PluginBase):
 
     def _record_success(self, title: str, source_path: str, target_path: Path):
         """记录成功整理"""
-        # 如果之前有失败记录，先移除
         self._remove_failed_record(source_path)
         
         self._statistics["success_count"] += 1
@@ -253,11 +249,9 @@ class ShortPlayOrganizer(_PluginBase):
 
     def _record_failure(self, source_path: str, reason: str):
         """记录失败整理"""
-        # 如果已成功过，不再记录失败
         if self._is_success(source_path):
             return
         
-        # 检查是否已存在相同失败记录
         for record in self._statistics["failed_records"]:
             if record.get("source") == source_path:
                 return
@@ -271,7 +265,7 @@ class ShortPlayOrganizer(_PluginBase):
         self._save_statistics()
 
     def _remove_failed_record(self, source_path: str):
-        """移除失败记录（成功处理后）"""
+        """移除失败记录"""
         original_count = len(self._statistics["failed_records"])
         self._statistics["failed_records"] = [
             r for r in self._statistics["failed_records"] 
@@ -319,7 +313,7 @@ class ShortPlayOrganizer(_PluginBase):
         return self._enabled
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """注册API - 本插件不需要对外提供API接口"""
+        """注册API"""
         return []
 
     def get_command(self) -> List[Dict[str, Any]]:
@@ -363,7 +357,6 @@ class ShortPlayOrganizer(_PluginBase):
         """扫描目录中的所有媒体文件"""
         try:
             for root, dirs, files in os.walk(source_dir):
-                # 过滤排除关键词
                 if self._exclude_keywords:
                     skip = False
                     for keyword in self._exclude_keywords.split("\n"):
@@ -375,7 +368,6 @@ class ShortPlayOrganizer(_PluginBase):
 
                 for file in files:
                     file_path = os.path.join(root, file)
-                    # 跳过已经处理过的文件（成功或失败）
                     if self._is_processed(file_path):
                         logger.debug(f"跳过已处理文件: {file_path}")
                         continue
@@ -391,24 +383,20 @@ class ShortPlayOrganizer(_PluginBase):
 
     def event_handler(self, event, source_dir: str, event_path: str):
         """处理文件变化"""
-        # 回收站及隐藏的文件不处理
         if (event_path.find("/@Recycle") != -1
                 or event_path.find("/#recycle") != -1
                 or event_path.find("/.") != -1
                 or event_path.find("/@eaDir") != -1):
             return
 
-        # 命中过滤关键字不处理
         if self._exclude_keywords:
             for keyword in self._exclude_keywords.split("\n"):
                 if keyword and keyword in event_path:
                     return
 
-        # 只处理媒体文件
         if Path(event_path).suffix.lower() not in settings.RMT_MEDIAEXT:
             return
         
-        # 跳过已经处理过的文件
         if self._is_processed(event_path):
             logger.debug(f"跳过已处理文件: {event_path}")
             return
@@ -427,7 +415,6 @@ class ShortPlayOrganizer(_PluginBase):
                 self._record_failure(event_path, error_msg)
                 return
 
-            # 向上查找包含 tvshow.nfo 的目录
             source_folder = self._find_nfo_parent(source_path.parent)
 
             if not source_folder:
@@ -443,7 +430,6 @@ class ShortPlayOrganizer(_PluginBase):
                 self._record_failure(event_path, error_msg)
                 return
 
-            # 解析片名
             title = self._parse_title_from_nfo(nfo_path)
             if not title:
                 error_msg = f"无法从 {nfo_path} 解析片名"
@@ -455,7 +441,6 @@ class ShortPlayOrganizer(_PluginBase):
             target_folder = Path(dest_dir) / title
             rename_conf = self._renameconf.get(source_dir, "true")
 
-            # 处理视频文件
             if source_path.suffix.lower() in settings.RMT_MEDIAEXT:
                 target_path = self._organize_video_file(
                     source_path=source_path,
@@ -465,7 +450,6 @@ class ShortPlayOrganizer(_PluginBase):
                 if target_path:
                     self._record_success(title, str(source_path), target_path)
 
-            # 复制元数据文件
             self._copy_metadata_files(
                 source_folder=source_folder,
                 target_folder=target_folder
@@ -516,7 +500,7 @@ class ShortPlayOrganizer(_PluginBase):
         return cleaned.strip('. ')
 
     def _organize_video_file(self, source_path: Path, target_folder: Path, rename_conf: str) -> Optional[Path]:
-        """整理视频文件，返回目标路径"""
+        """整理视频文件"""
         try:
             target_folder.mkdir(parents=True, exist_ok=True)
 
@@ -531,7 +515,6 @@ class ShortPlayOrganizer(_PluginBase):
                 target_path = target_folder / source_path.name
 
             if target_path.exists():
-                logger.debug(f"目标文件已存在: {target_path}")
                 return target_path
 
             retcode = self._transfer_file(source_path, target_path)
@@ -567,13 +550,11 @@ class ShortPlayOrganizer(_PluginBase):
         """复制 nfo 和海报文件"""
         target_folder.mkdir(parents=True, exist_ok=True)
 
-        # 复制 tvshow.nfo
         source_nfo = source_folder / "tvshow.nfo"
         target_nfo = target_folder / "tvshow.nfo"
         if source_nfo.exists() and not target_nfo.exists():
             self._transfer_file(source_nfo, target_nfo)
 
-        # 复制海报
         target_poster = target_folder / "poster.jpg"
         for poster_name in ["poster.jpg", "folder.jpg", "cover.jpg"]:
             source_img = source_folder / poster_name
@@ -747,7 +728,8 @@ class ShortPlayOrganizer(_PluginBase):
                                         "props": {
                                             "model": "scan_interval",
                                             "label": "定时扫描间隔（秒）",
-                                            "placeholder": "60"
+                                            "placeholder": "60",
+                                            "hint": "仅当定时扫描启用时生效"
                                         }
                                     }
                                 ]
@@ -842,7 +824,11 @@ class ShortPlayOrganizer(_PluginBase):
                                             },
                                             {
                                                 "component": "div",
-                                                "text": "3. 已成功或失败的文件不会重复处理"
+                                                "text": "3. 定时扫描作为监控补充，可单独关闭"
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "4. 已成功或失败的文件不会重复处理"
                                             }
                                         ]
                                     }
@@ -865,13 +851,11 @@ class ShortPlayOrganizer(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        """返回详情页，包含统计图表和记录"""
+        """返回详情页"""
         
-        # 计算成功率
         total = self._statistics["success_count"] + self._statistics["failed_count"]
         success_rate = round(self._statistics["success_count"] / total * 100, 1) if total > 0 else 0
         
-        # 构建成功目录表格行
         success_rows = []
         for item in self._statistics["success_folders"][-20:]:
             success_rows.append({
@@ -883,7 +867,6 @@ class ShortPlayOrganizer(_PluginBase):
                 ]
             })
         
-        # 构建失败记录表格行
         failed_rows = []
         for item in self._statistics["failed_records"][-20:]:
             failed_rows.append({
@@ -896,7 +879,6 @@ class ShortPlayOrganizer(_PluginBase):
             })
         
         return [
-            # 统计卡片
             {
                 "component": "VRow",
                 "content": [
@@ -912,15 +894,8 @@ class ShortPlayOrganizer(_PluginBase):
                                         "component": "VCardText",
                                         "props": {"class": "text-center"},
                                         "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"class": "text-h4"},
-                                                "text": str(self._statistics["success_count"])
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "成功整理"
-                                            }
+                                            {"component": "div", "props": {"class": "text-h4"}, "text": str(self._statistics["success_count"])},
+                                            {"component": "div", "text": "成功整理"}
                                         ]
                                     }
                                 ]
@@ -939,15 +914,8 @@ class ShortPlayOrganizer(_PluginBase):
                                         "component": "VCardText",
                                         "props": {"class": "text-center"},
                                         "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"class": "text-h4"},
-                                                "text": str(self._statistics["failed_count"])
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "整理失败"
-                                            }
+                                            {"component": "div", "props": {"class": "text-h4"}, "text": str(self._statistics["failed_count"])},
+                                            {"component": "div", "text": "整理失败"}
                                         ]
                                     }
                                 ]
@@ -966,15 +934,8 @@ class ShortPlayOrganizer(_PluginBase):
                                         "component": "VCardText",
                                         "props": {"class": "text-center"},
                                         "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"class": "text-h4"},
-                                                "text": f"{success_rate}%"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "成功率"
-                                            }
+                                            {"component": "div", "props": {"class": "text-h4"}, "text": f"{success_rate}%"},
+                                            {"component": "div", "text": "成功率"}
                                         ]
                                     }
                                 ]
@@ -983,18 +944,12 @@ class ShortPlayOrganizer(_PluginBase):
                     }
                 ]
             },
-            # 成功整理记录表格
             {
                 "component": "VCard",
                 "props": {"class": "mt-4"},
                 "content": [
-                    {
-                        "component": "VCardTitle",
-                        "text": "📁 最近成功整理记录"
-                    },
-                    {
-                        "component": "VDivider"
-                    },
+                    {"component": "VCardTitle", "text": "📁 最近成功整理记录"},
+                    {"component": "VDivider"},
                     {
                         "component": "VCardText",
                         "props": {"class": "pa-0"},
@@ -1006,18 +961,9 @@ class ShortPlayOrganizer(_PluginBase):
                                     {
                                         "component": "thead",
                                         "content": [
-                                            {
-                                                "component": "th",
-                                                "text": "片名"
-                                            },
-                                            {
-                                                "component": "th",
-                                                "text": "源文件"
-                                            },
-                                            {
-                                                "component": "th",
-                                                "text": "整理时间"
-                                            }
+                                            {"component": "th", "text": "片名"},
+                                            {"component": "th", "text": "源文件"},
+                                            {"component": "th", "text": "整理时间"}
                                         ]
                                     },
                                     {
@@ -1026,11 +972,7 @@ class ShortPlayOrganizer(_PluginBase):
                                             {
                                                 "component": "tr",
                                                 "content": [
-                                                    {
-                                                        "component": "td",
-                                                        "props": {"colspan": 3, "class": "text-center"},
-                                                        "text": "暂无成功记录"
-                                                    }
+                                                    {"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无成功记录"}
                                                 ]
                                             }
                                         ]
@@ -1041,18 +983,12 @@ class ShortPlayOrganizer(_PluginBase):
                     }
                 ]
             },
-            # 失败记录表格
             {
                 "component": "VCard",
                 "props": {"class": "mt-4"},
                 "content": [
-                    {
-                        "component": "VCardTitle",
-                        "text": "❌ 最近失败记录"
-                    },
-                    {
-                        "component": "VDivider"
-                    },
+                    {"component": "VCardTitle", "text": "❌ 最近失败记录"},
+                    {"component": "VDivider"},
                     {
                         "component": "VCardText",
                         "props": {"class": "pa-0"},
@@ -1064,18 +1000,9 @@ class ShortPlayOrganizer(_PluginBase):
                                     {
                                         "component": "thead",
                                         "content": [
-                                            {
-                                                "component": "th",
-                                                "text": "源文件"
-                                            },
-                                            {
-                                                "component": "th",
-                                                "text": "失败原因"
-                                            },
-                                            {
-                                                "component": "th",
-                                                "text": "时间"
-                                            }
+                                            {"component": "th", "text": "源文件"},
+                                            {"component": "th", "text": "失败原因"},
+                                            {"component": "th", "text": "时间"}
                                         ]
                                     },
                                     {
@@ -1084,11 +1011,7 @@ class ShortPlayOrganizer(_PluginBase):
                                             {
                                                 "component": "tr",
                                                 "content": [
-                                                    {
-                                                        "component": "td",
-                                                        "props": {"colspan": 3, "class": "text-center"},
-                                                        "text": "暂无失败记录"
-                                                    }
+                                                    {"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无失败记录"}
                                                 ]
                                             }
                                         ]
