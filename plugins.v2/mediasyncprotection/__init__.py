@@ -12,6 +12,7 @@ from app.log import logger
 class MediaSyncProtection(_PluginBase):
     """媒体同步保护：收藏时从刷流移除，删除时标记种子待删除"""
     
+    # 插件元数据
     plugin_name = "媒体同步保护"
     plugin_desc = "Emby收藏时从刷流插件移除种子，Emby删除媒体时标记种子待删除（由刷流插件执行）"
     plugin_icon = "sync_file.png"
@@ -24,12 +25,20 @@ class MediaSyncProtection(_PluginBase):
     # 目标刷流插件
     TARGET_PLUGINS = ["BrushFlowLowFreq", "BrushFlow", "站点刷流（低频版）"]
     
+    # 私有属性
     _config = {}
+    _enabled = False
     
     def init_plugin(self, config: dict = None):
         """初始化插件"""
-        self._config = config or {}
-        logger.info("媒体同步保护插件已启动")
+        if config:
+            self._config = config
+            self._enabled = config.get("enabled", False)
+        logger.info(f"媒体同步保护插件已启动，启用状态: {self._enabled}")
+    
+    def get_state(self) -> bool:
+        """返回插件状态"""
+        return self._enabled
     
     def get_api(self) -> List[Dict[str, Any]]:
         """注册API，接收Emby Webhook"""
@@ -51,12 +60,15 @@ class MediaSyncProtection(_PluginBase):
         - item.markedfavorite: 收藏 → 从刷流移除
         - item.removed: 删除媒体 → 标记种子待删除
         """
+        # 插件未启用时直接返回
+        if not self._enabled:
+            return web.Response(status=200, text="Plugin disabled")
+        
         try:
             form_data = await request.post()
             
             event_type = form_data.get("Event", "")
             item_name = form_data.get("ItemName", "")
-            item_id = form_data.get("ItemId", "")
             
             logger.info(f"收到Emby Webhook: 事件={event_type}, 媒体={item_name}")
             
@@ -84,7 +96,7 @@ class MediaSyncProtection(_PluginBase):
         从刷流插件中移除匹配的种子（收藏时调用）
         直接从数据中删除记录，种子文件保留
         """
-        if not keyword:
+        if not keyword or not self._enabled:
             return
         
         removed_count = 0
@@ -130,7 +142,7 @@ class MediaSyncProtection(_PluginBase):
         标记种子待删除（删除媒体时调用）
         在刷流插件数据中标记 pending_delete，让刷流插件的 check 方法执行实际删除
         """
-        if not media_name:
+        if not media_name or not self._enabled:
             return
         
         keyword_lower = media_name.lower()
@@ -207,10 +219,13 @@ class MediaSyncProtection(_PluginBase):
             plugin_manager = PluginManager()
             return plugin_manager.get_plugin(plugin_id)
         except ImportError:
-            # 兼容旧版本
-            from app.plugins import PluginManager
-            plugin_manager = PluginManager()
-            return plugin_manager.get_plugin(plugin_id)
+            try:
+                from app.plugins import PluginManager
+                plugin_manager = PluginManager()
+                return plugin_manager.get_plugin(plugin_id)
+            except Exception as e:
+                logger.debug(f"获取插件实例失败: {e}")
+                return None
         except Exception as e:
             logger.debug(f"获取插件实例失败: {e}")
             return None
@@ -289,6 +304,9 @@ class MediaSyncProtection(_PluginBase):
     @eventmanager.register(EventType.PluginAction)
     def handle_command(self, event: Event):
         """处理远程命令"""
+        if not self._enabled:
+            return
+        
         action = event.event_data.get("action")
         keyword = event.event_data.get("keyword") or event.event_data.get("name")
         
@@ -350,6 +368,19 @@ class MediaSyncProtection(_PluginBase):
                                     {
                                         "component": "VSwitch",
                                         "props": {
+                                            "model": "enabled",
+                                            "label": "启用插件"
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
                                             "model": "notify",
                                             "label": "发送通知"
                                         }
@@ -399,6 +430,7 @@ class MediaSyncProtection(_PluginBase):
                 ]
             }
         ], {
+            "enabled": False,
             "notify": True
         }
     
@@ -473,5 +505,6 @@ class MediaSyncProtection(_PluginBase):
         ]
     
     def stop_service(self):
-        """停止插件"""
+        """停止服务"""
+        self._enabled = False
         logger.info("媒体同步保护插件已停止")
