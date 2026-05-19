@@ -54,7 +54,7 @@ class ShortPlayOrganizer(_PluginBase):
     plugin_desc = "读取tvshow.nfo中的片名，按Emby标准格式整理短剧文件"
     plugin_icon = "Amule_B.png"
     plugin_version = "1.0.0"
-    plugin_author = "thsrite"
+    plugin_author = "AI"
     author_url = "https://github.com/thsrite"
     plugin_config_prefix = "shortplayorganizer_"
     plugin_order = 26
