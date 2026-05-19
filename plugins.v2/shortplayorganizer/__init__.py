@@ -5,7 +5,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from threading import Lock
-from typing import Any, List, Dict, Tuple, Optional
+from typing import Any, List, Dict, Tuple, Optional, Set
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -87,8 +87,9 @@ class ShortPlayOrganizer(_PluginBase):
     }
     
     # 去重缓存
-    _success_cache = set()
-    _failed_cache = set()
+    _success_cache: Set[str] = set()           # 已成功处理的文件路径
+    _failed_cache: Set[str] = set()            # 已失败的文件路径
+    _no_nfo_folder_cache: Set[str] = set()     # 没有 nfo 文件的文件夹（跳过整个文件夹）
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -199,30 +200,84 @@ class ShortPlayOrganizer(_PluginBase):
     def _build_cache(self):
         """构建去重缓存"""
         self._success_cache = set()
+        self._failed_cache = set()
+        self._no_nfo_folder_cache = set()
+        
         for record in self._statistics["success_folders"]:
             source = record.get("source", "")
             if source:
                 self._success_cache.add(source)
         
-        self._failed_cache = set()
         for record in self._statistics["failed_records"]:
             source = record.get("source", "")
+            folder = record.get("folder", "")
             if source:
                 self._failed_cache.add(source)
+            if folder:
+                self._no_nfo_folder_cache.add(folder)
         
-        logger.debug(f"已加载成功记录 {len(self._success_cache)} 条，失败记录 {len(self._failed_cache)} 条")
+        logger.debug(f"已加载成功记录 {len(self._success_cache)} 条，"
+                    f"失败记录 {len(self._failed_cache)} 条，"
+                    f"无NFO文件夹 {len(self._no_nfo_folder_cache)} 个")
 
-    def _is_processed(self, file_path: str) -> bool:
-        """检查文件是否已经处理过（成功或失败）"""
-        return file_path in self._success_cache or file_path in self._failed_cache
+    def _has_nfo_file(self, folder_path: str) -> bool:
+        """检查文件夹是否包含 tvshow.nfo 文件（向上查找3层）"""
+        current = Path(folder_path)
+        for _ in range(3):
+            if (current / "tvshow.nfo").exists():
+                return True
+            if current.parent == current:
+                break
+            current = current.parent
+        return False
 
-    def _is_success(self, file_path: str) -> bool:
-        """检查文件是否已成功处理"""
-        return file_path in self._success_cache
+    def _is_folder_without_nfo(self, folder_path: str) -> bool:
+        """检查文件夹是否已标记为没有 nfo 文件"""
+        return folder_path in self._no_nfo_folder_cache
 
-    def _is_failed(self, file_path: str) -> bool:
-        """检查文件是否之前处理失败"""
-        return file_path in self._failed_cache
+    def _mark_folder_without_nfo(self, folder_path: str):
+        """标记文件夹为没有 nfo 文件"""
+        if folder_path not in self._no_nfo_folder_cache:
+            self._no_nfo_folder_cache.add(folder_path)
+            # 记录失败
+            self._statistics["failed_count"] += 1
+            self._statistics["failed_records"].append({
+                "source": folder_path,
+                "folder": folder_path,
+                "reason": "文件夹内没有 tvshow.nfo 文件",
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            self._save_statistics()
+            logger.info(f"文件夹 [{folder_path}] 没有 tvshow.nfo，跳过该文件夹下所有文件")
+
+    def _record_success(self, title: str, source_path: str, target_path: Path, folder_path: str):
+        """记录成功整理"""
+        self._statistics["success_count"] += 1
+        self._statistics["success_folders"].append({
+            "title": title,
+            "source": source_path,
+            "target": str(target_path),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        self._save_statistics()
+
+    def _record_failure(self, source_path: str, reason: str, folder_path: str):
+        """记录失败整理"""
+        if source_path in self._success_cache:
+            return
+        
+        for record in self._statistics["failed_records"]:
+            if record.get("source") == source_path:
+                return
+        
+        self._statistics["failed_count"] += 1
+        self._statistics["failed_records"].append({
+            "source": source_path,
+            "folder": folder_path,
+            "reason": reason,
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        self._save_statistics()
 
     def _save_statistics(self):
         """保存统计数据"""
@@ -233,47 +288,6 @@ class ShortPlayOrganizer(_PluginBase):
         
         self.save_data("statistics", self._statistics)
         self._build_cache()
-
-    def _record_success(self, title: str, source_path: str, target_path: Path):
-        """记录成功整理"""
-        self._remove_failed_record(source_path)
-        
-        self._statistics["success_count"] += 1
-        self._statistics["success_folders"].append({
-            "title": title,
-            "source": source_path,
-            "target": str(target_path),
-            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        self._save_statistics()
-
-    def _record_failure(self, source_path: str, reason: str):
-        """记录失败整理"""
-        if self._is_success(source_path):
-            return
-        
-        for record in self._statistics["failed_records"]:
-            if record.get("source") == source_path:
-                return
-        
-        self._statistics["failed_count"] += 1
-        self._statistics["failed_records"].append({
-            "source": source_path,
-            "reason": reason,
-            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        self._save_statistics()
-
-    def _remove_failed_record(self, source_path: str):
-        """移除失败记录"""
-        original_count = len(self._statistics["failed_records"])
-        self._statistics["failed_records"] = [
-            r for r in self._statistics["failed_records"] 
-            if r.get("source") != source_path
-        ]
-        if len(self._statistics["failed_records"]) < original_count:
-            self._statistics["failed_count"] = len(self._statistics["failed_records"])
-            self._save_statistics()
 
     def _start_monitor(self, mode: str, source_dir: str):
         """启动目录监控"""
@@ -357,6 +371,18 @@ class ShortPlayOrganizer(_PluginBase):
         """扫描目录中的所有媒体文件"""
         try:
             for root, dirs, files in os.walk(source_dir):
+                # 检查当前文件夹是否已标记为没有 nfo 文件
+                if self._is_folder_without_nfo(root):
+                    logger.debug(f"跳过无NFO文件夹: {root}")
+                    dirs.clear()
+                    continue
+                
+                # 检查是否有 nfo 文件
+                if not self._has_nfo_file(root):
+                    self._mark_folder_without_nfo(root)
+                    dirs.clear()
+                    continue
+                
                 if self._exclude_keywords:
                     skip = False
                     for keyword in self._exclude_keywords.split("\n"):
@@ -368,7 +394,7 @@ class ShortPlayOrganizer(_PluginBase):
 
                 for file in files:
                     file_path = os.path.join(root, file)
-                    if self._is_processed(file_path):
+                    if file_path in self._success_cache or file_path in self._failed_cache:
                         logger.debug(f"跳过已处理文件: {file_path}")
                         continue
                     
@@ -397,7 +423,20 @@ class ShortPlayOrganizer(_PluginBase):
         if Path(event_path).suffix.lower() not in settings.RMT_MEDIAEXT:
             return
         
-        if self._is_processed(event_path):
+        # 检查文件所在文件夹
+        folder_path = str(Path(event_path).parent)
+        
+        # 检查文件夹是否已标记为没有 nfo 文件
+        if self._is_folder_without_nfo(folder_path):
+            logger.debug(f"跳过无NFO文件夹中的文件: {event_path}")
+            return
+        
+        # 检查文件夹是否有 nfo 文件
+        if not self._has_nfo_file(folder_path):
+            self._mark_folder_without_nfo(folder_path)
+            return
+        
+        if event_path in self._success_cache or event_path in self._failed_cache:
             logger.debug(f"跳过已处理文件: {event_path}")
             return
 
@@ -407,34 +446,37 @@ class ShortPlayOrganizer(_PluginBase):
         """整理单个文件"""
         try:
             source_path = Path(event_path)
+            folder_path = str(source_path.parent)
             dest_dir = self._dirconf.get(source_dir)
 
             if not dest_dir:
                 error_msg = f"未找到监控目录 {source_dir} 对应的目的目录"
                 logger.error(error_msg)
-                self._record_failure(event_path, error_msg)
+                self._record_failure(event_path, error_msg, folder_path)
                 return
 
+            # 向上查找包含 tvshow.nfo 的目录
             source_folder = self._find_nfo_parent(source_path.parent)
 
             if not source_folder:
                 error_msg = "未找到包含 tvshow.nfo 的目录"
                 logger.debug(f"{event_path}: {error_msg}")
-                self._record_failure(event_path, error_msg)
+                self._record_failure(event_path, error_msg, folder_path)
                 return
 
             nfo_path = source_folder / "tvshow.nfo"
             if not nfo_path.exists():
                 error_msg = f"目录 {source_folder} 没有 tvshow.nfo"
                 logger.debug(error_msg)
-                self._record_failure(event_path, error_msg)
+                self._record_failure(event_path, error_msg, folder_path)
                 return
 
+            # 解析片名
             title = self._parse_title_from_nfo(nfo_path)
             if not title:
                 error_msg = f"无法从 {nfo_path} 解析片名"
                 logger.warning(error_msg)
-                self._record_failure(event_path, error_msg)
+                self._record_failure(event_path, error_msg, folder_path)
                 return
 
             title = self._sanitize_filename(title)
@@ -448,8 +490,9 @@ class ShortPlayOrganizer(_PluginBase):
                     rename_conf=rename_conf
                 )
                 if target_path:
-                    self._record_success(title, str(source_path), target_path)
+                    self._record_success(title, str(source_path), target_path, folder_path)
 
+            # 复制元数据文件
             self._copy_metadata_files(
                 source_folder=source_folder,
                 target_folder=target_folder
@@ -461,7 +504,8 @@ class ShortPlayOrganizer(_PluginBase):
         except Exception as e:
             error_msg = f"整理文件失败: {str(e)}"
             logger.error(f"{event_path}: {error_msg}")
-            self._record_failure(event_path, error_msg)
+            folder_path = str(Path(event_path).parent)
+            self._record_failure(event_path, error_msg, folder_path)
 
     def _find_nfo_parent(self, start_path: Path, max_depth: int = 3) -> Optional[Path]:
         """向上查找包含 tvshow.nfo 的目录"""
@@ -828,7 +872,7 @@ class ShortPlayOrganizer(_PluginBase):
                                             },
                                             {
                                                 "component": "div",
-                                                "text": "4. 已成功或失败的文件不会重复处理"
+                                                "text": "4. 文件夹内没有 tvshow.nfo 时会跳过该文件夹下所有文件"
                                             }
                                         ]
                                     }
@@ -872,7 +916,7 @@ class ShortPlayOrganizer(_PluginBase):
             failed_rows.append({
                 "component": "tr",
                 "content": [
-                    {"component": "td", "text": item.get("source", "")[:50]},
+                    {"component": "td", "text": item.get("source", "")[:40]},
                     {"component": "td", "text": item.get("reason", "")[:30]},
                     {"component": "td", "text": item.get("time", "")}
                 ]
@@ -915,7 +959,7 @@ class ShortPlayOrganizer(_PluginBase):
                                         "props": {"class": "text-center"},
                                         "content": [
                                             {"component": "div", "props": {"class": "text-h4"}, "text": str(self._statistics["failed_count"])},
-                                            {"component": "div", "text": "整理失败"}
+                                            {"component": "div", "text": "无NFO文件夹"}
                                         ]
                                     }
                                 ]
@@ -987,7 +1031,7 @@ class ShortPlayOrganizer(_PluginBase):
                 "component": "VCard",
                 "props": {"class": "mt-4"},
                 "content": [
-                    {"component": "VCardTitle", "text": "❌ 最近失败记录"},
+                    {"component": "VCardTitle", "text": "❌ 无NFO文件夹记录"},
                     {"component": "VDivider"},
                     {
                         "component": "VCardText",
@@ -1000,8 +1044,8 @@ class ShortPlayOrganizer(_PluginBase):
                                     {
                                         "component": "thead",
                                         "content": [
-                                            {"component": "th", "text": "源文件"},
-                                            {"component": "th", "text": "失败原因"},
+                                            {"component": "th", "text": "文件夹路径"},
+                                            {"component": "th", "text": "原因"},
                                             {"component": "th", "text": "时间"}
                                         ]
                                     },
@@ -1011,7 +1055,7 @@ class ShortPlayOrganizer(_PluginBase):
                                             {
                                                 "component": "tr",
                                                 "content": [
-                                                    {"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无失败记录"}
+                                                    {"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无记录"}
                                                 ]
                                             }
                                         ]
