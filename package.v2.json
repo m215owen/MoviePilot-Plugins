@@ -24,7 +24,7 @@
     "labels": "整理,短剧,Emby",
     "version": "1.0.0",
     "icon": "Amule_B.png",
-    "author": "thsrite",
+    "author": "AI",
     "level": 1,
     "history": {
       "v1.0.0": "首次发布：读取NFO片名，Emby格式重命名，复制海报和元数据"
