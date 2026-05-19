@@ -1,31 +1,48 @@
 import datetime
 import os
 import re
+import threading
 import shutil
-import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from threading import Lock
 from typing import Any, List, Dict, Tuple, Optional
+from xml.dom import minidom
 
+import chardet
 import pytz
+from PIL import Image
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from lxml import etree
+from requests import RequestException
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
+from app.helper.sites import SitesHelper
+from app.modules.indexer.spider import SiteSpider
 
+from app.chain.tmdb import TmdbChain
 from app.core.config import settings
+from app.core.meta.words import WordsMatcher
+from app.core.metainfo import MetaInfoPath
+from app.db.site_oper import SiteOper
+from app.helper.directory import DirectoryHelper
 from app.log import logger
 from app.plugins import _PluginBase
+from app.schemas import MediaInfo, TransferInfo, TransferDirectoryConf
 from app.schemas.types import NotificationType
+from app.utils.common import retry
+from app.utils.dom import DomUtils
+from app.utils.http import RequestUtils
 from app.utils.system import SystemUtils
 
+ffmpeg_lock = threading.Lock()
 lock = Lock()
 
 
 class FileMonitorHandler(FileSystemEventHandler):
-    """目录监控响应类（与短剧刮削插件保持一致）"""
+    """
+    目录监控响应类
+    """
 
     def __init__(self, watching_path: str, file_change: Any, **kwargs):
         super(FileMonitorHandler, self).__init__(**kwargs)
@@ -33,68 +50,69 @@ class FileMonitorHandler(FileSystemEventHandler):
         self.file_change = file_change
 
     def on_created(self, event):
-        if not event.is_directory:
-            self.file_change.event_handler(
-                event=event,
-                source_dir=self._watch_path,
-                event_path=event.src_path
-            )
+        self.file_change.event_handler(event=event, source_dir=self._watch_path, event_path=event.src_path)
 
     def on_moved(self, event):
-        if not event.is_directory:
-            self.file_change.event_handler(
-                event=event,
-                source_dir=self._watch_path,
-                event_path=event.dest_path
-            )
+        self.file_change.event_handler(event=event, source_dir=self._watch_path, event_path=event.dest_path)
 
 
-class ShortPlayOrganizer(_PluginBase):
-    """短剧整理器插件"""
-
-    plugin_name = "短剧整理器"
-    plugin_desc = "读取tvshow.nfo中的片名，按Emby标准格式整理短剧文件"
+class ShortPlayMonitorx(_PluginBase):
+    # 插件名称
+    plugin_name = "短剧刮削"
+    # 插件描述
+    plugin_desc = "监控视频短剧创建，刮削。"
+    # 插件图标
     plugin_icon = "Amule_B.png"
-    plugin_version = "1.0"
-    plugin_author = "AI"
+    # 插件版本
+    plugin_version = "5.0"
+    # 插件作者
+    plugin_author = "thsrite魔改"
+    # 作者主页
     author_url = "https://github.com/thsrite"
-    plugin_config_prefix = "shortplayorganizer_"
+    # 插件配置项ID前缀
+    plugin_config_prefix = "shortplaymonitorx_"
+    # 加载顺序
     plugin_order = 26
+    # 可使用的用户级别
     auth_level = 1
 
     # 私有属性
     _enabled = False
-    _onlyonce = False
     _monitor_confs = None
-    _transfer_type = "link"
+    _onlyonce = False
+    _image = False
     _exclude_keywords = ""
+    _transfer_type = "link"
     _observer = []
-    _notify = False
-    _interval = 10
-    _scan_interval = 60  # 定时扫描间隔
+    _timeline = "00:00:10"
     _dirconf = {}
     _renameconf = {}
+    _coverconf = {}
+    tmdbchain = None
+    _interval = 10
+    _notify = False
     _medias = {}
-    _scanning = False
+    _pt_detail_cache = None  # 缓存PT站详情
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
 
     def init_plugin(self, config: dict = None):
-        """初始化插件"""
-        if config:
-            self._enabled = config.get("enabled")
-            self._onlyonce = config.get("onlyonce")
-            self._monitor_confs = config.get("monitor_confs")
-            self._transfer_type = config.get("transfer_type") or "link"
-            self._exclude_keywords = config.get("exclude_keywords") or ""
-            self._notify = config.get("notify")
-            self._interval = config.get("interval") or 10
-            self._scan_interval = config.get("scan_interval") or 60
-
         # 清空配置
         self._dirconf = {}
         self._renameconf = {}
+        self._coverconf = {}
+        self.tmdbchain = TmdbChain()
+
+        if config:
+            self._enabled = config.get("enabled")
+            self._onlyonce = config.get("onlyonce")
+            self._image = config.get("image")
+            self._interval = config.get("interval")
+            self._notify = config.get("notify")
+            self._monitor_confs = config.get("monitor_confs")
+            self._exclude_keywords = config.get("exclude_keywords") or ""
+            self._transfer_type = config.get("transfer_type") or "link"
 
         # 停止现有任务
         self.stop_service()
@@ -102,49 +120,35 @@ class ShortPlayOrganizer(_PluginBase):
         if self._enabled or self._onlyonce:
             # 定时服务
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-
-            # 入库消息定时发送
             if self._notify:
-                self._scheduler.add_job(
-                    func=self.send_msg,
-                    trigger=IntervalTrigger(seconds=15),
-                    id="shortplayorganizer_notify"
-                )
-
-            # 定时扫描任务（作为监控的补充）
-            if self._enabled and self._scan_interval > 0:
-                self._scheduler.add_job(
-                    func=self.scan_all_dirs,
-                    trigger=IntervalTrigger(seconds=self._scan_interval),
-                    id="shortplayorganizer_scan"
-                )
-                logger.info(f"定时扫描服务已启动，扫描间隔: {self._scan_interval} 秒")
+                # 追加入库消息统一发送服务
+                self._scheduler.add_job(self.send_msg, trigger='interval', seconds=15)
 
             # 读取目录配置
-            monitor_confs = self._monitor_confs.split("\n") if self._monitor_confs else []
+            monitor_confs = self._monitor_confs.split("\n")
             if not monitor_confs:
-                logger.error("未配置监控目录")
                 return
-
             for monitor_conf in monitor_confs:
+                # 格式 监控方式#监控目录#目的目录#是否重命名#封面比例
                 if not monitor_conf:
                     continue
-                # 格式：监控方式#监控目录#目的目录#是否重命名
-                parts = monitor_conf.split("#")
-                if len(parts) < 3:
-                    logger.error(f"{monitor_conf} 格式错误，应为：监控方式#监控目录#目的目录#是否重命名")
+                if str(monitor_conf).count("#") != 4:
+                    logger.error(f"{monitor_conf} 格式错误")
                     continue
+                mode = str(monitor_conf).split("#")[0]
+                source_dir = str(monitor_conf).split("#")[1]
+                target_dir = str(monitor_conf).split("#")[2]
+                rename_conf = str(monitor_conf).split("#")[3]
+                cover_conf = str(monitor_conf).split("#")[4]
 
-                mode = parts[0].strip()
-                source_dir = parts[1].strip()
-                target_dir = parts[2].strip()
-                rename_conf = parts[3].strip() if len(parts) > 3 else "true"
-
+                # 存储目录监控配置
                 self._dirconf[source_dir] = target_dir
                 self._renameconf[source_dir] = rename_conf
+                self._coverconf[source_dir] = cover_conf
 
-                # 检查媒体库目录是不是下载目录的子目录
+                # 启用目录监控
                 if self._enabled:
+                    # 检查媒体库目录是不是下载目录的子目录
                     try:
                         if target_dir and Path(target_dir).is_relative_to(Path(source_dir)):
                             logger.warn(f"{target_dir} 是下载目录 {source_dir} 的子目录，无法监控")
@@ -152,6 +156,7 @@ class ShortPlayOrganizer(_PluginBase):
                             continue
                     except Exception as e:
                         logger.debug(str(e))
+                        pass
 
                     try:
                         if mode == "compatibility":
@@ -161,11 +166,7 @@ class ShortPlayOrganizer(_PluginBase):
                             # 内部处理系统操作类型选择最优解
                             observer = Observer(timeout=10)
                         self._observer.append(observer)
-                        observer.schedule(
-                            FileMonitorHandler(source_dir, self),
-                            path=source_dir,
-                            recursive=True
-                        )
+                        observer.schedule(FileMonitorHandler(source_dir, self), path=source_dir, recursive=True)
                         observer.daemon = True
                         observer.start()
                         logger.info(f"{source_dir} 的目录监控服务启动")
@@ -183,18 +184,16 @@ class ShortPlayOrganizer(_PluginBase):
                             logger.error(f"{source_dir} 启动目录监控失败：{err_msg}")
                         self.systemmessage.put(f"{source_dir} 启动目录监控失败：{err_msg}")
 
-            # 全量同步
+            # 运行一次定时服务
             if self._onlyonce:
-                logger.info("短剧整理服务启动，立即运行一次")
-                self._scheduler.add_job(
-                    func=self.scan_all_dirs,
-                    trigger='date',
-                    run_date=datetime.datetime.now(
-                        pytz.timezone(settings.TZ)
-                    ) + datetime.timedelta(seconds=3),
-                    id="shortplayorganizer_sync"
-                )
+                logger.info("短剧监控服务启动，立即运行一次")
+                self._scheduler.add_job(func=self.sync_all, trigger='date',
+                                        run_date=datetime.datetime.now(
+                                            tz=pytz.timezone(settings.TZ)) + datetime.timedelta(seconds=3),
+                                        name="短剧监控全量执行")
+                # 关闭一次性开关
                 self._onlyonce = False
+                # 保存配置
                 self.__update_config()
 
             # 启动任务
@@ -202,39 +201,58 @@ class ShortPlayOrganizer(_PluginBase):
                 self._scheduler.print_jobs()
                 self._scheduler.start()
 
-    def get_state(self) -> bool:
-        """返回插件状态"""
-        return self._enabled
+        if self._image:
+            self._image = False
+            self.__update_config()
+            self.__handle_image()
 
-    def scan_all_dirs(self):
-        """定时扫描所有监控目录（确保没有遗漏）"""
-        if self._scanning:
-            logger.debug("上一轮扫描尚未完成，跳过本次扫描")
+    def sync_all(self):
+        """
+        立即运行一次，全量同步目录中所有文件
+        """
+        logger.info("开始全量同步短剧监控目录 ...")
+        # 遍历所有监控目录
+        for mon_path in self._dirconf.keys():
+            # 遍历目录下所有文件
+            for file_path in SystemUtils.list_files(Path(mon_path), settings.RMT_MEDIAEXT):
+                self.__handle_file(is_directory=Path(file_path).is_dir(),
+                                   event_path=str(file_path),
+                                   source_dir=mon_path)
+        logger.info("全量同步短剧监控目录完成！")
+
+    def __handle_image(self):
+        """
+        立即运行一次，裁剪封面
+        """
+        if not self._dirconf or not self._dirconf.keys():
+            logger.error("未正确配置，停止裁剪 ...")
             return
 
-        self._scanning = True
-        try:
-            logger.info("开始定时扫描短剧整理目录...")
-            for mon_path in self._dirconf.keys():
-                if not os.path.exists(mon_path):
+        logger.info("开始全量裁剪封面 ...")
+        # 遍历所有监控目录
+        for mon_path in self._dirconf.keys():
+            cover_conf = self._coverconf.get(mon_path)
+            target_path = self._dirconf.get(mon_path)
+            # 遍历目录下所有文件
+            for file_path in SystemUtils.list_files(Path(target_path), ["poster.jpg"]):
+                try:
+                    if Path(file_path).name != "poster.jpg":
+                        continue
+                    image = Image.open(file_path)
+                    if image.width / image.height != int(str(cover_conf).split(":")[0]) / int(
+                            str(cover_conf).split(":")[1]):
+                        self.__save_poster(input_path=file_path,
+                                           poster_path=file_path,
+                                           cover_conf=cover_conf)
+                        logger.info(f"封面 {file_path} 已裁剪 比例为 {cover_conf}")
+                except Exception:
                     continue
-                # 遍历目录下所有文件
-                for file_path in SystemUtils.list_files(Path(mon_path), settings.RMT_MEDIAEXT):
-                    self.event_handler(
-                        event=None,
-                        source_dir=mon_path,
-                        event_path=str(file_path)
-                    )
-            logger.info("定时扫描短剧整理目录完成")
-        except Exception as e:
-            logger.error(f"定时扫描失败: {e}")
-        finally:
-            self._scanning = False
+        logger.info("全量裁剪封面完成！")
 
     def event_handler(self, event, source_dir: str, event_path: str):
         """
-        处理文件变化（与短剧刮削插件保持一致）
-        :param event: 事件对象（定时扫描时为None）
+        处理文件变化
+        :param event: 事件
         :param source_dir: 监控目录
         :param event_path: 事件文件路径
         """
@@ -243,14 +261,14 @@ class ShortPlayOrganizer(_PluginBase):
                 or event_path.find("/#recycle") != -1
                 or event_path.find("/.") != -1
                 or event_path.find("/@eaDir") != -1):
-            logger.debug(f"{event_path} 是回收站或隐藏的文件，跳过处理")
+            logger.info(f"{event_path} 是回收站或隐藏的文件，跳过处理")
             return
 
         # 命中过滤关键字不处理
         if self._exclude_keywords:
             for keyword in self._exclude_keywords.split("\n"):
                 if keyword and re.findall(keyword, event_path):
-                    logger.debug(f"{event_path} 命中过滤关键字 {keyword}，不处理")
+                    logger.info(f"{event_path} 命中过滤关键字 {keyword}，不处理")
                     return
 
         # 不是媒体文件不处理
@@ -259,342 +277,796 @@ class ShortPlayOrganizer(_PluginBase):
             return
 
         # 文件发生变化
-        if event:
-            logger.debug(f"变动类型 {event.event_type} 变动路径 {event_path}")
-        self._handle_file(event_path=event_path, source_dir=source_dir)
+        logger.debug(f"变动类型 {event.event_type} 变动路径 {event_path}")
+        self.__handle_file(is_directory=event.is_directory,
+                           event_path=event_path,
+                           source_dir=source_dir)
 
-    def _handle_file(self, event_path: str, source_dir: str):
-        """整理单个文件"""
+    def __handle_file(self, is_directory: bool, event_path: str, source_dir: str):
+        """
+        同步一个文件
+        :event.is_directory
+        :param event_path: 事件文件路径
+        :param source_dir: 监控目录
+        """
         try:
-            source_path = Path(event_path)
+            # 清空缓存
+            self._pt_detail_cache = None
+            
+            # 转移路径
             dest_dir = self._dirconf.get(source_dir)
-
-            if not dest_dir:
-                logger.error(f"未找到监控目录 {source_dir} 对应的目的目录")
-                return
-
-            # 获取所在目录（向上查找包含 tvshow.nfo 的目录）
-            source_folder = self._find_nfo_parent(source_path.parent)
-
-            if not source_folder:
-                logger.debug(f"未找到包含 tvshow.nfo 的目录: {event_path}")
-                return
-
-            # 查找 tvshow.nfo 文件
-            nfo_path = source_folder / "tvshow.nfo"
-            if not nfo_path.exists():
-                logger.debug(f"{source_folder} 没有 tvshow.nfo，跳过")
-                return
-
-            # 解析 nfo 获取片名
-            title = self._parse_title_from_nfo(nfo_path)
-            if not title:
-                logger.warning(f"无法从 {nfo_path} 解析片名")
-                return
-
-            # 清理片名中的非法字符
-            title = self._sanitize_filename(title)
-
-            # 构建目标文件夹路径
-            target_folder = Path(dest_dir) / title
-
             # 是否重命名
             rename_conf = self._renameconf.get(source_dir)
-
-            # 处理视频文件
-            if source_path.suffix.lower() in settings.RMT_MEDIAEXT:
-                self._organize_video_file(
-                    source_path=source_path,
-                    target_folder=target_folder,
-                    rename_conf=rename_conf
-                )
-
-            # 复制 nfo 和海报文件
-            self._copy_metadata_files(
-                source_folder=source_folder,
-                target_folder=target_folder,
-                source_path=source_path
-            )
-
-            # 发送通知
-            if self._notify:
-                self._add_to_notify_queue(title, str(source_path))
-
-        except Exception as e:
-            logger.error(f"整理文件失败 {event_path}: {str(e)}")
-
-    def _find_nfo_parent(self, start_path: Path, max_depth: int = 3) -> Optional[Path]:
-        """向上查找包含 tvshow.nfo 的目录"""
-        current = start_path
-        for _ in range(max_depth):
-            if (current / "tvshow.nfo").exists():
-                return current
-            if current.parent == current:
-                break
-            current = current.parent
-        return None
-
-    def _parse_title_from_nfo(self, nfo_path: Path) -> Optional[str]:
-        """从 nfo 文件中解析片名"""
-        try:
-            tree = ET.parse(nfo_path)
-            root = tree.getroot()
-
-            # 优先取 title 标签
-            title_elem = root.find("title")
-            if title_elem is not None and title_elem.text:
-                return title_elem.text.strip()
-
-            # 其次取 originaltitle
-            original_elem = root.find("originaltitle")
-            if original_elem is not None and original_elem.text:
-                return original_elem.text.strip()
-
-        except ET.ParseError as e:
-            logger.error(f"解析 NFO 文件失败 {nfo_path}: {str(e)}")
-        except Exception as e:
-            logger.error(f"读取 NFO 文件失败 {nfo_path}: {str(e)}")
-
-        return None
-
-    def _sanitize_filename(self, filename: str) -> str:
-        """清理文件名中的非法字符"""
-        illegal_chars = r'[\\/*?:"<>|]'
-        cleaned = re.sub(illegal_chars, '', filename)
-        cleaned = cleaned.strip('. ')
-        return cleaned
-
-    def _organize_video_file(self, source_path: Path, target_folder: Path, rename_conf: str):
-        """整理视频文件，按 Emby 标准格式命名"""
-        try:
-            # 创建目标文件夹
-            target_folder.mkdir(parents=True, exist_ok=True)
-
-            # 获取集数信息
-            episode_num = self._extract_episode_number(source_path.name)
-
-            if rename_conf == "true" and episode_num is not None:
-                # Emby 标准格式：S01E01.mp4
-                season_num = "01"
-                if episode_num < 10:
-                    episode_str = f"E0{episode_num}"
-                else:
-                    episode_str = f"E{episode_num}"
-
-                new_name = f"S{season_num}{episode_str}{source_path.suffix}"
-                target_path = target_folder / new_name
-            else:
-                # 保持原文件名
-                target_path = target_folder / source_path.name
-
-            # 转移文件
-            if target_path.exists():
-                logger.debug(f"目标文件已存在: {target_path}")
+            # 封面比例
+            cover_conf = self._coverconf.get(source_dir)
+            # 元数据
+            file_meta = MetaInfoPath(Path(event_path))
+            if not file_meta.name:
+                logger.error(f"{Path(event_path).name} 无法识别有效信息")
                 return
+            # 识别媒体信息
+            mediainfo: MediaInfo = self.chain.recognize_media(meta=file_meta)
 
-            retcode = self._transfer_file(source_path, target_path)
+            transfer_flag = False
+            title = None
+            # 走tmdb刮削
+            if mediainfo:
+                try:
+                    # 查询转移目的目录
+                    target_dir = DirectoryHelper().get_dir(mediainfo, src_path=Path(source_dir))
+                    if not target_dir or not target_dir.library_path:
+                        target_dir = TransferDirectoryConf()
+                        target_dir.library_path = dest_dir
+                        target_dir.transfer_type = self._transfer_type
+                        target_dir.renaming = True
+                        target_dir.notify = False
+                        target_dir.overwrite_mode = 'never'
+                        target_dir.library_storage = "local"
+                    else:
+                        target_dir.transfer_type = self._transfer_type
 
-            if retcode == 0:
-                logger.info(f"文件整理完成: {source_path} -> {target_path}")
-            else:
-                logger.error(f"文件整理失败: {source_path}")
+                    if not target_dir.library_path:
+                        logger.error(f"未配置监控目录 {source_dir} 的目的目录")
+                        return
 
+                    # 更新媒体图片
+                    self.chain.obtain_images(mediainfo=mediainfo)
+                    episodes_info = self.tmdbchain.tmdb_episodes(tmdbid=mediainfo.tmdb_id,
+                                                                 season=file_meta.begin_season or 1)
+                    mediainfo.category = ""
+                    # 转移
+                    transferinfo: TransferInfo = self.chain.transfer(mediainfo=mediainfo,
+                                                                     path=Path(event_path),
+                                                                     target=Path(dest_dir),
+                                                                     meta=file_meta,
+                                                                     episodes_info=episodes_info)
+                    if not transferinfo:
+                        logger.error("文件转移模块运行失败")
+                        transfer_flag = False
+                    else:
+                        self.chain.scrape_metadata(fileitem=transferinfo.target_diritem,
+                                                   meta=file_meta,
+                                                   mediainfo=mediainfo)
+                        transfer_flag = True
+                except Exception as e:
+                    print(str(e))
+                    transfer_flag = False
+                    logger.error(f"{event_path} tmdb刮削失败")
+            if not transfer_flag:
+                target_path = event_path.replace(source_dir, dest_dir)
+
+                # 目录重命名
+                if str(rename_conf) == "true" or str(rename_conf) == "false":
+                    rename_conf = bool(rename_conf)
+                    target = target_path.replace(dest_dir, "")
+                    parent = Path(Path(target).parents[0])
+                    last = target.replace(str(parent), "")
+                    if rename_conf:
+                        # 自定义识别次
+                        title, _ = WordsMatcher().prepare(str(parent))
+                        target_path = Path(dest_dir).joinpath(title + last)
+                    else:
+                        title = parent
+                else:
+                    if str(rename_conf) == "smart":
+                        target = target_path.replace(dest_dir, "")
+                        parent = Path(Path(target).parents[0])
+                        last = target.replace(str(parent), "")
+                        
+                        # 优先从 PT 站获取片名作为文件夹名
+                        src_folder_name = str(parent)
+                        
+                        # 尝试从 PT 站获取详情（包含片名）
+                        pt_detail = None
+                        try:
+                            # 用一个临时路径获取详情
+                            temp_path = Path(event_path)
+                            pt_detail = self.gen_file_thumb_from_site(title=src_folder_name, file_path=temp_path)
+                        except Exception as e:
+                            logger.debug(f"获取PT详情失败: {e}")
+                        
+                        if pt_detail and pt_detail.get("title"):
+                            title = pt_detail["title"]
+                            logger.info(f"从 PT 站获取文件夹名: {src_folder_name} -> {title}")
+                        else:
+                            # 使用 WordsMatcher 进行智能识别
+                            title, _ = WordsMatcher().prepare(src_folder_name)
+                            
+                            # 如果识别结果为空，则回退到原有的取.前的逻辑
+                            if not title:
+                                title = Path(parent).name.split(".")[0]
+                                logger.warning(f"WordsMatcher 未能识别文件夹名 '{src_folder_name}'，回退到 '{title}'")
+                            else:
+                                logger.info(f"WordsMatcher 识别文件夹名：{src_folder_name} -> {title}")
+                        
+                        target_path = Path(dest_dir).joinpath(title + last)
+                        
+                        # 保存 PT 详情供后续使用
+                        if pt_detail:
+                            self._pt_detail_cache = pt_detail
+                    else:
+                        logger.error(f"{target_path} 智能重命名失败")
+                        return
+
+                # 文件夹同步创建
+                if is_directory:
+                    # 目标文件夹不存在则创建
+                    if not Path(target_path).exists():
+                        logger.info(f"创建目标文件夹 {target_path}")
+                        os.makedirs(target_path)
+                else:
+                    # 媒体重命名
+                    try:
+                        pattern = r'S\d+E\d+'
+                        matches = re.search(pattern, Path(target_path).name)
+                        if matches:
+                            target_path = Path(
+                                target_path).parent / f"{matches.group()}{Path(Path(target_path).name).suffix}"
+                        else:
+                            print("未找到匹配的季数和集数")
+                    except Exception as e:
+                        print(e)
+
+                    # 目标文件夹不存在则创建
+                    if not Path(target_path).parent.exists():
+                        logger.info(f"创建目标文件夹 {Path(target_path).parent}")
+                        os.makedirs(Path(target_path).parent)
+
+                    # 文件：nfo、图片、视频文件
+                    if Path(target_path).exists():
+                        logger.debug(f"目标文件 {target_path} 已存在")
+                        return
+
+                    # 硬链接
+                    retcode = self.__transfer_command(file_item=Path(event_path),
+                                                      target_file=target_path,
+                                                      transfer_type=self._transfer_type)
+                    if retcode == 0:
+                        logger.info(f"文件 {event_path} 硬链接完成")
+                        
+                        # 生成 tvshow.nfo（优先使用PT站详情）
+                        if not (target_path.parent / "tvshow.nfo").exists():
+                            pt_detail = self._pt_detail_cache
+                            
+                            if pt_detail and pt_detail.get("title"):
+                                # 使用 PT 站详情生成完整 NFO
+                                self.__gen_tv_nfo_file(
+                                    dir_path=target_path.parent,
+                                    title=pt_detail.get("title", title),
+                                    plot=pt_detail.get("plot", ""),
+                                    actors=pt_detail.get("actors", ""),
+                                    category=pt_detail.get("category", ""),
+                                    episodes=pt_detail.get("episodes", "")
+                                )
+                            else:
+                                # 回退到简单版 NFO
+                                self.__gen_tv_nfo_file_simple(dir_path=target_path.parent, title=title)
+
+                        # 生成缩略图
+                        if not (target_path.parent / "poster.jpg").exists():
+                            pt_detail = self._pt_detail_cache
+                            
+                            if pt_detail and pt_detail.get("poster_path") and Path(pt_detail["poster_path"]).exists():
+                                # 直接使用下载的海报
+                                shutil.copy(pt_detail["poster_path"], target_path.parent / "poster.jpg")
+                                logger.info(f"已复制海报: {target_path.parent / 'poster.jpg'}")
+                                # 裁剪封面（如果需要）
+                                if cover_conf:
+                                    self.__save_poster(input_path=target_path.parent / "poster.jpg",
+                                                       poster_path=target_path.parent / "poster.jpg",
+                                                       cover_conf=cover_conf)
+                            else:
+                                # 使用ffmpeg截取缩略图
+                                thumb_path = self.gen_file_thumb(title=title,
+                                                                 rename_conf=rename_conf,
+                                                                 file_path=target_path)
+                                if thumb_path and Path(thumb_path).exists():
+                                    self.__save_poster(input_path=thumb_path,
+                                                       poster_path=target_path.parent / "poster.jpg",
+                                                       cover_conf=cover_conf)
+                                    if (target_path.parent / "poster.jpg").exists():
+                                        logger.info(f"{target_path.parent / 'poster.jpg'} 缩略图已生成")
+                                    thumb_path.unlink()
+                                else:
+                                    # 检查是否有缩略图
+                                    thumb_files = SystemUtils.list_files(directory=target_path.parent,
+                                                                         extensions=[".jpg"])
+                                    if thumb_files:
+                                        # 生成poster
+                                        for thumb in thumb_files:
+                                            self.__save_poster(input_path=thumb,
+                                                               poster_path=target_path.parent / "poster.jpg",
+                                                               cover_conf=cover_conf)
+                                            break
+                                        # 删除多余jpg
+                                        for thumb in thumb_files:
+                                            Path(thumb).unlink()
+                    else:
+                        logger.error(f"文件 {event_path} 硬链接失败，错误码：{retcode}")
+            if self._notify:
+                # 发送消息汇总
+                media_list = self._medias.get(mediainfo.title_year if mediainfo else title) or {}
+                if media_list:
+                    media_files = media_list.get("files") or []
+                    if media_files:
+                        if str(event_path) not in media_files:
+                            media_files.append(str(event_path))
+                    else:
+                        media_files = [str(event_path)]
+                    media_list = {
+                        "files": media_files,
+                        "time": datetime.datetime.now()
+                    }
+                else:
+                    media_list = {
+                        "files": [str(event_path)],
+                        "time": datetime.datetime.now()
+                    }
+                self._medias[mediainfo.title_year if mediainfo else title] = media_list
         except Exception as e:
-            logger.error(f"整理视频文件失败: {str(e)}")
-
-    def _extract_episode_number(self, filename: str) -> Optional[int]:
-        """从文件名中提取集数"""
-        # 匹配 S01E01 格式
-        match = re.search(r'[sS](\d+)[eE](\d+)', filename)
-        if match:
-            return int(match.group(2))
-
-        # 匹配 E01 格式
-        match = re.search(r'[eE](\d+)', filename)
-        if match:
-            return int(match.group(1))
-
-        # 匹配 第01集 格式
-        match = re.search(r'第(\d+)集', filename)
-        if match:
-            return int(match.group(1))
-
-        # 匹配 01 开头
-        match = re.search(r'(\d{2})(?:[^0-9]|$)', filename)
-        if match and int(match.group(1)) <= 99:
-            return int(match.group(1))
-
-        return None
-
-    def _copy_metadata_files(self, source_folder: Path, target_folder: Path, source_path: Path):
-        """复制 nfo 和海报文件到目标文件夹"""
-        target_folder.mkdir(parents=True, exist_ok=True)
-
-        # 复制 tvshow.nfo
-        source_nfo = source_folder / "tvshow.nfo"
-        target_nfo = target_folder / "tvshow.nfo"
-        if source_nfo.exists() and not target_nfo.exists():
-            self._transfer_file(source_nfo, target_nfo)
-            logger.debug(f"复制 NFO: {target_nfo}")
-
-        # 复制海报
-        target_poster = target_folder / "poster.jpg"
-        for poster_name in ["poster.jpg", "folder.jpg", "cover.jpg", "thumb.jpg"]:
-            source_img = source_folder / poster_name
-            if source_img.exists() and not target_poster.exists():
-                self._transfer_file(source_img, target_poster)
-                logger.debug(f"复制海报: {source_img} -> {target_poster}")
-                break
-
-    def _transfer_file(self, source: Path, target: Path) -> int:
-        """转移文件"""
-        with lock:
-            if self._transfer_type == "link":
-                retcode, retmsg = SystemUtils.link(source, target)
-            elif self._transfer_type == "softlink":
-                retcode, retmsg = SystemUtils.softlink(source, target)
-            elif self._transfer_type == "move":
-                retcode, retmsg = SystemUtils.move(source, target)
-            else:
-                retcode, retmsg = SystemUtils.copy(source, target)
-
-            if retcode != 0:
-                logger.error(retmsg)
-            return retcode
-
-    def _add_to_notify_queue(self, title: str, file_path: str):
-        """添加到通知队列"""
-        media_list = self._medias.get(title) or {}
-        if media_list:
-            files = media_list.get("files", [])
-            if file_path not in files:
-                files.append(file_path)
-            media_list = {
-                "files": files,
-                "time": datetime.datetime.now()
-            }
-        else:
-            media_list = {
-                "files": [file_path],
-                "time": datetime.datetime.now()
-            }
-        self._medias[title] = media_list
+            logger.error(f"event_handler_created error: {e}")
+            print(str(e))
 
     def send_msg(self):
-        """发送通知消息"""
-        if not self._notify or not self._medias:
-            return
+        """
+        定时检查是否有媒体处理完，发送统一消息
+        """
+        if self._notify:
+            if not self._medias or not self._medias.keys():
+                return
 
-        for title in list(self._medias.keys()):
-            media_list = self._medias.get(title)
-            if not media_list:
+            # 遍历检查是否已刮削完，发送消息
+            for medis_title_year in list(self._medias.keys()):
+                media_list = self._medias.get(medis_title_year)
+                logger.info(f"开始处理媒体 {medis_title_year} 消息")
+
+                if not media_list:
+                    continue
+
+                # 获取最后更新时间
+                last_update_time = media_list.get("time")
+                media_files = media_list.get("files")
+                if not last_update_time or not media_files:
+                    continue
+
+                # 判断剧集最后更新时间距现在是已超过10秒或者电影，发送消息
+                if (datetime.datetime.now() - last_update_time).total_seconds() > int(self._interval):
+                    # 发送消息
+                    self.post_message(mtype=NotificationType.Organize,
+                                      title=f"{medis_title_year} 共{len(media_files)}集已入库",
+                                      text="类别：短剧")
+                    # 发送完消息，移出key
+                    del self._medias[medis_title_year]
+                    continue
+
+    @staticmethod
+    def __transfer_command(file_item: Path, target_file: Path, transfer_type: str) -> int:
+        """
+        使用系统命令处理单个文件
+        :param file_item: 文件路径
+        :param target_file: 目标文件路径
+        :param transfer_type: RmtMode转移方式
+        """
+        with lock:
+
+            # 转移
+            if transfer_type == 'link':
+                # 硬链接
+                retcode, retmsg = SystemUtils.link(file_item, target_file)
+            elif transfer_type == 'softlink':
+                # 软链接
+                retcode, retmsg = SystemUtils.softlink(file_item, target_file)
+            elif transfer_type == 'move':
+                # 移动
+                retcode, retmsg = SystemUtils.move(file_item, target_file)
+            else:
+                # 复制
+                retcode, retmsg = SystemUtils.copy(file_item, target_file)
+
+        if retcode != 0:
+            logger.error(retmsg)
+
+        return retcode
+
+    def __save_poster(self, input_path, poster_path, cover_conf):
+        """
+        截取图片做封面
+        """
+        try:
+            image = Image.open(input_path)
+
+            # 需要截取的长宽比（比如 16:9）
+            if not cover_conf:
+                target_ratio = 2 / 3
+            else:
+                covers = cover_conf.split(":")
+                target_ratio = int(covers[0]) / int(covers[1])
+
+            # 获取原始图片的长宽比
+            original_ratio = image.width / image.height
+
+            # 计算截取后的大小
+            if original_ratio > target_ratio:
+                new_height = image.height
+                new_width = int(new_height * target_ratio)
+            else:
+                new_width = image.width
+                new_height = int(new_width / target_ratio)
+
+            # 计算截取的位置
+            left = (image.width - new_width) // 2
+            top = (image.height - new_height) // 2
+            right = left + new_width
+            bottom = top + new_height
+
+            # 截取图片
+            cropped_image = image.crop((left, top, right, bottom))
+
+            # 保存截取后的图片
+            cropped_image.save(poster_path)
+        except Exception as e:
+            print(str(e))
+
+    def __gen_tv_nfo_file(self, dir_path: Path, title: str, plot: str = "", 
+                          actors: str = "", category: str = "", episodes: str = ""):
+        """
+        生成完整的电视剧NFO文件（增强版）
+        """
+        logger.info(f"正在生成电视剧NFO文件：{dir_path.name}")
+        
+        doc = minidom.Document()
+        root = DomUtils.add_node(doc, doc, "tvshow")
+        
+        # 标题
+        DomUtils.add_node(doc, root, "title", title)
+        DomUtils.add_node(doc, root, "originaltitle", title)
+        
+        # 简介
+        if plot:
+            DomUtils.add_node(doc, root, "plot", plot)
+        
+        # 类别（按/分割）
+        if category:
+            for genre in category.split("/"):
+                genre = genre.strip()
+                if genre:
+                    DomUtils.add_node(doc, root, "genre", genre)
+        
+        # 集数
+        if episodes:
+            DomUtils.add_node(doc, root, "episode", str(episodes))
+        
+        # 季数（短剧默认-1）
+        DomUtils.add_node(doc, root, "season", "-1")
+        
+        # 演员
+        if actors:
+            for actor_name in actors.split("/"):
+                actor_name = actor_name.strip()
+                if actor_name:
+                    actor_node = DomUtils.add_node(doc, root, "actor")
+                    DomUtils.add_node(doc, actor_node, "name", actor_name)
+                    DomUtils.add_node(doc, actor_node, "type", "Actor")
+        
+        # 保存
+        self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
+
+    def __gen_tv_nfo_file_simple(self, dir_path: Path, title: str):
+        """
+        生成简单的电视剧NFO文件（回退版本）
+        """
+        logger.info(f"正在生成简单版电视剧NFO文件：{dir_path.name}")
+        doc = minidom.Document()
+        root = DomUtils.add_node(doc, doc, "tvshow")
+        
+        DomUtils.add_node(doc, root, "title", title)
+        DomUtils.add_node(doc, root, "originaltitle", title)
+        DomUtils.add_node(doc, root, "season", "-1")
+        DomUtils.add_node(doc, root, "episode", "-1")
+        
+        self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
+
+    def __save_nfo(self, doc, file_path: Path):
+        """
+        保存NFO
+        """
+        xml_str = doc.toprettyxml(indent="  ", encoding="utf-8")
+        file_path.write_bytes(xml_str)
+        logger.info(f"NFO文件已保存：{file_path}")
+
+    def gen_file_thumb_from_site(self, title: str, file_path: Path) -> Optional[Dict]:
+        """
+        从agsv、萝莉站或ptskit查询封面和元数据
+        返回包含海报和完整详情的字典
+        """
+        try:
+            detail = None
+            # 1. 先从 AGSV 查询
+            domain = "agsvpt.com"
+            site = SiteOper().get_by_domain(domain)
+            index = SitesHelper().get_indexer(domain)
+            if site:
+                req_url = f"https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=419&search={title}"
+                image_xpath = "//*[@id='kdescr']/img[1]/@src"
+                logger.info(f"开始检索 {site.name} {title}")
+                detail = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+            
+            # 2. 再从 萝莉站 查询
+            if not detail or not detail.get("poster"):
+                domain = "ilolicon.com"
+                site = SiteOper().get_by_domain(domain)
+                index = SitesHelper().get_indexer(domain)
+                if site:
+                    req_url = f"https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=402&search={title}"
+                    image_xpath = "//*[@id='kdescr']/img[1]/@src"
+                    logger.info(f"开始检索 {site.name} {title}")
+                    detail = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+
+            # 3. 最后从 ptskit 查询
+            if not detail or not detail.get("poster"):
+                domain = "ptskit.org"
+                site = SiteOper().get_by_domain(domain)
+                index = SitesHelper().get_indexer(domain)
+                if site:
+                    req_url = f"https://www.ptskit.org/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&tag_id=238&search={title}"
+                    image_xpath = "//*[@id='kdescr']/img/@src"
+                    logger.info(f"开始检索 {site.name} {title}")
+                    detail = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+
+            if not detail or not detail.get("poster"):
+                logger.error(f"检索站点 {title} 封面失败")
+                return None
+
+            # 下载图片保存
+            thumb_path = file_path.with_name(file_path.stem + "-site.jpg")
+            if self.__save_image(url=detail["poster"], file_path=thumb_path):
+                logger.info(f"{file_path} 缩略图已生成：{thumb_path}")
+                detail["poster_path"] = str(thumb_path)
+                return detail
+            
+            return None
+        except Exception as e:
+            logger.error(f"检索站点 {title} 失败 {str(e)}")
+            return None
+
+    def __get_site_torrents(self, url: str, site, image_xpath, index) -> Optional[Dict]:
+        """
+        查询站点资源，返回包含海报和完整详情的字典
+        """
+        page_source = self.__get_page_source(url=url, site=site)
+        if not page_source:
+            logger.error(f"请求站点 {site.name} 失败")
+            return None
+        _spider = SiteSpider(indexer=index, page=1)
+        torrents = _spider.parse(page_source)
+        if not torrents:
+            logger.error(f"未检索到站点 {site.name} 资源")
+            return None
+
+        # 获取种子详情页
+        torrent_detail_source = self.__get_page_source(url=torrents[0].get("page_url"), site=site)
+        if not torrent_detail_source:
+            logger.error(f"请求种子详情页失败 {torrents[0].get('page_url')}")
+            return None
+
+        html = etree.HTML(torrent_detail_source)
+        if not html:
+            logger.error(f"请求种子详情页失败 {torrents[0].get('page_url')}")
+            return None
+
+        # 提取海报
+        image = html.xpath(image_xpath)[0] if html.xpath(image_xpath) else ""
+        
+        # 提取 kdescr 区域的所有文本节点
+        kdescr_texts = html.xpath('//*[@id="kdescr"]/text()')
+        
+        detail = {
+            "poster": str(image) if image else "",
+            "title": "",
+            "category": "",
+            "episodes": "",
+            "actors": "",
+            "plot": ""
+        }
+        
+        # 解析各个字段
+        for text in kdescr_texts:
+            text = text.strip()
+            if not text:
                 continue
+            if text.startswith("片　　名"):
+                detail["title"] = text.replace("片　　名", "").strip()
+                logger.debug(f"提取片名: {detail['title']}")
+            elif text.startswith("类　　别"):
+                detail["category"] = text.replace("类　　别", "").strip()
+                logger.debug(f"提取类别: {detail['category']}")
+            elif text.startswith("集　　数"):
+                detail["episodes"] = text.replace("集　　数", "").strip()
+                logger.debug(f"提取集数: {detail['episodes']}")
+            elif text.startswith("主　　演"):
+                detail["actors"] = text.replace("主　　演", "").strip()
+                logger.debug(f"提取主演: {detail['actors'][:50]}...")
+        
+        # 提取简介（在简　　介之后、引用之前的内容）
+        plot_elements = html.xpath('//*[@id="kdescr"]')
+        if plot_elements:
+            # 获取所有文本
+            all_text = etree.tostring(plot_elements[0], method='text', encoding='unicode')
+            # 查找 "简　　介" 的位置
+            if "简　　介" in all_text:
+                plot_start = all_text.find("简　　介")
+                # 从简　　介之后开始截取
+                plot_text = all_text[plot_start + 4:]
+                
+                # 查找 "引用" 的位置，如果存在则截取到引用之前
+                if "引用" in plot_text:
+                    ref_pos = plot_text.find("引用")
+                    plot_text = plot_text[:ref_pos]
+                
+                # 清理文本：去除多余空白和换行
+                plot_text = re.sub(r'\s+', ' ', plot_text).strip()
+                
+                # 取前1000字符作为简介
+                if plot_text:
+                    detail["plot"] = plot_text[:1000]
+                    logger.debug(f"提取简介长度: {len(detail['plot'])}, 内容: {detail['plot'][:100]}...")
+        
+        logger.info(f"解析PT详情: title={detail['title']}, category={detail['category']}, episodes={detail['episodes']}")
+        
+        return detail
 
-            last_time = media_list.get("time")
-            files = media_list.get("files", [])
+    def __get_page_source(self, url: str, site):
+        """
+        获取页面资源
+        """
+        ret = RequestUtils(
+            cookies=site.cookie,
+            timeout=30,
+        ).get_res(url, allow_redirects=True)
+        if ret is not None:
+            # 使用chardet检测字符编码
+            raw_data = ret.content
+            if raw_data:
+                try:
+                    result = chardet.detect(raw_data)
+                    encoding = result['encoding']
+                    # 解码为字符串
+                    page_source = raw_data.decode(encoding)
+                except Exception as e:
+                    # 探测utf-8解码
+                    if re.search(r"charset=\"?utf-8\"?", ret.text, re.IGNORECASE):
+                        ret.encoding = "utf-8"
+                    else:
+                        ret.encoding = ret.apparent_encoding
+                    page_source = ret.text
+            else:
+                page_source = ret.text
+        else:
+            page_source = ""
 
-            if not last_time or not files:
-                continue
+        return page_source
 
-            # 延迟发送，等待文件完整写入
-            if (datetime.datetime.now() - last_time).total_seconds() > int(self._interval):
-                self.post_message(
-                    mtype=NotificationType.Organize,
-                    title=f"{title} 已入库",
-                    text=f"共 {len(files)} 个文件\n转移方式: {self._transfer_type}"
-                )
-                del self._medias[title]
+    def gen_file_thumb(self, title: str, file_path: Path, rename_conf: str):
+        """
+        处理一个文件，生成缩略图
+        """
+        # 智能重命名时从站点检索（已在__handle_file中处理，这里只做ffmpeg截取）
+        # 单线程处理
+        with ffmpeg_lock:
+            try:
+                thumb_path = file_path.with_name(file_path.stem + "-thumb.jpg")
+                if thumb_path.exists():
+                    logger.info(f"缩略图已存在：{thumb_path}")
+                    return thumb_path
+                self.get_thumb(video_path=str(file_path),
+                               image_path=str(thumb_path),
+                               frames=self._timeline)
+                if Path(thumb_path).exists():
+                    logger.info(f"{file_path} 缩略图已生成：{thumb_path}")
+                    return thumb_path
+            except Exception as err:
+                logger.error(f"FFmpeg处理文件 {file_path} 时发生错误：{str(err)}")
+                return None
+
+    @staticmethod
+    def get_thumb(video_path: str, image_path: str, frames: str = None):
+        """
+        使用ffmpeg从视频文件中截取缩略图
+        """
+        if not frames:
+            frames = "00:00:10"
+        if not video_path or not image_path:
+            return False
+        cmd = 'ffmpeg -y -i "{video_path}" -ss {frames} -frames 1 "{image_path}"'.format(
+            video_path=video_path,
+            frames=frames,
+            image_path=image_path)
+        result = SystemUtils.execute(cmd)
+        if result:
+            return True
+        return False
+
+    @retry(RequestException, logger=logger)
+    def __save_image(self, url: str, file_path: Path):
+        """
+        下载图片并保存
+        """
+        try:
+            logger.info(f"正在下载{file_path.stem}图片：{url} ...")
+            r = RequestUtils().get_res(url=url, raise_exception=True)
+            if r:
+                file_path.write_bytes(r.content)
+                logger.info(f"图片已保存：{file_path}")
+                return True
+            else:
+                logger.info(f"{file_path.stem}图片下载失败，请检查网络连通性")
+                return False
+        except RequestException as err:
+            raise err
+        except Exception as err:
+            logger.error(f"{file_path.stem}图片下载失败：{str(err)}")
+            return False
 
     def __update_config(self):
-        """更新配置"""
+        """
+        更新配置
+        """
         self.update_config({
             "enabled": self._enabled,
-            "onlyonce": self._onlyonce,
-            "monitor_confs": self._monitor_confs,
-            "transfer_type": self._transfer_type,
             "exclude_keywords": self._exclude_keywords,
-            "notify": self._notify,
+            "transfer_type": self._transfer_type,
+            "onlyonce": self._onlyonce,
             "interval": self._interval,
-            "scan_interval": self._scan_interval
+            "notify": self._notify,
+            "image": self._image,
+            "monitor_confs": self._monitor_confs
         })
 
+    def get_state(self) -> bool:
+        return self._enabled
+
+    @staticmethod
+    def get_command() -> List[Dict[str, Any]]:
+        pass
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        pass
+
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        """返回配置页 JSON 和默认配置模型"""
+        """
+        拼装插件配置页面，需要返回两块数据：1、页面配置；2、数据结构
+        """
         return [
             {
-                "component": "VForm",
-                "content": [
+                'component': 'VForm',
+                'content': [
                     {
-                        "component": "VRow",
-                        "content": [
+                        'component': 'VRow',
+                        'content': [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 2},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 3
+                                },
+                                'content': [
                                     {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "enabled",
-                                            "label": "启用插件"
+                                        'component': 'VSwitch',
+                                        'props': {
+                                            'model': 'enabled',
+                                            'label': '启用插件',
                                         }
                                     }
                                 ]
                             },
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 2},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 3
+                                },
+                                'content': [
                                     {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "onlyonce",
-                                            "label": "立即运行一次"
+                                        'component': 'VSwitch',
+                                        'props': {
+                                            'model': 'onlyonce',
+                                            'label': '立即运行一次',
                                         }
                                     }
                                 ]
                             },
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 2},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 3
+                                },
+                                'content': [
                                     {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "notify",
-                                            "label": "发送通知"
+                                        'component': 'VSwitch',
+                                        'props': {
+                                            'model': 'image',
+                                            'label': '封面裁剪',
                                         }
                                     }
                                 ]
                             },
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 3
+                                },
+                                'content': [
                                     {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "transfer_type",
-                                            "label": "转移方式",
-                                            "items": [
-                                                {"title": "移动", "value": "move"},
-                                                {"title": "复制", "value": "copy"},
-                                                {"title": "硬链接", "value": "link"},
-                                                {"title": "软链接", "value": "softlink"}
+                                        'component': 'VSwitch',
+                                        'props': {
+                                            'model': 'notify',
+                                            'label': '发送通知',
+                                        }
+                                    }
+                                ]
+                            },
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VSelect',
+                                        'props': {
+                                            'model': 'transfer_type',
+                                            'label': '转移方式',
+                                            'items': [
+                                                {'title': '移动', 'value': 'move'},
+                                                {'title': '复制', 'value': 'copy'},
+                                                {'title': '硬链接', 'value': 'link'},
+                                                {'title': '软链接', 'value': 'softlink'},
                                             ]
                                         }
                                     }
                                 ]
                             },
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
                                     {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "interval",
-                                            "label": "入库消息延迟（秒）",
-                                            "placeholder": "10"
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'interval',
+                                            'label': '入库消息延迟',
+                                            'placeholder': '10'
                                         }
                                     }
                                 ]
@@ -602,19 +1074,21 @@ class ShortPlayOrganizer(_PluginBase):
                         ]
                     },
                     {
-                        "component": "VRow",
-                        "content": [
+                        'component': 'VRow',
+                        'content': [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12
+                                },
+                                'content': [
                                     {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "scan_interval",
-                                            "label": "定时扫描间隔（秒）",
-                                            "placeholder": "60",
-                                            "hint": "作为监控的补充，设为0禁用"
+                                        'component': 'VTextarea',
+                                        'props': {
+                                            'model': 'monitor_confs',
+                                            'label': '监控目录',
+                                            'rows': 5,
+                                            'placeholder': '监控方式#监控目录#目的目录#是否重命名#封面比例'
                                         }
                                     }
                                 ]
@@ -622,19 +1096,21 @@ class ShortPlayOrganizer(_PluginBase):
                         ]
                     },
                     {
-                        "component": "VRow",
-                        "content": [
+                        'component': 'VRow',
+                        'content': [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                },
+                                'content': [
                                     {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "monitor_confs",
-                                            "label": "监控目录配置",
-                                            "rows": 5,
-                                            "placeholder": "监控方式#监控目录#目的目录#是否重命名（每行一条）\nauto#/downloads/短剧#/media/短剧#true\ncompatibility#/mnt/smb/share#/media/短剧#false"
+                                        'component': 'VTextarea',
+                                        'props': {
+                                            'model': 'exclude_keywords',
+                                            'label': '排除关键词',
+                                            'rows': 2,
+                                            'placeholder': '每一行一个关键词'
                                         }
                                     }
                                 ]
@@ -642,19 +1118,21 @@ class ShortPlayOrganizer(_PluginBase):
                         ]
                     },
                     {
-                        "component": "VRow",
-                        "content": [
+                        'component': 'VRow',
+                        'content': [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                },
+                                'content': [
                                     {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "exclude_keywords",
-                                            "label": "排除关键词",
-                                            "rows": 2,
-                                            "placeholder": "每行一个关键词，支持正则表达式"
+                                        'component': 'VAlert',
+                                        'props': {
+                                            'type': 'info',
+                                            'variant': 'tonal',
+                                            'text': '配置说明：'
+                                                    'https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/docs/ShortPlayMonitor.md'
                                         }
                                     }
                                 ]
@@ -662,41 +1140,42 @@ class ShortPlayOrganizer(_PluginBase):
                         ]
                     },
                     {
-                        "component": "VRow",
-                        "content": [
+                        'component': 'VRow',
+                        'content': [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                },
+                                'content': [
                                     {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "info",
-                                            "variant": "tonal"
-                                        },
-                                        "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"style": "font-weight: bold; margin-bottom: 8px;"},
-                                                "text": "配置说明"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "1. 监控方式：auto（实时）或 compatibility（兼容/轮询）"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "2. 实时监控依赖系统文件事件，网络挂载请使用 compatibility 模式"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "3. 定时扫描作为监控的补充，确保文件不会被遗漏"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "4. 格式示例：auto#/downloads/短剧#/media/短剧#true"
-                                            }
-                                        ]
+                                        'component': 'VAlert',
+                                        'props': {
+                                            'type': 'info',
+                                            'variant': 'tonal',
+                                            'text': '默认从tmdb刮削，刮削失败则从PT站刮削。当重命名方式为smart时，如站点管理已配置AGSV、ilolicon、ptskit，则优先从站点获取短剧封面和元数据，生成的NFO包含完整的类别、集数、主演、简介等信息。'
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VAlert',
+                                        'props': {
+                                            'type': 'info',
+                                            'variant': 'tonal',
+                                            'text': '开启封面裁剪后，会把封面裁剪成配置的比例。'
+                                        }
                                     }
                                 ]
                             }
@@ -707,51 +1186,21 @@ class ShortPlayOrganizer(_PluginBase):
         ], {
             "enabled": False,
             "onlyonce": False,
-            "monitor_confs": "",
-            "transfer_type": "link",
-            "exclude_keywords": "",
+            "image": False,
             "notify": False,
             "interval": 10,
-            "scan_interval": 60
+            "monitor_confs": "",
+            "exclude_keywords": "",
+            "transfer_type": "link"
         }
 
     def get_page(self) -> List[dict]:
-        """返回详情页 JSON"""
-        return [
-            {
-                "component": "VCard",
-                "content": [
-                    {
-                        "component": "VCardText",
-                        "props": {
-                            "class": "pa-4"
-                        },
-                        "content": [
-                            {
-                                "component": "div",
-                                "content": [
-                                    f"监控目录: {self._monitor_confs or '未配置'}",
-                                    f"转移方式: {self._transfer_type}",
-                                    f"发送通知: {'是' if self._notify else '否'}",
-                                    f"定时扫描间隔: {self._scan_interval} 秒"
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]
-
-    def get_command(self) -> List[Dict[str, Any]]:
-        """没有远程命令时直接返回空列表"""
-        return []
-
-    def get_api(self) -> List[Dict[str, Any]]:
-        """没有插件 API 时直接返回空列表"""
-        return []
+        pass
 
     def stop_service(self):
-        """停止服务"""
+        """
+        退出插件
+        """
         try:
             if self._scheduler:
                 self._scheduler.remove_all_jobs()
@@ -759,7 +1208,7 @@ class ShortPlayOrganizer(_PluginBase):
                     self._scheduler.shutdown()
                 self._scheduler = None
         except Exception as e:
-            logger.error(f"退出插件失败：{str(e)}")
+            logger.error("退出插件失败：%s" % str(e))
 
         if self._observer:
             for observer in self._observer:
@@ -767,5 +1216,5 @@ class ShortPlayOrganizer(_PluginBase):
                     observer.stop()
                     observer.join()
                 except Exception as e:
-                    logger.debug(str(e))
-            self._observer = []
+                    print(str(e))
+        self._observer = []
