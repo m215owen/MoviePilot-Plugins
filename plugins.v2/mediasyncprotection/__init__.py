@@ -18,7 +18,7 @@ class MediaSyncProtection(_PluginBase):
     plugin_desc = "接收Emby Webhook，收藏时从刷流插件移除种子，删除媒体时标记种子待删除（由刷流插件执行）"
     plugin_icon = "sync_file.png"
     plugin_version = "1.0.0"
-    plugin_author = AI"
+    plugin_author = "AI"
     plugin_config_prefix = "mediasyncprotection_"
     plugin_order = 24
     auth_level = 2
