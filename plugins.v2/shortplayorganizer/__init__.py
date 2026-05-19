@@ -1,7 +1,6 @@
 import datetime
 import os
 import re
-import shutil
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -52,6 +51,7 @@ class FileMonitorHandler(FileSystemEventHandler):
 class ShortPlayOrganizer(_PluginBase):
     """短剧整理器插件"""
 
+    # 插件元数据
     plugin_name = "短剧整理器"
     plugin_desc = "读取tvshow.nfo中的片名，按Emby标准格式整理短剧文件"
     plugin_icon = "Amule_B.png"
@@ -72,6 +72,7 @@ class ShortPlayOrganizer(_PluginBase):
     _notify = False
     _interval = 10
     _scan_interval = 60
+    _scan_enabled = True
     _dirconf = {}
     _renameconf = {}
     _medias = {}
@@ -82,8 +83,6 @@ class ShortPlayOrganizer(_PluginBase):
 
     def init_plugin(self, config: dict = None):
         """初始化插件"""
-        logger.info(f"短剧整理器初始化开始")
-        
         if config:
             self._enabled = config.get("enabled", False)
             self._onlyonce = config.get("onlyonce", False)
@@ -91,37 +90,9 @@ class ShortPlayOrganizer(_PluginBase):
             self._transfer_type = config.get("transfer_type", "link")
             self._exclude_keywords = config.get("exclude_keywords", "")
             self._notify = config.get("notify", False)
-            
-            # 类型转换：防止配置存储为字符串
-            interval = config.get("interval")
-            if interval is not None:
-                try:
-                    self._interval = int(interval)
-                except (ValueError, TypeError):
-                    self._interval = 10
-            else:
-                self._interval = 10
-                
-            scan_interval = config.get("scan_interval")
-            if scan_interval is not None:
-                try:
-                    self._scan_interval = int(scan_interval)
-                except (ValueError, TypeError):
-                    self._scan_interval = 60
-            else:
-                self._scan_interval = 60
-        else:
-            # 默认值
-            self._enabled = False
-            self._onlyonce = False
-            self._monitor_confs = ""
-            self._transfer_type = "link"
-            self._exclude_keywords = ""
-            self._notify = False
-            self._interval = 10
-            self._scan_interval = 60
-        
-        logger.info(f"短剧整理器配置: enabled={self._enabled}, scan_interval={self._scan_interval}")
+            self._interval = config.get("interval", 10)
+            self._scan_interval = config.get("scan_interval", 60)
+            self._scan_enabled = config.get("scan_enabled", True)
 
         # 清空配置
         self._dirconf = {}
@@ -143,7 +114,7 @@ class ShortPlayOrganizer(_PluginBase):
                 )
 
             # 定时扫描任务
-            if self._enabled and self._scan_interval > 0:
+            if self._enabled and self._scan_enabled and self._scan_interval > 0:
                 self._scheduler.add_job(
                     func=self.scan_all_dirs,
                     trigger=IntervalTrigger(seconds=self._scan_interval),
@@ -157,7 +128,7 @@ class ShortPlayOrganizer(_PluginBase):
                 for monitor_conf in monitor_confs:
                     if not monitor_conf or not monitor_conf.strip():
                         continue
-                    
+
                     parts = monitor_conf.split("#")
                     if len(parts) < 3:
                         logger.error(f"{monitor_conf} 格式错误，应为：监控方式#监控目录#目的目录#是否重命名")
@@ -171,43 +142,8 @@ class ShortPlayOrganizer(_PluginBase):
                     self._dirconf[source_dir] = target_dir
                     self._renameconf[source_dir] = rename_conf
 
-                    # 检查媒体库目录是不是下载目录的子目录
                     if self._enabled:
-                        try:
-                            if target_dir and Path(target_dir).is_relative_to(Path(source_dir)):
-                                logger.warning(f"{target_dir} 是下载目录 {source_dir} 的子目录，无法监控")
-                                self.systemmessage.put(f"{target_dir} 是下载目录 {source_dir} 的子目录，无法监控")
-                                continue
-                        except Exception as e:
-                            logger.debug(str(e))
-
-                        try:
-                            if mode == "compatibility":
-                                observer = PollingObserver(timeout=10)
-                                logger.info(f"{source_dir} 使用兼容模式（轮询）")
-                            else:
-                                observer = Observer(timeout=10)
-                                logger.info(f"{source_dir} 使用实时监控模式")
-                            
-                            self._observer.append(observer)
-                            observer.schedule(
-                                FileMonitorHandler(source_dir, self),
-                                path=source_dir,
-                                recursive=True
-                            )
-                            observer.daemon = True
-                            observer.start()
-                            logger.info(f"{source_dir} 的目录监控服务启动")
-                        except Exception as e:
-                            err_msg = str(e)
-                            if "inotify" in err_msg and "reached" in err_msg:
-                                logger.warning(
-                                    f"目录监控服务启动出现异常：{err_msg}，请在宿主机上执行："
-                                    "echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p"
-                                )
-                            else:
-                                logger.error(f"{source_dir} 启动目录监控失败：{err_msg}")
-                            self.systemmessage.put(f"{source_dir} 启动目录监控失败：{err_msg}")
+                        self._start_monitor(mode, source_dir)
 
             # 全量同步
             if self._onlyonce:
@@ -225,10 +161,40 @@ class ShortPlayOrganizer(_PluginBase):
 
             # 启动任务
             if self._scheduler.get_jobs():
-                self._scheduler.print_jobs()
                 self._scheduler.start()
-        else:
-            logger.info("短剧整理器插件未启用")
+
+    def _start_monitor(self, mode: str, source_dir: str):
+        """启动目录监控"""
+        try:
+            if not os.path.exists(source_dir):
+                logger.warning(f"监控目录不存在: {source_dir}")
+                return
+
+            if mode == "compatibility":
+                observer = PollingObserver(timeout=10)
+                logger.info(f"{source_dir} 使用兼容模式（轮询）")
+            else:
+                observer = Observer(timeout=10)
+                logger.info(f"{source_dir} 使用实时监控模式")
+
+            self._observer.append(observer)
+            observer.schedule(
+                FileMonitorHandler(source_dir, self),
+                path=source_dir,
+                recursive=True
+            )
+            observer.daemon = True
+            observer.start()
+            logger.info(f"{source_dir} 的目录监控服务启动")
+        except Exception as e:
+            err_msg = str(e)
+            if "inotify" in err_msg and "reached" in err_msg:
+                logger.warning(
+                    f"目录监控服务启动出现异常：{err_msg}，请在宿主机上执行："
+                    "echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p"
+                )
+            else:
+                logger.error(f"{source_dir} 启动目录监控失败：{err_msg}")
 
     def get_state(self) -> bool:
         """返回插件状态"""
@@ -237,7 +203,6 @@ class ShortPlayOrganizer(_PluginBase):
     def scan_all_dirs(self):
         """定时扫描所有监控目录"""
         if self._scanning:
-            logger.debug("上一轮扫描尚未完成，跳过本次扫描")
             return
 
         self._scanning = True
@@ -245,7 +210,6 @@ class ShortPlayOrganizer(_PluginBase):
             logger.info("开始定时扫描短剧整理目录...")
             for mon_path in self._dirconf.keys():
                 if not os.path.exists(mon_path):
-                    logger.warning(f"监控目录不存在: {mon_path}")
                     continue
                 self._scan_directory(mon_path)
             logger.info("定时扫描短剧整理目录完成")
@@ -286,25 +250,18 @@ class ShortPlayOrganizer(_PluginBase):
                 or event_path.find("/#recycle") != -1
                 or event_path.find("/.") != -1
                 or event_path.find("/@eaDir") != -1):
-            logger.debug(f"{event_path} 是回收站或隐藏的文件，跳过处理")
             return
 
         # 命中过滤关键字不处理
         if self._exclude_keywords:
             for keyword in self._exclude_keywords.split("\n"):
                 if keyword and keyword in event_path:
-                    logger.debug(f"{event_path} 命中排除关键词 {keyword}，跳过处理")
                     return
 
         # 只处理媒体文件
         if Path(event_path).suffix.lower() not in settings.RMT_MEDIAEXT:
             return
 
-        if event:
-            logger.debug(f"变动类型 {event.event_type} 变动路径 {event_path}")
-        else:
-            logger.debug(f"扫描到文件: {event_path}")
-        
         self._handle_file(event_path=event_path, source_dir=source_dir)
 
     def _handle_file(self, event_path: str, source_dir: str):
@@ -317,32 +274,23 @@ class ShortPlayOrganizer(_PluginBase):
                 logger.error(f"未找到监控目录 {source_dir} 对应的目的目录")
                 return
 
-            # 获取所在目录（向上查找包含 tvshow.nfo 的目录）
+            # 向上查找包含 tvshow.nfo 的目录
             source_folder = self._find_nfo_parent(source_path.parent)
 
             if not source_folder:
-                logger.debug(f"未找到包含 tvshow.nfo 的目录: {event_path}")
                 return
 
-            # 查找 tvshow.nfo 文件
             nfo_path = source_folder / "tvshow.nfo"
             if not nfo_path.exists():
-                logger.debug(f"{source_folder} 没有 tvshow.nfo，跳过")
                 return
 
-            # 解析 nfo 获取片名
+            # 解析片名
             title = self._parse_title_from_nfo(nfo_path)
             if not title:
-                logger.warning(f"无法从 {nfo_path} 解析片名")
                 return
 
-            # 清理片名中的非法字符
             title = self._sanitize_filename(title)
-
-            # 构建目标文件夹路径
             target_folder = Path(dest_dir) / title
-
-            # 是否重命名
             rename_conf = self._renameconf.get(source_dir, "true")
 
             # 处理视频文件
@@ -353,13 +301,12 @@ class ShortPlayOrganizer(_PluginBase):
                     rename_conf=rename_conf
                 )
 
-            # 复制 nfo 和海报文件
+            # 复制元数据文件
             self._copy_metadata_files(
                 source_folder=source_folder,
                 target_folder=target_folder
             )
 
-            # 发送通知
             if self._notify:
                 self._add_to_notify_queue(title, str(source_path))
 
@@ -391,10 +338,8 @@ class ShortPlayOrganizer(_PluginBase):
             if original_elem is not None and original_elem.text:
                 return original_elem.text.strip()
 
-        except ET.ParseError as e:
-            logger.error(f"解析 NFO 文件失败 {nfo_path}: {str(e)}")
         except Exception as e:
-            logger.error(f"读取 NFO 文件失败 {nfo_path}: {str(e)}")
+            logger.error(f"解析 NFO 文件失败 {nfo_path}: {str(e)}")
 
         return None
 
@@ -402,8 +347,7 @@ class ShortPlayOrganizer(_PluginBase):
         """清理文件名中的非法字符"""
         illegal_chars = r'[\\/*?:"<>|]'
         cleaned = re.sub(illegal_chars, '', filename)
-        cleaned = cleaned.strip('. ')
-        return cleaned
+        return cleaned.strip('. ')
 
     def _organize_video_file(self, source_path: Path, target_folder: Path, rename_conf: str):
         """整理视频文件"""
@@ -421,15 +365,12 @@ class ShortPlayOrganizer(_PluginBase):
                 target_path = target_folder / source_path.name
 
             if target_path.exists():
-                logger.debug(f"目标文件已存在: {target_path}")
                 return
 
             retcode = self._transfer_file(source_path, target_path)
 
             if retcode == 0:
                 logger.info(f"文件整理完成: {source_path} -> {target_path}")
-            else:
-                logger.error(f"文件整理失败: {source_path}")
 
         except Exception as e:
             logger.error(f"整理视频文件失败: {str(e)}")
@@ -448,28 +389,24 @@ class ShortPlayOrganizer(_PluginBase):
         if match:
             return int(match.group(1))
 
-        match = re.search(r'(\d{2})(?:[^0-9]|$)', filename)
-        if match and int(match.group(1)) <= 99:
-            return int(match.group(1))
-
         return None
 
     def _copy_metadata_files(self, source_folder: Path, target_folder: Path):
         """复制 nfo 和海报文件"""
         target_folder.mkdir(parents=True, exist_ok=True)
 
+        # 复制 tvshow.nfo
         source_nfo = source_folder / "tvshow.nfo"
         target_nfo = target_folder / "tvshow.nfo"
         if source_nfo.exists() and not target_nfo.exists():
             self._transfer_file(source_nfo, target_nfo)
-            logger.debug(f"复制 NFO: {target_nfo}")
 
+        # 复制海报
         target_poster = target_folder / "poster.jpg"
-        for poster_name in ["poster.jpg", "folder.jpg", "cover.jpg", "thumb.jpg"]:
+        for poster_name in ["poster.jpg", "folder.jpg", "cover.jpg"]:
             source_img = source_folder / poster_name
             if source_img.exists() and not target_poster.exists():
                 self._transfer_file(source_img, target_poster)
-                logger.debug(f"复制海报: {source_img} -> {target_poster}")
                 break
 
     def _transfer_file(self, source: Path, target: Path) -> int:
@@ -515,13 +452,13 @@ class ShortPlayOrganizer(_PluginBase):
             if not media_list:
                 continue
 
-            last_time = media_list.get("time")
             files = media_list.get("files", [])
+            last_time = media_list.get("time")
 
-            if not last_time or not files:
+            if not files or not last_time:
                 continue
 
-            if (datetime.datetime.now() - last_time).total_seconds() > int(self._interval):
+            if (datetime.datetime.now() - last_time).total_seconds() > self._interval:
                 self.post_message(
                     mtype=NotificationType.Organize,
                     title=f"{title} 已入库",
@@ -533,13 +470,14 @@ class ShortPlayOrganizer(_PluginBase):
         """更新配置"""
         self.update_config({
             "enabled": self._enabled,
-            "onlyonce": self._onlyonce,
+            "onlyonce": False,
             "monitor_confs": self._monitor_confs,
             "transfer_type": self._transfer_type,
             "exclude_keywords": self._exclude_keywords,
             "notify": self._notify,
             "interval": self._interval,
-            "scan_interval": self._scan_interval
+            "scan_interval": self._scan_interval,
+            "scan_enabled": self._scan_enabled
         })
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
@@ -649,6 +587,25 @@ class ShortPlayOrganizer(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "scan_enabled",
+                                            "label": "启用定时扫描",
+                                            "hint": "关闭后仅依赖实时监控"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12},
                                 "content": [
                                     {
@@ -695,9 +652,27 @@ class ShortPlayOrganizer(_PluginBase):
                                         "component": "VAlert",
                                         "props": {
                                             "type": "info",
-                                            "variant": "tonal",
-                                            "text": "配置说明：监控方式 auto（实时）或 compatibility（兼容/轮询）。格式示例：auto#/downloads/短剧#/media/短剧#true"
-                                        }
+                                            "variant": "tonal"
+                                        },
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"style": "font-weight: bold; margin-bottom: 8px;"},
+                                                "text": "配置说明"
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "1. 监控方式：auto（实时）或 compatibility（兼容/轮询）"
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "2. 格式示例：auto#/downloads/短剧#/media/短剧#true"
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "3. 定时扫描作为监控补充，可单独关闭"
+                                            }
+                                        ]
                                     }
                                 ]
                             }
@@ -713,7 +688,8 @@ class ShortPlayOrganizer(_PluginBase):
             "exclude_keywords": "",
             "notify": False,
             "interval": 10,
-            "scan_interval": 60
+            "scan_interval": 60,
+            "scan_enabled": True
         }
 
     def get_page(self) -> List[dict]:
@@ -729,10 +705,30 @@ class ShortPlayOrganizer(_PluginBase):
                             {
                                 "component": "div",
                                 "content": [
-                                    f"监控目录: {self._monitor_confs or '未配置'}",
-                                    f"转移方式: {self._transfer_type}",
-                                    f"发送通知: {'是' if self._notify else '否'}",
-                                    f"定时扫描间隔: {self._scan_interval} 秒"
+                                    {
+                                        "component": "div",
+                                        "props": {"class": "mb-2"},
+                                        "text": f"监控目录: {self._monitor_confs or '未配置'}"
+                                    },
+                                    {
+                                        "component": "div",
+                                        "props": {"class": "mb-2"},
+                                        "text": f"转移方式: {self._transfer_type}"
+                                    },
+                                    {
+                                        "component": "div",
+                                        "props": {"class": "mb-2"},
+                                        "text": f"发送通知: {'是' if self._notify else '否'}"
+                                    },
+                                    {
+                                        "component": "div",
+                                        "props": {"class": "mb-2"},
+                                        "text": f"定时扫描: {'启用' if self._scan_enabled else '禁用'}"
+                                    },
+                                    {
+                                        "component": "div",
+                                        "text": f"定时扫描间隔: {self._scan_interval} 秒"
+                                    }
                                 ]
                             }
                         ]
@@ -740,12 +736,6 @@ class ShortPlayOrganizer(_PluginBase):
                 ]
             }
         ]
-
-    def get_command(self) -> List[Dict[str, Any]]:
-        return []
-
-    def get_api(self) -> List[Dict[str, Any]]:
-        return []
 
     def stop_service(self):
         """停止服务"""
