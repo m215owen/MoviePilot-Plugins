@@ -35,7 +35,7 @@
     "description": "Emby收藏时从刷流插件移除种子，Emby删除媒体时标记种子待删除（由刷流插件执行）",
     "labels": "保护,同步,刷流,Emby",
     "version": "1.0.0",
-    "icon": "sync_protect.png",
+    "icon": "sync_file.png",
     "author": "AI",
     "level": 1,
     "history": {
