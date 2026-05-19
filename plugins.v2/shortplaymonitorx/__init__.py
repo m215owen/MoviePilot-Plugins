@@ -644,7 +644,6 @@ class ShortPlayMonitorx(_PluginBase):
         # 简介
         if plot:
             DomUtils.add_node(doc, root, "plot", plot)
-            DomUtils.add_node(doc, root, "outline", plot)
         
         # 类别（按/分割）
         if category:
