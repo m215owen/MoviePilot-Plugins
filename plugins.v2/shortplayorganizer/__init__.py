@@ -85,6 +85,10 @@ class ShortPlayOrganizer(_PluginBase):
         "success_folders": [],   # 成功整理的目录
         "failed_records": []     # 失败记录
     }
+    
+    # 去重缓存
+    _success_cache = set()   # 已成功处理的文件路径
+    _failed_cache = set()    # 已失败的文件路径
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -104,6 +108,9 @@ class ShortPlayOrganizer(_PluginBase):
 
         # 加载统计数据
         self._load_statistics()
+        
+        # 构建去重缓存
+        self._build_cache()
 
         # 清空配置
         self._dirconf = {}
@@ -132,6 +139,8 @@ class ShortPlayOrganizer(_PluginBase):
                     id="shortplayorganizer_scan"
                 )
                 logger.info(f"定时扫描服务已启动，扫描间隔: {self._scan_interval} 秒")
+            elif self._enabled and not self._scan_enabled:
+                logger.info("定时扫描服务已禁用")
 
             # 读取目录配置
             if self._monitor_confs:
@@ -187,6 +196,36 @@ class ShortPlayOrganizer(_PluginBase):
                 "failed_records": []
             }
 
+    def _build_cache(self):
+        """构建去重缓存"""
+        # 成功缓存
+        self._success_cache = set()
+        for record in self._statistics["success_folders"]:
+            source = record.get("source", "")
+            if source:
+                self._success_cache.add(source)
+        
+        # 失败缓存
+        self._failed_cache = set()
+        for record in self._statistics["failed_records"]:
+            source = record.get("source", "")
+            if source:
+                self._failed_cache.add(source)
+        
+        logger.debug(f"已加载成功记录 {len(self._success_cache)} 条，失败记录 {len(self._failed_cache)} 条")
+
+    def _is_processed(self, file_path: str) -> bool:
+        """检查文件是否已经处理过（成功或失败）"""
+        return file_path in self._success_cache or file_path in self._failed_cache
+
+    def _is_success(self, file_path: str) -> bool:
+        """检查文件是否已成功处理"""
+        return file_path in self._success_cache
+
+    def _is_failed(self, file_path: str) -> bool:
+        """检查文件是否之前处理失败"""
+        return file_path in self._failed_cache
+
     def _save_statistics(self):
         """保存统计数据"""
         # 只保留最近100条记录
@@ -196,9 +235,13 @@ class ShortPlayOrganizer(_PluginBase):
             self._statistics["failed_records"] = self._statistics["failed_records"][-100:]
         
         self.save_data("statistics", self._statistics)
+        self._build_cache()
 
-    def _record_success(self, title: str, source_path: str, target_path: str):
+    def _record_success(self, title: str, source_path: str, target_path: Path):
         """记录成功整理"""
+        # 如果之前有失败记录，先移除
+        self._remove_failed_record(source_path)
+        
         self._statistics["success_count"] += 1
         self._statistics["success_folders"].append({
             "title": title,
@@ -210,6 +253,15 @@ class ShortPlayOrganizer(_PluginBase):
 
     def _record_failure(self, source_path: str, reason: str):
         """记录失败整理"""
+        # 如果已成功过，不再记录失败
+        if self._is_success(source_path):
+            return
+        
+        # 检查是否已存在相同失败记录
+        for record in self._statistics["failed_records"]:
+            if record.get("source") == source_path:
+                return
+        
         self._statistics["failed_count"] += 1
         self._statistics["failed_records"].append({
             "source": source_path,
@@ -217,6 +269,17 @@ class ShortPlayOrganizer(_PluginBase):
             "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
         self._save_statistics()
+
+    def _remove_failed_record(self, source_path: str):
+        """移除失败记录（成功处理后）"""
+        original_count = len(self._statistics["failed_records"])
+        self._statistics["failed_records"] = [
+            r for r in self._statistics["failed_records"] 
+            if r.get("source") != source_path
+        ]
+        if len(self._statistics["failed_records"]) < original_count:
+            self._statistics["failed_count"] = len(self._statistics["failed_records"])
+            self._save_statistics()
 
     def _start_monitor(self, mode: str, source_dir: str):
         """启动目录监控"""
@@ -260,7 +323,7 @@ class ShortPlayOrganizer(_PluginBase):
         return []
 
     def get_command(self) -> List[Dict[str, Any]]:
-        """注册远程命令 - 本插件不需要远程命令"""
+        """注册远程命令"""
         return [
             {
                 "cmd": "/shortplay_stats",
@@ -312,6 +375,11 @@ class ShortPlayOrganizer(_PluginBase):
 
                 for file in files:
                     file_path = os.path.join(root, file)
+                    # 跳过已经处理过的文件（成功或失败）
+                    if self._is_processed(file_path):
+                        logger.debug(f"跳过已处理文件: {file_path}")
+                        continue
+                    
                     if Path(file_path).suffix.lower() in settings.RMT_MEDIAEXT:
                         self.event_handler(
                             event=None,
@@ -339,6 +407,11 @@ class ShortPlayOrganizer(_PluginBase):
         # 只处理媒体文件
         if Path(event_path).suffix.lower() not in settings.RMT_MEDIAEXT:
             return
+        
+        # 跳过已经处理过的文件
+        if self._is_processed(event_path):
+            logger.debug(f"跳过已处理文件: {event_path}")
+            return
 
         self._handle_file(event_path=event_path, source_dir=source_dir)
 
@@ -358,7 +431,7 @@ class ShortPlayOrganizer(_PluginBase):
             source_folder = self._find_nfo_parent(source_path.parent)
 
             if not source_folder:
-                error_msg = f"未找到包含 tvshow.nfo 的目录"
+                error_msg = "未找到包含 tvshow.nfo 的目录"
                 logger.debug(f"{event_path}: {error_msg}")
                 self._record_failure(event_path, error_msg)
                 return
@@ -769,7 +842,7 @@ class ShortPlayOrganizer(_PluginBase):
                                             },
                                             {
                                                 "component": "div",
-                                                "text": "3. 定时扫描作为监控补充，可单独关闭"
+                                                "text": "3. 已成功或失败的文件不会重复处理"
                                             }
                                         ]
                                     }
@@ -827,7 +900,6 @@ class ShortPlayOrganizer(_PluginBase):
             {
                 "component": "VRow",
                 "content": [
-                    # 成功数量卡片
                     {
                         "component": "VCol",
                         "props": {"cols": 12, "md": 4},
@@ -855,7 +927,6 @@ class ShortPlayOrganizer(_PluginBase):
                             }
                         ]
                     },
-                    # 失败数量卡片
                     {
                         "component": "VCol",
                         "props": {"cols": 12, "md": 4},
@@ -883,7 +954,6 @@ class ShortPlayOrganizer(_PluginBase):
                             }
                         ]
                     },
-                    # 成功率卡片
                     {
                         "component": "VCol",
                         "props": {"cols": 12, "md": 4},
