@@ -54,7 +54,7 @@ class FileMonitorHandler(FileSystemEventHandler):
     def on_moved(self, event):
         self.file_change.event_handler(event=event, source_dir=self._watch_path, event_path=event.dest_path)
 
-  class ShortPlayMonitor(_PluginBase):
+  class ShortPlayMonitorx(_PluginBase):
     # 插件名称
     plugin_name = "短剧刮削"
     # 插件描述
@@ -64,11 +64,11 @@ class FileMonitorHandler(FileSystemEventHandler):
     # 插件版本
     plugin_version = "5.0"
     # 插件作者
-    plugin_author = "thsrite"
+    plugin_author = "thsrite魔改"
     # 作者主页
     author_url = "https://github.com/thsrite"
     # 插件配置项ID前缀
-    plugin_config_prefix = "shortplaymonitor_"
+    plugin_config_prefix = "shortplaymonitorx_"
     # 加载顺序
     plugin_order = 26
     # 可使用的用户级别
