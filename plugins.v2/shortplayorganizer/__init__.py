@@ -176,6 +176,10 @@ class ShortPlayOrganizer(_PluginBase):
             target_dir = parts[2].strip()
             rename = parts[3].strip() if len(parts) > 3 else "true"
 
+            # 标准化路径
+            source_dir = os.path.normpath(source_dir)
+            target_dir = os.path.normpath(target_dir)
+
             self._dirconf[source_dir] = target_dir
             self._renameconf[source_dir] = rename
 
@@ -242,37 +246,25 @@ class ShortPlayOrganizer(_PluginBase):
             logger.info(f"跳过无NFO文件夹: {folder_path}")
 
     def _has_nfo_in_folder(self, folder_path: str) -> bool:
-        """检查文件夹是否包含 tvshow.nfo"""
-        current = Path(folder_path)
-        for _ in range(3):
-            if (current / "tvshow.nfo").exists():
-                return True
-            if current.parent == current:
-                break
-            current = current.parent
-        return False
+        """检查文件夹是否包含 tvshow.nfo（仅当前目录，不向上查找）"""
+        return (Path(folder_path) / "tvshow.nfo").exists()
 
     def _get_title_from_nfo(self, folder_path: str) -> Optional[str]:
-        """从nfo文件获取片名"""
-        current = Path(folder_path)
-        for _ in range(3):
-            nfo_path = current / "tvshow.nfo"
-            if nfo_path.exists():
-                try:
-                    tree = ET.parse(nfo_path)
-                    root = tree.getroot()
-                    title_elem = root.find("title")
-                    if title_elem is not None and title_elem.text:
-                        return title_elem.text.strip()
-                    original_elem = root.find("originaltitle")
-                    if original_elem is not None and original_elem.text:
-                        return original_elem.text.strip()
-                except Exception as e:
-                    logger.error(f"解析NFO失败 {nfo_path}: {e}")
-                return None
-            if current.parent == current:
-                break
-            current = current.parent
+        """从当前目录的nfo文件获取片名"""
+        nfo_path = Path(folder_path) / "tvshow.nfo"
+        if not nfo_path.exists():
+            return None
+        try:
+            tree = ET.parse(nfo_path)
+            root = tree.getroot()
+            title_elem = root.find("title")
+            if title_elem is not None and title_elem.text:
+                return title_elem.text.strip()
+            original_elem = root.find("originaltitle")
+            if original_elem is not None and original_elem.text:
+                return original_elem.text.strip()
+        except Exception as e:
+            logger.error(f"解析NFO失败 {nfo_path}: {e}")
         return None
 
     def _sanitize_filename(self, filename: str) -> str:
@@ -342,6 +334,16 @@ class ShortPlayOrganizer(_PluginBase):
                 self._transfer_file(poster_path, target_folder / "poster.jpg")
                 break
 
+    def _is_valid_folder(self, folder_path: str, source_dir: str) -> bool:
+        """检查是否为有效的剧集文件夹（监控目录的下一级）"""
+        # 获取相对路径
+        rel_path = os.path.relpath(folder_path, source_dir)
+        # 如果相对路径是 "." 说明就是监控目录本身，跳过
+        # 如果相对路径包含 "/"，说明是更深层目录，也跳过（只处理下一级）
+        if rel_path == "." or "/" in rel_path or "\\" in rel_path:
+            return False
+        return True
+
     def _process_file(self, file_path: str, source_dir: str):
         """处理单个文件"""
         # 检查是否已成功
@@ -352,12 +354,17 @@ class ShortPlayOrganizer(_PluginBase):
         source_path = Path(file_path)
         folder_path = str(source_path.parent)
 
+        # 检查是否为有效的剧集文件夹（监控目录的下一级）
+        if not self._is_valid_folder(folder_path, source_dir):
+            logger.debug(f"不是有效剧集文件夹，跳过: {folder_path}")
+            return
+
         # 检查文件夹是否被跳过
         if self._is_skipped_folder(folder_path):
             logger.debug(f"文件夹已跳过，跳过文件: {file_path}")
             return
 
-        # 检查是否有 nfo
+        # 检查是否有 nfo（仅当前目录）
         if not self._has_nfo_in_folder(folder_path):
             self._mark_skip_folder(folder_path)
             return
@@ -420,21 +427,30 @@ class ShortPlayOrganizer(_PluginBase):
             for source_dir, dest_dir in self._dirconf.items():
                 if not os.path.exists(source_dir):
                     continue
-                for root, dirs, files in os.walk(source_dir):
+
+                # 只扫描监控目录的下一级文件夹
+                for item in os.listdir(source_dir):
+                    folder_path = os.path.join(source_dir, item)
+                    if not os.path.isdir(folder_path):
+                        continue
+
                     # 跳过已标记的文件夹
-                    if self._is_skipped_folder(root):
-                        dirs.clear()
+                    if self._is_skipped_folder(folder_path):
                         continue
-                    # 检查是否需要跳过整个文件夹
-                    if not self._has_nfo_in_folder(root):
-                        self._mark_skip_folder(root)
-                        dirs.clear()
+
+                    # 检查是否有 nfo
+                    if not self._has_nfo_in_folder(folder_path):
+                        self._mark_skip_folder(folder_path)
                         continue
-                    # 处理文件
-                    for file in files:
-                        file_path = os.path.join(root, file)
+
+                    # 扫描文件夹内的视频文件
+                    for file in os.listdir(folder_path):
+                        file_path = os.path.join(folder_path, file)
                         if Path(file_path).suffix.lower() in settings.RMT_MEDIAEXT:
+                            if file_path in self._success_cache:
+                                continue
                             self._process_file(file_path, source_dir)
+
             logger.info("扫描完成")
         except Exception as e:
             logger.error(f"扫描失败: {e}")
@@ -547,7 +563,7 @@ class ShortPlayOrganizer(_PluginBase):
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12},
-                                "content": [{"component": "VTextarea", "props": {"model": "monitor_confs", "label": "监控目录", "rows": 4, "placeholder": "auto#/源目录#/目的目录#true\ncompatibility#/mnt/smb#/media#false"}}]
+                                "content": [{"component": "VTextarea", "props": {"model": "monitor_confs", "label": "监控目录", "rows": 4, "placeholder": "auto#/源目录#/目的目录#true\n示例: auto#/vol00/.../download/短剧#/media/短剧#true"}}]
                             }
                         ]
                     },
@@ -597,20 +613,24 @@ class ShortPlayOrganizer(_PluginBase):
                     {"component": "VCol", "props": {"cols": 12, "md": 4}, "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "info"}, "content": [{"component": "VCardText", "props": {"class": "text-center"}, "content": [{"component": "div", "props": {"class": "text-h4"}, "text": f"{success_rate}%"}, {"component": "div", "text": "成功率"}]}]}]}
                 ]
             },
-            {"component": "VCard", "props": {"class": "mt-4"}, "content": [
-                {"component": "VCardTitle", "text": "📁 成功记录"},
-                {"component": "VCardText", "props": {"class": "pa-0"}, "content": [{"component": "VTable", "props": {"hover": True}, "content": [
-                    {"component": "thead", "content": [{"component": "th", "text": "文件名"}, {"component": "th", "text": "路径"}, {"component": "th", "text": "状态"}]},
-                    {"component": "tbody", "content": success_rows if success_rows else [{"component": "tr", "content": [{"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无"}]}]}
-                ]}]}
-            ]},
-            {"component": "VCard", "props": {"class": "mt-4"}, "content": [
-                {"component": "VCardTitle", "text": "⏭️ 跳过文件夹"},
-                {"component": "VCardText", "props": {"class": "pa-0"}, "content": [{"component": "VTable", "props": {"hover": True}, "content": [
-                    {"component": "thead", "content": [{"component": "th", "text": "文件夹"}, {"component": "th", "text": "原因"}, {"component": "th", "text": "状态"}]},
-                    {"component": "tbody", "content": skip_rows if skip_rows else [{"component": "tr", "content": [{"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无"}]}]}
-                ]}]}
-            ]}
+            {
+                "component": "VCard", "props": {"class": "mt-4"}, "content": [
+                    {"component": "VCardTitle", "text": "📁 成功记录"},
+                    {"component": "VCardText", "props": {"class": "pa-0"}, "content": [{"component": "VTable", "props": {"hover": True}, "content": [
+                        {"component": "thead", "content": [{"component": "th", "text": "文件名"}, {"component": "th", "text": "路径"}, {"component": "th", "text": "状态"}]},
+                        {"component": "tbody", "content": success_rows if success_rows else [{"component": "tr", "content": [{"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无"}]}]}
+                    ]}]}
+                ]
+            },
+            {
+                "component": "VCard", "props": {"class": "mt-4"}, "content": [
+                    {"component": "VCardTitle", "text": "⏭️ 跳过文件夹"},
+                    {"component": "VCardText", "props": {"class": "pa-0"}, "content": [{"component": "VTable", "props": {"hover": True}, "content": [
+                        {"component": "thead", "content": [{"component": "th", "text": "文件夹"}, {"component": "th", "text": "原因"}, {"component": "th", "text": "状态"}]},
+                        {"component": "tbody", "content": skip_rows if skip_rows else [{"component": "tr", "content": [{"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无"}]}]}
+                    ]}]}
+                ]
+            }
         ]
 
     def stop_service(self):
