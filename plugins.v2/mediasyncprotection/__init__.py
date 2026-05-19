@@ -2,7 +2,6 @@ import time
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from aiohttp import web
-from typing import Any as AnyType
 
 from app.plugins import _PluginBase
 from app.core.event import eventmanager, Event
@@ -36,7 +35,7 @@ class MediaSyncProtection(_PluginBase):
             self._config = config
             self._enabled = config.get("enabled", False)
         
-        # 注册事件监听器（监听自己发送的 WebhookMessage 事件）
+        # 注册事件监听器
         self.eventmanager.register(EventType.WebhookMessage, self.on_webhook_message)
         
         logger.info("媒体同步保护插件已启动，接收 Emby Webhook")
@@ -45,7 +44,7 @@ class MediaSyncProtection(_PluginBase):
         """返回插件状态"""
         return self._enabled
     
-    def get_api(self) -> List[Dict[str, AnyType]]:
+    def get_api(self) -> List[Dict[str, Any]]:
         """注册API，接收Emby Webhook"""
         return [
             {
@@ -59,7 +58,7 @@ class MediaSyncProtection(_PluginBase):
             }
         ]
     
-    async def receive_emby_webhook(self, request: web.Request) -> web.Response:
+    async def receive_emby_webhook(self, request: web.Request) -> Any:
         """
         接收 Emby Webhook 并转换为 WebhookMessage 事件
         """
@@ -88,7 +87,7 @@ class MediaSyncProtection(_PluginBase):
                 webhook_event_type = "media.delete"
             
             if webhook_event_type:
-                # 发送事件给自己（或任何监听 WebhookMessage 的插件）
+                # 发送事件给自己
                 self.eventmanager.send_event(
                     etype=EventType.WebhookMessage,
                     data={
@@ -117,7 +116,7 @@ class MediaSyncProtection(_PluginBase):
         
         event_data = event.event_data
         
-        # 获取事件类型（兼容对象和字典）
+        # 获取事件类型
         if hasattr(event_data, 'event'):
             event_type = getattr(event_data, 'event', None)
             media_name = getattr(event_data, 'media_name', None) or getattr(event_data, 'item_name', None)
@@ -235,7 +234,7 @@ class MediaSyncProtection(_PluginBase):
                 self.save_data("torrents", torrents_data, plugin_id)
                 logger.info(f"在插件 {plugin_id} 中标记了 {marked_count} 个种子待删除")
         
-        # 触发刷流插件的检查，让其立即处理待删除的种子
+        # 触发刷流插件的检查
         if marked_count > 0:
             self._trigger_brush_check()
             
@@ -253,7 +252,7 @@ class MediaSyncProtection(_PluginBase):
             self._save_deleted_history(marked_details, media_name)
     
     def _trigger_brush_check(self):
-        """触发刷流插件的检查任务，让其立即处理待删除的种子"""
+        """触发刷流插件的检查任务"""
         for plugin_id in self.TARGET_PLUGINS:
             try:
                 plugin = self._get_plugin_instance(plugin_id)
@@ -293,7 +292,6 @@ class MediaSyncProtection(_PluginBase):
             "details": removed_details[:10]
         })
         
-        # 保留最近200条
         if len(history) > 200:
             history = history[-200:]
         
@@ -480,7 +478,7 @@ class MediaSyncProtection(_PluginBase):
                                             {
                                                 "component": "div",
                                                 "props": {"class": "mt-2"},
-                                                "text": "勾选事件：Item Marked Favorite（收藏）、Item Removed From Database（删除媒体）"
+                                                "text": "勾选事件：Item Marked Favorite、Item Removed From Database"
                                             }
                                         ]
                                     }
@@ -533,7 +531,6 @@ class MediaSyncProtection(_PluginBase):
         removed_history = self.get_data("removed_history") or []
         deleted_history = self.get_data("deleted_history") or []
         
-        # 合并并排序
         all_records = []
         
         for item in removed_history:
