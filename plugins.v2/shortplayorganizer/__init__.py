@@ -78,6 +78,14 @@ class ShortPlayOrganizer(_PluginBase):
     _medias = {}
     _scanning = False
 
+    # 统计数据
+    _statistics = {
+        "success_count": 0,      # 成功整理数量
+        "failed_count": 0,       # 失败整理数量
+        "success_folders": [],   # 成功整理的目录
+        "failed_records": []     # 失败记录
+    }
+
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
 
@@ -93,6 +101,9 @@ class ShortPlayOrganizer(_PluginBase):
             self._interval = config.get("interval", 10)
             self._scan_interval = config.get("scan_interval", 60)
             self._scan_enabled = config.get("scan_enabled", True)
+
+        # 加载统计数据
+        self._load_statistics()
 
         # 清空配置
         self._dirconf = {}
@@ -163,6 +174,50 @@ class ShortPlayOrganizer(_PluginBase):
             if self._scheduler.get_jobs():
                 self._scheduler.start()
 
+    def _load_statistics(self):
+        """加载统计数据"""
+        stats = self.get_data("statistics")
+        if stats:
+            self._statistics = stats
+        else:
+            self._statistics = {
+                "success_count": 0,
+                "failed_count": 0,
+                "success_folders": [],
+                "failed_records": []
+            }
+
+    def _save_statistics(self):
+        """保存统计数据"""
+        # 只保留最近100条记录
+        if len(self._statistics["success_folders"]) > 100:
+            self._statistics["success_folders"] = self._statistics["success_folders"][-100:]
+        if len(self._statistics["failed_records"]) > 100:
+            self._statistics["failed_records"] = self._statistics["failed_records"][-100:]
+        
+        self.save_data("statistics", self._statistics)
+
+    def _record_success(self, title: str, source_path: str, target_path: str):
+        """记录成功整理"""
+        self._statistics["success_count"] += 1
+        self._statistics["success_folders"].append({
+            "title": title,
+            "source": source_path,
+            "target": str(target_path),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        self._save_statistics()
+
+    def _record_failure(self, source_path: str, reason: str):
+        """记录失败整理"""
+        self._statistics["failed_count"] += 1
+        self._statistics["failed_records"].append({
+            "source": source_path,
+            "reason": reason,
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        self._save_statistics()
+
     def _start_monitor(self, mode: str, source_dir: str):
         """启动目录监控"""
         try:
@@ -199,6 +254,29 @@ class ShortPlayOrganizer(_PluginBase):
     def get_state(self) -> bool:
         """返回插件状态"""
         return self._enabled
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        """注册API - 本插件不需要对外提供API接口"""
+        return []
+
+    def get_command(self) -> List[Dict[str, Any]]:
+        """注册远程命令 - 本插件不需要远程命令"""
+        return [
+            {
+                "cmd": "/shortplay_stats",
+                "event": None,
+                "desc": "查看短剧整理统计",
+                "category": "管理",
+                "data": {"action": "stats"}
+            },
+            {
+                "cmd": "/shortplay_clear",
+                "event": None,
+                "desc": "清空整理统计",
+                "category": "管理",
+                "data": {"action": "clear"}
+            }
+        ]
 
     def scan_all_dirs(self):
         """定时扫描所有监控目录"""
@@ -271,22 +349,33 @@ class ShortPlayOrganizer(_PluginBase):
             dest_dir = self._dirconf.get(source_dir)
 
             if not dest_dir:
-                logger.error(f"未找到监控目录 {source_dir} 对应的目的目录")
+                error_msg = f"未找到监控目录 {source_dir} 对应的目的目录"
+                logger.error(error_msg)
+                self._record_failure(event_path, error_msg)
                 return
 
             # 向上查找包含 tvshow.nfo 的目录
             source_folder = self._find_nfo_parent(source_path.parent)
 
             if not source_folder:
+                error_msg = f"未找到包含 tvshow.nfo 的目录"
+                logger.debug(f"{event_path}: {error_msg}")
+                self._record_failure(event_path, error_msg)
                 return
 
             nfo_path = source_folder / "tvshow.nfo"
             if not nfo_path.exists():
+                error_msg = f"目录 {source_folder} 没有 tvshow.nfo"
+                logger.debug(error_msg)
+                self._record_failure(event_path, error_msg)
                 return
 
             # 解析片名
             title = self._parse_title_from_nfo(nfo_path)
             if not title:
+                error_msg = f"无法从 {nfo_path} 解析片名"
+                logger.warning(error_msg)
+                self._record_failure(event_path, error_msg)
                 return
 
             title = self._sanitize_filename(title)
@@ -295,11 +384,13 @@ class ShortPlayOrganizer(_PluginBase):
 
             # 处理视频文件
             if source_path.suffix.lower() in settings.RMT_MEDIAEXT:
-                self._organize_video_file(
+                target_path = self._organize_video_file(
                     source_path=source_path,
                     target_folder=target_folder,
                     rename_conf=rename_conf
                 )
+                if target_path:
+                    self._record_success(title, str(source_path), target_path)
 
             # 复制元数据文件
             self._copy_metadata_files(
@@ -311,7 +402,9 @@ class ShortPlayOrganizer(_PluginBase):
                 self._add_to_notify_queue(title, str(source_path))
 
         except Exception as e:
-            logger.error(f"整理文件失败 {event_path}: {str(e)}")
+            error_msg = f"整理文件失败: {str(e)}"
+            logger.error(f"{event_path}: {error_msg}")
+            self._record_failure(event_path, error_msg)
 
     def _find_nfo_parent(self, start_path: Path, max_depth: int = 3) -> Optional[Path]:
         """向上查找包含 tvshow.nfo 的目录"""
@@ -349,8 +442,8 @@ class ShortPlayOrganizer(_PluginBase):
         cleaned = re.sub(illegal_chars, '', filename)
         return cleaned.strip('. ')
 
-    def _organize_video_file(self, source_path: Path, target_folder: Path, rename_conf: str):
-        """整理视频文件"""
+    def _organize_video_file(self, source_path: Path, target_folder: Path, rename_conf: str) -> Optional[Path]:
+        """整理视频文件，返回目标路径"""
         try:
             target_folder.mkdir(parents=True, exist_ok=True)
 
@@ -365,15 +458,21 @@ class ShortPlayOrganizer(_PluginBase):
                 target_path = target_folder / source_path.name
 
             if target_path.exists():
-                return
+                logger.debug(f"目标文件已存在: {target_path}")
+                return target_path
 
             retcode = self._transfer_file(source_path, target_path)
 
             if retcode == 0:
                 logger.info(f"文件整理完成: {source_path} -> {target_path}")
+                return target_path
+            else:
+                logger.error(f"文件整理失败: {source_path}")
+                return None
 
         except Exception as e:
             logger.error(f"整理视频文件失败: {str(e)}")
+            return None
 
     def _extract_episode_number(self, filename: str) -> Optional[int]:
         """从文件名中提取集数"""
@@ -693,41 +792,236 @@ class ShortPlayOrganizer(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        """返回详情页"""
-        return [
-            {
-                "component": "VCard",
+        """返回详情页，包含统计图表和记录"""
+        
+        # 计算成功率
+        total = self._statistics["success_count"] + self._statistics["failed_count"]
+        success_rate = round(self._statistics["success_count"] / total * 100, 1) if total > 0 else 0
+        
+        # 构建成功目录表格行
+        success_rows = []
+        for item in self._statistics["success_folders"][-20:]:
+            success_rows.append({
+                "component": "tr",
                 "content": [
+                    {"component": "td", "text": item.get("title", "")[:30]},
+                    {"component": "td", "text": item.get("source", "")[:50]},
+                    {"component": "td", "text": item.get("time", "")}
+                ]
+            })
+        
+        # 构建失败记录表格行
+        failed_rows = []
+        for item in self._statistics["failed_records"][-20:]:
+            failed_rows.append({
+                "component": "tr",
+                "content": [
+                    {"component": "td", "text": item.get("source", "")[:50]},
+                    {"component": "td", "text": item.get("reason", "")[:30]},
+                    {"component": "td", "text": item.get("time", "")}
+                ]
+            })
+        
+        return [
+            # 统计卡片
+            {
+                "component": "VRow",
+                "content": [
+                    # 成功数量卡片
                     {
-                        "component": "VCardText",
-                        "props": {"class": "pa-4"},
+                        "component": "VCol",
+                        "props": {"cols": 12, "md": 4},
                         "content": [
                             {
-                                "component": "div",
+                                "component": "VCard",
+                                "props": {"variant": "tonal", "color": "success"},
                                 "content": [
                                     {
-                                        "component": "div",
-                                        "props": {"class": "mb-2"},
-                                        "text": f"监控目录: {self._monitor_confs or '未配置'}"
+                                        "component": "VCardText",
+                                        "props": {"class": "text-center"},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-h4"},
+                                                "text": str(self._statistics["success_count"])
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "成功整理"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    # 失败数量卡片
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12, "md": 4},
+                        "content": [
+                            {
+                                "component": "VCard",
+                                "props": {"variant": "tonal", "color": "error"},
+                                "content": [
+                                    {
+                                        "component": "VCardText",
+                                        "props": {"class": "text-center"},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-h4"},
+                                                "text": str(self._statistics["failed_count"])
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "整理失败"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    # 成功率卡片
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12, "md": 4},
+                        "content": [
+                            {
+                                "component": "VCard",
+                                "props": {"variant": "tonal", "color": "info"},
+                                "content": [
+                                    {
+                                        "component": "VCardText",
+                                        "props": {"class": "text-center"},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-h4"},
+                                                "text": f"{success_rate}%"
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "成功率"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            # 成功整理记录表格
+            {
+                "component": "VCard",
+                "props": {"class": "mt-4"},
+                "content": [
+                    {
+                        "component": "VCardTitle",
+                        "text": "📁 最近成功整理记录"
+                    },
+                    {
+                        "component": "VDivider"
+                    },
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "pa-0"},
+                        "content": [
+                            {
+                                "component": "VTable",
+                                "props": {"hover": True},
+                                "content": [
+                                    {
+                                        "component": "thead",
+                                        "content": [
+                                            {
+                                                "component": "th",
+                                                "text": "片名"
+                                            },
+                                            {
+                                                "component": "th",
+                                                "text": "源文件"
+                                            },
+                                            {
+                                                "component": "th",
+                                                "text": "整理时间"
+                                            }
+                                        ]
                                     },
                                     {
-                                        "component": "div",
-                                        "props": {"class": "mb-2"},
-                                        "text": f"转移方式: {self._transfer_type}"
+                                        "component": "tbody",
+                                        "content": success_rows if success_rows else [
+                                            {
+                                                "component": "tr",
+                                                "content": [
+                                                    {
+                                                        "component": "td",
+                                                        "props": {"colspan": 3, "class": "text-center"},
+                                                        "text": "暂无成功记录"
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            # 失败记录表格
+            {
+                "component": "VCard",
+                "props": {"class": "mt-4"},
+                "content": [
+                    {
+                        "component": "VCardTitle",
+                        "text": "❌ 最近失败记录"
+                    },
+                    {
+                        "component": "VDivider"
+                    },
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "pa-0"},
+                        "content": [
+                            {
+                                "component": "VTable",
+                                "props": {"hover": True},
+                                "content": [
+                                    {
+                                        "component": "thead",
+                                        "content": [
+                                            {
+                                                "component": "th",
+                                                "text": "源文件"
+                                            },
+                                            {
+                                                "component": "th",
+                                                "text": "失败原因"
+                                            },
+                                            {
+                                                "component": "th",
+                                                "text": "时间"
+                                            }
+                                        ]
                                     },
                                     {
-                                        "component": "div",
-                                        "props": {"class": "mb-2"},
-                                        "text": f"发送通知: {'是' if self._notify else '否'}"
-                                    },
-                                    {
-                                        "component": "div",
-                                        "props": {"class": "mb-2"},
-                                        "text": f"定时扫描: {'启用' if self._scan_enabled else '禁用'}"
-                                    },
-                                    {
-                                        "component": "div",
-                                        "text": f"定时扫描间隔: {self._scan_interval} 秒"
+                                        "component": "tbody",
+                                        "content": failed_rows if failed_rows else [
+                                            {
+                                                "component": "tr",
+                                                "content": [
+                                                    {
+                                                        "component": "td",
+                                                        "props": {"colspan": 3, "class": "text-center"},
+                                                        "text": "暂无失败记录"
+                                                    }
+                                                ]
+                                            }
+                                        ]
                                     }
                                 ]
                             }
