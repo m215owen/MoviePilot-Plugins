@@ -14,7 +14,7 @@ class MediaSyncProtection(_PluginBase):
     
     plugin_name = "媒体同步保护"
     plugin_desc = "Emby收藏时从刷流插件移除种子，Emby删除媒体时标记种子待删除（由刷流插件执行）"
-    plugin_icon = "sync_protect.png"
+    plugin_icon = "sync_file.png"
     plugin_version = "1.0.0"
     plugin_author = "AI"
     plugin_config_prefix = "mediasyncprotection_"
