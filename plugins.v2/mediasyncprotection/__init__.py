@@ -1,7 +1,6 @@
 import time
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
-from aiohttp import web
 
 from app.plugins import _PluginBase
 from app.core.event import eventmanager, Event
@@ -10,11 +9,11 @@ from app.log import logger
 
 
 class MediaSyncProtection(_PluginBase):
-    """媒体同步保护：收藏时从刷流移除，删除时标记种子待删除"""
+    """媒体同步保护：监听官方Webhook，收藏时从刷流移除，删除时标记种子待删除"""
     
     # 插件元数据
     plugin_name = "媒体同步保护"
-    plugin_desc = "Emby收藏时从刷流插件移除种子，Emby删除媒体时标记种子待删除（由刷流插件执行）"
+    plugin_desc = "监听Emby Webhook，收藏时从刷流插件移除种子，删除媒体时标记种子待删除（由刷流插件执行）"
     plugin_icon = "sync_file.png"
     plugin_version = "1.0.0"
     plugin_author = "AI"
@@ -34,70 +33,93 @@ class MediaSyncProtection(_PluginBase):
         if config:
             self._config = config
             self._enabled = config.get("enabled", False)
-        logger.info(f"媒体同步保护插件已启动，启用状态: {self._enabled}")
+        
+        # 注册事件监听器
+        self._register_events()
+        
+        logger.info("媒体同步保护插件已启动，监听官方Webhook事件")
+    
+    def _register_events(self):
+        """注册事件监听器"""
+        # 监听媒体服务器 Webhook 事件
+        self.eventmanager.register(EventType.MediaServerWebhook, self.on_media_webhook)
+        
+        # 备用：监听插件触发事件（桥接模式）
+        self.eventmanager.register(EventType.PluginTriggered, self.on_plugin_triggered)
     
     def get_state(self) -> bool:
         """返回插件状态"""
         return self._enabled
     
-    def get_api(self) -> List[Dict[str, Any]]:
-        """注册API，接收Emby Webhook"""
-        return [
-            {
-                "path": "/emby_webhook",
-                "endpoint": self.receive_emby_webhook,
-                "methods": ["POST"],
-                "summary": "接收Emby Webhook",
-                "description": "处理Emby的收藏和删除事件",
-                "auth": "none"
-                "response_model": None  # <--- 添加这一行，禁用响应模型生成
-            }
-        ]
-    
-    async def receive_emby_webhook(self, request: web.Request) -> web.Response:
+    @eventmanager.register(EventType.MediaServerWebhook)
+    def on_media_webhook(self, event: Event):
         """
-        处理Emby Webhook
-        支持的事件类型：
-        - item.markedfavorite: 收藏 → 从刷流移除
-        - item.removed: 删除媒体 → 标记种子待删除
+        处理媒体服务器 Webhook 事件
+        事件数据由 MoviePilot 的 Emby/Jellyfin/Plex 模块解析后触发
         """
-        # 插件未启用时直接返回
         if not self._enabled:
-            return web.Response(status=200, text="Plugin disabled")
+            return
         
-        try:
-            form_data = await request.post()
+        event_data = event.event_data
+        
+        # 获取事件类型和媒体名称（兼容不同媒体服务器的字段）
+        event_type = event_data.get("event") or event_data.get("event_type") or event_data.get("Event", "")
+        item_name = event_data.get("name") or event_data.get("title") or event_data.get("ItemName", "")
+        
+        if not item_name:
+            return
+        
+        logger.info(f"收到媒体Webhook事件: {event_type}, 媒体: {item_name}")
+        
+        # 收藏事件
+        if event_type in ["item.markedfavorite", "favorite_added", "MarkedFavorite"]:
+            self.remove_from_brush_plugins(item_name)
+            if self._config.get("notify", True):
+                self.post_message(
+                    title="📌 收藏保护",
+                    text=f"「{item_name}」已收藏\n已从刷流任务中移除，该种子将不会被自动删除"
+                )
+        
+        # 删除媒体事件
+        elif event_type in ["item.removed", "item.deleted", "Removed"]:
+            self.mark_torrents_for_deletion(item_name)
+    
+    def on_plugin_triggered(self, event: Event):
+        """
+        备用：监听插件触发事件
+        用于桥接模式，当官方事件未暴露时，由桥接插件转发
+        """
+        if not self._enabled:
+            return
+        
+        event_data = event.event_data
+        
+        # 检查是否为 webhook 桥接消息
+        if event_data.get("source") == "webhook":
+            media_name = event_data.get("media_name") or event_data.get("name", "")
+            action = event_data.get("action", "")
             
-            event_type = form_data.get("Event", "")
-            item_name = form_data.get("ItemName", "")
+            if not media_name:
+                return
             
-            logger.info(f"收到Emby Webhook: 事件={event_type}, 媒体={item_name}")
+            logger.info(f"收到桥接Webhook消息: action={action}, 媒体={media_name}")
             
-            # 1. 收藏事件：从刷流插件移除（不删除文件）
-            if event_type == "item.markedfavorite" and item_name:
-                self.remove_from_brush_plugins(item_name)
+            if action == "favorite":
+                self.remove_from_brush_plugins(media_name)
                 if self._config.get("notify", True):
                     self.post_message(
                         title="📌 收藏保护",
-                        text=f"「{item_name}」已收藏\n已从刷流任务中移除，该种子将不会被自动删除"
+                        text=f"「{media_name}」已收藏\n已从刷流任务中移除"
                     )
-            
-            # 2. 删除媒体事件：标记种子待删除（由刷流插件执行）
-            elif event_type in ["item.removed", "item.deleted"] and item_name:
-                self.mark_torrents_for_deletion(item_name)
-            
-            return web.Response(status=200, text="OK")
-            
-        except Exception as e:
-            logger.error(f"处理Emby Webhook失败: {e}")
-            return web.Response(status=500, text=str(e))
+            elif action == "delete":
+                self.mark_torrents_for_deletion(media_name)
     
     def remove_from_brush_plugins(self, keyword: str):
         """
         从刷流插件中移除匹配的种子（收藏时调用）
         直接从数据中删除记录，种子文件保留
         """
-        if not keyword or not self._enabled:
+        if not keyword:
             return
         
         removed_count = 0
@@ -143,7 +165,7 @@ class MediaSyncProtection(_PluginBase):
         标记种子待删除（删除媒体时调用）
         在刷流插件数据中标记 pending_delete，让刷流插件的 check 方法执行实际删除
         """
-        if not media_name or not self._enabled:
+        if not media_name:
             return
         
         keyword_lower = media_name.lower()
@@ -224,11 +246,9 @@ class MediaSyncProtection(_PluginBase):
                 from app.plugins import PluginManager
                 plugin_manager = PluginManager()
                 return plugin_manager.get_plugin(plugin_id)
-            except Exception as e:
-                logger.debug(f"获取插件实例失败: {e}")
+            except Exception:
                 return None
-        except Exception as e:
-            logger.debug(f"获取插件实例失败: {e}")
+        except Exception:
             return None
     
     def _save_removed_history(self, removed_details: List[Dict], keyword: str):
@@ -268,6 +288,13 @@ class MediaSyncProtection(_PluginBase):
         
         self.save_data("deleted_history", history)
     
+    def get_api(self) -> List[Dict[str, Any]]:
+        """
+        注册插件API
+        注意：本插件不注册独立的 Webhook API，而是监听官方 Webhook 事件
+        """
+        return []
+    
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
         """注册远程命令"""
@@ -299,6 +326,13 @@ class MediaSyncProtection(_PluginBase):
                 "desc": "手动触发刷流检查",
                 "category": "管理",
                 "data": {"action": "trigger"}
+            },
+            {
+                "cmd": "/media_sync_test",
+                "event": EventType.PluginAction,
+                "desc": "测试Webhook事件监听",
+                "category": "测试",
+                "data": {"action": "test"}
             }
         ]
     
@@ -324,6 +358,10 @@ class MediaSyncProtection(_PluginBase):
         
         elif action == "history":
             self._send_history_report()
+        
+        elif action == "test":
+            self._send_history_report()  # 复用历史报告作为测试响应
+            self.post_message("测试", "插件运行正常，正在监听官方Webhook事件")
     
     def _send_history_report(self):
         """发送历史报告"""
@@ -334,7 +372,7 @@ class MediaSyncProtection(_PluginBase):
         total_marked = sum(h.get("marked_count", 0) for h in deleted_history)
         
         lines = [
-            f"📊 统计报告",
+            f"📊 媒体同步保护统计报告",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"📌 收藏移除: {len(removed_history)} 次，共 {total_removed} 个种子",
             f"🗑️ 删除标记: {len(deleted_history)} 次，共 {total_marked} 个种子",
@@ -420,7 +458,7 @@ class MediaSyncProtection(_PluginBase):
                                             {
                                                 "component": "div",
                                                 "props": {"style": "margin-top: 8px; color: #888;"},
-                                                "text": "提示：删除操作会调用刷流插件的 check 方法，复用其所有删除规则（标签保护、动态删种等）"
+                                                "text": "提示：本插件监听MoviePilot官方Webhook事件，请在Emby中配置Webhook到 /api/v1/webhook?token=xxx"
                                             }
                                         ]
                                     }
