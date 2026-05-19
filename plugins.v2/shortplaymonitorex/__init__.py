@@ -57,13 +57,13 @@ class FileMonitorHandler(FileSystemEventHandler):
 
 class ShortPlayMonitorex(_PluginBase):
     # 插件名称
-    plugin_name = "短剧刮削自用版"  # 可以改成不同的名称，比如 "短剧刮削(自用版)"
+    plugin_name = "短剧刮削魔改"  # 可以改成不同的名称，比如 "短剧刮削(自用版)"
     # 插件描述
-    plugin_desc = "监控视频短剧创建，刮削。(支持ptskit)"
+    plugin_desc = "支持ptsk"
     # 插件图标
     plugin_icon = "Amule_B.png"
     # 插件版本
-    plugin_version = "4.0.4"
+    plugin_version = "5.0"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
