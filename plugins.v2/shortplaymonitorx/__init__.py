@@ -808,18 +808,29 @@ class ShortPlayMonitorx(_PluginBase):
                 detail["actors"] = text.replace("主　　演", "").strip()
                 logger.debug(f"提取主演: {detail['actors'][:50]}...")
         
-        # 提取简介（在简　　介之后的内容）
+        # 提取简介（在简　　介之后、引用之前的内容）
         plot_elements = html.xpath('//*[@id="kdescr"]')
         if plot_elements:
             # 获取所有文本
             all_text = etree.tostring(plot_elements[0], method='text', encoding='unicode')
-            # 查找 "简　　介" 之后的内容
+            # 查找 "简　　介" 的位置
             if "简　　介" in all_text:
                 plot_start = all_text.find("简　　介")
-                plot_text = all_text[plot_start + 4:].strip()
+                # 从简　　介之后开始截取
+                plot_text = all_text[plot_start + 4:]
+                
+                # 查找 "引用" 的位置，如果存在则截取到引用之前
+                if "引用" in plot_text:
+                    ref_pos = plot_text.find("引用")
+                    plot_text = plot_text[:ref_pos]
+                
+                # 清理文本：去除多余空白和换行
+                plot_text = re.sub(r'\s+', ' ', plot_text).strip()
+                
                 # 取前1000字符作为简介
-                detail["plot"] = plot_text[:1000].strip()
-                logger.debug(f"提取简介长度: {len(detail['plot'])}")
+                if plot_text:
+                    detail["plot"] = plot_text[:1000]
+                    logger.debug(f"提取简介长度: {len(detail['plot'])}, 内容: {detail['plot'][:100]}...")
         
         logger.info(f"解析PT详情: title={detail['title']}, category={detail['category']}, episodes={detail['episodes']}")
         
