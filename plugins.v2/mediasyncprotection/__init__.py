@@ -1,417 +1,58 @@
-import time
-from typing import Dict, List, Optional, Any, Tuple
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Tuple
 from datetime import datetime
-from aiohttp import web
 
 from app.plugins import _PluginBase
+from app.log import logger
 from app.core.event import eventmanager, Event
 from app.schemas.types import EventType
-from app.log import logger
+from app.schemas import NotificationType
+from app.helper.downloader import DownloaderHelper
 
 
 class MediaSyncProtection(_PluginBase):
-    """媒体同步保护：接收Emby Webhook，收藏时从刷流移除，删除时标记种子待删除"""
-    
-    # 插件元数据
     plugin_name = "媒体同步保护"
-    plugin_desc = "接收Emby Webhook，收藏时从刷流插件移除种子，删除媒体时标记种子待删除（由刷流插件执行）"
-    plugin_icon = "sync_file.png"
+    plugin_desc = "监听Emby Webhook，收藏时添加/移除保种标签，删除时对种子执行操作"
+    plugin_icon = "Amule_B.png"
     plugin_version = "1.0.0"
     plugin_author = "AI"
     plugin_config_prefix = "mediasyncprotection_"
     plugin_order = 24
-    auth_level = 2
-    
-    # 目标刷流插件
-    TARGET_PLUGINS = ["BrushFlowLowFreq", "BrushFlow", "站点刷流（低频版）"]
-    
-    # 私有属性
-    _config = {}
+    auth_level = 1
+
     _enabled = False
-    
+    _webhook_path = "/mediasync"
+    _received_events = []
+    _event_lock = threading.Lock()
+    _executor = ThreadPoolExecutor(max_workers=3)
+
     def init_plugin(self, config: dict = None):
-        """初始化插件"""
-        if config:
-            self._config = config
-            self._enabled = config.get("enabled", False)
-        
-        # 注册事件监听器
-        self.eventmanager.register(EventType.WebhookMessage, self.on_webhook_message)
-        
-        logger.info("媒体同步保护插件已启动，接收 Emby Webhook")
-    
+        config = config or {}
+        self._enabled = config.get("enabled", False)
+        with self._event_lock:
+            self._received_events = (self.get_data("received_events") or [])[:50]
+        logger.info(f"媒体同步保护初始化完成，启用: {self._enabled}")
+
     def get_state(self) -> bool:
-        """返回插件状态"""
         return self._enabled
-    
+
     def get_api(self) -> List[Dict[str, Any]]:
-        """注册API，接收Emby Webhook"""
-        return [
-            {
-                "path": "/emby_webhook",
-                "endpoint": self.receive_emby_webhook,
-                "methods": ["POST"],
-                "summary": "接收Emby Webhook",
-                "description": "处理Emby的收藏和删除事件",
-                "auth": "none",
-                "response_model": None
-            }
-        ]
-    
-    async def receive_emby_webhook(self, request: web.Request) -> Any:
-        """
-        接收 Emby Webhook 并转换为 WebhookMessage 事件
-        """
         if not self._enabled:
-            return web.Response(status=200, text="Plugin disabled")
-        
-        try:
-            # Emby 发送的是 Form Data 格式
-            form_data = await request.post()
-            
-            event_type = form_data.get("Event", "")
-            item_name = form_data.get("ItemName", "")
-            item_id = form_data.get("ItemId", "")
-            item_type = form_data.get("ItemType", "")
-            
-            logger.info(f"收到 Emby Webhook: 事件={event_type}, 媒体={item_name}")
-            
-            if not item_name:
-                return web.Response(status=200, text="OK")
-            
-            # 转换为 WebhookMessage 事件
-            webhook_event_type = None
-            if event_type == "item.markedfavorite":
-                webhook_event_type = "favorite.add"
-            elif event_type in ["item.removed", "item.deleted"]:
-                webhook_event_type = "media.delete"
-            
-            if webhook_event_type:
-                # 发送事件给自己
-                self.eventmanager.send_event(
-                    etype=EventType.WebhookMessage,
-                    data={
-                        "event": webhook_event_type,
-                        "media_name": item_name,
-                        "media_id": item_id,
-                        "media_type": item_type,
-                        "source": "emby"
-                    }
-                )
-                logger.info(f"已转发事件: {webhook_event_type} -> {item_name}")
-            
-            return web.Response(status=200, text="OK")
-            
-        except Exception as e:
-            logger.error(f"处理 Emby Webhook 失败: {e}")
-            return web.Response(status=500, text=str(e))
-    
-    @eventmanager.register(EventType.WebhookMessage)
-    def on_webhook_message(self, event: Event):
-        """
-        处理 WebhookMessage 事件
-        """
-        if not self._enabled:
-            return
-        
-        event_data = event.event_data
-        
-        # 获取事件类型
-        if hasattr(event_data, 'event'):
-            event_type = getattr(event_data, 'event', None)
-            media_name = getattr(event_data, 'media_name', None) or getattr(event_data, 'item_name', None)
-        else:
-            event_type = event_data.get("event")
-            media_name = event_data.get("media_name") or event_data.get("item_name") or event_data.get("name")
-        
-        if not event_type or not media_name:
-            return
-        
-        logger.debug(f"收到 WebhookMessage 事件: event={event_type}, media={media_name}")
-        
-        # 收藏事件
-        if event_type in ["favorite.add", "favorite_added", "item.markedfavorite"]:
-            self.remove_from_brush_plugins(media_name)
-            if self._config.get("notify", True):
-                self.post_message(
-                    title="📌 收藏保护",
-                    text=f"「{media_name}」已收藏\n已从刷流任务中移除，该种子将不会被自动删除"
-                )
-        
-        # 删除媒体事件
-        elif event_type in ["media.delete", "item.removed", "item.deleted"]:
-            self.mark_torrents_for_deletion(media_name)
-    
-    def remove_from_brush_plugins(self, keyword: str):
-        """
-        从刷流插件中移除匹配的种子（收藏时调用）
-        直接从数据中删除记录，种子文件保留
-        """
-        if not keyword:
-            return
-        
-        removed_count = 0
-        removed_details = []
-        keyword_lower = keyword.lower()
-        
-        for plugin_id in self.TARGET_PLUGINS:
-            torrents_data = self.get_data("torrents", plugin_id)
-            
-            if not torrents_data or not isinstance(torrents_data, dict):
-                continue
-            
-            modified = False
-            to_remove = []
-            
-            for torrent_hash, torrent_info in torrents_data.items():
-                title = torrent_info.get("title", "")
-                if keyword_lower in title.lower():
-                    to_remove.append(torrent_hash)
-                    removed_details.append({
-                        "hash": torrent_hash,
-                        "title": title,
-                        "site": torrent_info.get("site_name"),
-                        "plugin": plugin_id
-                    })
-                    logger.debug(f"匹配成功: {keyword} -> {title}")
-            
-            for torrent_hash in to_remove:
-                del torrents_data[torrent_hash]
-                modified = True
-                removed_count += 1
-            
-            if modified:
-                self.save_data("torrents", torrents_data, plugin_id)
-                logger.info(f"从插件 {plugin_id} 移除了 {len(to_remove)} 个种子")
-        
-        # 记录历史
-        if removed_details:
-            self._save_removed_history(removed_details, keyword)
-    
-    def mark_torrents_for_deletion(self, media_name: str):
-        """
-        标记种子待删除（删除媒体时调用）
-        在刷流插件数据中标记 pending_delete，让刷流插件的 check 方法执行实际删除
-        """
-        if not media_name:
-            return
-        
-        keyword_lower = media_name.lower()
-        marked_count = 0
-        marked_details = []
-        
-        for plugin_id in self.TARGET_PLUGINS:
-            torrents_data = self.get_data("torrents", plugin_id)
-            
-            if not torrents_data or not isinstance(torrents_data, dict):
-                continue
-            
-            modified = False
-            
-            for torrent_hash, torrent_info in torrents_data.items():
-                title = torrent_info.get("title", "")
-                
-                # 跳过已删除或已标记的
-                if torrent_info.get("deleted") or torrent_info.get("pending_delete"):
-                    continue
-                
-                if keyword_lower in title.lower():
-                    # 标记为待删除
-                    torrent_info["pending_delete"] = True
-                    torrent_info["pending_delete_time"] = time.time()
-                    torrent_info["pending_delete_reason"] = f"媒体库删除: {media_name}"
-                    modified = True
-                    marked_count += 1
-                    marked_details.append({
-                        "hash": torrent_hash,
-                        "title": title,
-                        "site": torrent_info.get("site_name"),
-                        "plugin": plugin_id
-                    })
-                    logger.info(f"标记种子待删除: {title[:50]}...")
-            
-            if modified:
-                self.save_data("torrents", torrents_data, plugin_id)
-                logger.info(f"在插件 {plugin_id} 中标记了 {marked_count} 个种子待删除")
-        
-        # 触发刷流插件的检查
-        if marked_count > 0:
-            self._trigger_brush_check()
-            
-            # 发送通知
-            if self._config.get("notify", True):
-                self.post_message(
-                    title="🗑️ 媒体删除同步",
-                    text=f"「{media_name}」已从媒体库删除\n已标记 {marked_count} 个种子待删除，将由刷流插件执行"
-                )
-        else:
-            logger.info(f"未找到匹配的种子: {media_name}")
-        
-        # 记录历史
-        if marked_details:
-            self._save_deleted_history(marked_details, media_name)
-    
-    def _trigger_brush_check(self):
-        """触发刷流插件的检查任务"""
-        for plugin_id in self.TARGET_PLUGINS:
-            try:
-                plugin = self._get_plugin_instance(plugin_id)
-                if plugin and hasattr(plugin, 'check'):
-                    logger.info(f"触发刷流插件检查: {plugin_id}")
-                    plugin.check()
-                    break
-            except Exception as e:
-                logger.debug(f"触发刷流插件检查失败 ({plugin_id}): {e}")
-    
-    def _get_plugin_instance(self, plugin_id: str):
-        """获取插件实例"""
-        try:
-            from app.core.plugin import PluginManager
-            plugin_manager = PluginManager()
-            return plugin_manager.get_plugin(plugin_id)
-        except ImportError:
-            try:
-                from app.plugins import PluginManager
-                plugin_manager = PluginManager()
-                return plugin_manager.get_plugin(plugin_id)
-            except Exception:
-                return None
-        except Exception:
-            return None
-    
-    def _save_removed_history(self, removed_details: List[Dict], keyword: str):
-        """保存收藏移除历史"""
-        history = self.get_data("removed_history") or []
-        
-        history.append({
-            "keyword": keyword,
-            "action": "favorite_remove",
-            "time": time.time(),
-            "time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "removed_count": len(removed_details),
-            "details": removed_details[:10]
-        })
-        
-        if len(history) > 200:
-            history = history[-200:]
-        
-        self.save_data("removed_history", history)
-    
-    def _save_deleted_history(self, marked_details: List[Dict], media_name: str):
-        """保存删除标记历史"""
-        history = self.get_data("deleted_history") or []
-        
-        history.append({
-            "media_name": media_name,
-            "action": "mark_for_deletion",
-            "marked_count": len(marked_details),
-            "details": marked_details[:10],
-            "time": time.time(),
-            "time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        
-        if len(history) > 200:
-            history = history[-200:]
-        
-        self.save_data("deleted_history", history)
-    
-    @staticmethod
-    def get_command() -> List[Dict[str, Any]]:
-        """注册远程命令"""
-        return [
-            {
-                "cmd": "/media_sync_remove",
-                "event": EventType.PluginAction,
-                "desc": "手动从刷流移除种子",
-                "category": "管理",
-                "data": {"action": "remove"}
-            },
-            {
-                "cmd": "/media_sync_mark",
-                "event": EventType.PluginAction,
-                "desc": "手动标记种子待删除",
-                "category": "管理",
-                "data": {"action": "mark"}
-            },
-            {
-                "cmd": "/media_sync_history",
-                "event": EventType.PluginAction,
-                "desc": "查看操作历史",
-                "category": "查询",
-                "data": {"action": "history"}
-            },
-            {
-                "cmd": "/media_sync_trigger",
-                "event": EventType.PluginAction,
-                "desc": "手动触发刷流检查",
-                "category": "管理",
-                "data": {"action": "trigger"}
-            },
-            {
-                "cmd": "/media_sync_test",
-                "event": EventType.PluginAction,
-                "desc": "测试插件状态",
-                "category": "测试",
-                "data": {"action": "test"}
-            }
-        ]
-    
-    @eventmanager.register(EventType.PluginAction)
-    def handle_command(self, event: Event):
-        """处理远程命令"""
-        if not self._enabled:
-            return
-        
-        action = event.event_data.get("action")
-        keyword = event.event_data.get("keyword") or event.event_data.get("name")
-        
-        if action == "remove" and keyword:
-            self.remove_from_brush_plugins(keyword)
-            self.post_message("手动操作", f"已从刷流移除: {keyword}")
-        
-        elif action == "mark" and keyword:
-            self.mark_torrents_for_deletion(keyword)
-        
-        elif action == "trigger":
-            self._trigger_brush_check()
-            self.post_message("手动操作", "已触发刷流插件检查")
-        
-        elif action == "history":
-            self._send_history_report()
-        
-        elif action == "test":
-            self.post_message("测试", "插件运行正常，接收 Emby Webhook")
-    
-    def _send_history_report(self):
-        """发送历史报告"""
-        removed_history = self.get_data("removed_history") or []
-        deleted_history = self.get_data("deleted_history") or []
-        
-        total_removed = sum(h.get("removed_count", 0) for h in removed_history)
-        total_marked = sum(h.get("marked_count", 0) for h in deleted_history)
-        
-        lines = [
-            f"📊 媒体同步保护统计报告",
-            f"━━━━━━━━━━━━━━━━━━━━",
-            f"📌 收藏移除: {len(removed_history)} 次，共 {total_removed} 个种子",
-            f"🗑️ 删除标记: {len(deleted_history)} 次，共 {total_marked} 个种子",
-            "",
-            "📌 最近收藏移除："
-        ]
-        
-        for item in removed_history[-5:]:
-            lines.append(f"  · {item.get('time_str')} - 「{item.get('keyword')}」({item.get('removed_count')}个)")
-        
-        lines.append("")
-        lines.append("🗑️ 最近删除标记：")
-        
-        for item in deleted_history[-5:]:
-            lines.append(f"  · {item.get('time_str')} - 「{item.get('media_name')}」({item.get('marked_count')}个)")
-        
-        self.post_message("操作历史", "\n".join(lines))
-    
+            return []
+        return [{
+            "path": self._webhook_path,
+            "endpoint": self.handle_emby_webhook,
+            "methods": ["POST", "GET"],
+            "auth": "apikey",
+            "summary": "接收Emby Webhook"
+        }]
+
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        """配置表单"""
+        downloader_helper = DownloaderHelper()
+        options = [{"title": c.name, "value": c.name} for c in downloader_helper.get_configs().values()]
+        
         return [
             {
                 "component": "VForm",
@@ -421,13 +62,50 @@ class MediaSyncProtection(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {"component": "VSelect", "props": {"model": "downloader", "label": "下载器", "items": options}}
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {"component": "VTextField", "props": {"model": "seed_tag", "label": "保种标签", "placeholder": "保种"}}
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
-                                        "component": "VSwitch",
+                                        "component": "VSelect",
                                         "props": {
-                                            "model": "enabled",
-                                            "label": "启用插件"
+                                            "model": "delete_action",
+                                            "label": "删除时操作",
+                                            "items": [
+                                                {"title": "仅移除标签", "value": "remove_tag"},
+                                                {"title": "暂停种子", "value": "pause"},
+                                                {"title": "删除种子(保留文件)", "value": "delete"},
+                                                {"title": "删除种子(删除文件)", "value": "delete_with_file"}
+                                            ]
                                         }
                                     }
                                 ]
@@ -436,13 +114,14 @@ class MediaSyncProtection(_PluginBase):
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
                                 "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "notify",
-                                            "label": "发送通知"
-                                        }
-                                    }
+                                    {"component": "VSwitch", "props": {"model": "fuzzy_match", "label": "模糊匹配"}}
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {"component": "VSwitch", "props": {"model": "send_notify", "label": "发送通知"}}
                                 ]
                             }
                         ]
@@ -458,62 +137,9 @@ class MediaSyncProtection(_PluginBase):
                                         "component": "VAlert",
                                         "props": {
                                             "type": "info",
-                                            "variant": "tonal"
-                                        },
-                                        "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"style": "font-weight: bold; margin-bottom: 8px;"},
-                                                "text": "配置说明"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "在 Emby 中配置 Webhook，URL 填写："
-                                            },
-                                            {
-                                                "component": "code",
-                                                "props": {"class": "mt-2 mb-2"},
-                                                "text": f"http://你的MoviePilot:3002/api/v1/plugin/MediaSyncProtection/emby_webhook"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "props": {"class": "mt-2"},
-                                                "text": "勾选事件：Item Marked Favorite、Item Removed From Database"
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "success",
-                                            "variant": "tonal"
-                                        },
-                                        "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"style": "font-weight: bold; margin-bottom: 8px;"},
-                                                "text": "功能说明"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "1. 📌 收藏媒体 → 从刷流插件移除种子记录（种子文件保留）"
-                                            },
-                                            {
-                                                "component": "div",
-                                                "text": "2. 🗑️ 删除媒体 → 在刷流插件中标记种子待删除，由刷流插件执行实际删除"
-                                            }
-                                        ]
+                                            "variant": "tonal",
+                                            "text": "Webhook URL: /api/v1/plugin/MediaSyncProtection/mediasync?apikey=系统API_KEY"
+                                        }
                                     }
                                 ]
                             }
@@ -523,79 +149,454 @@ class MediaSyncProtection(_PluginBase):
             }
         ], {
             "enabled": False,
-            "notify": True
+            "downloader": None,
+            "seed_tag": "保种",
+            "delete_action": "remove_tag",
+            "fuzzy_match": True,
+            "send_notify": True
         }
-    
+
     def get_page(self) -> List[dict]:
-        """详情页显示历史"""
-        removed_history = self.get_data("removed_history") or []
-        deleted_history = self.get_data("deleted_history") or []
-        
-        all_records = []
-        
-        for item in removed_history:
-            all_records.append({
-                "time_str": item.get("time_str", ""),
-                "type": "📌 收藏移除",
-                "name": item.get("keyword", ""),
-                "count": item.get("removed_count", 0)
-            })
-        
-        for item in deleted_history:
-            all_records.append({
-                "time_str": item.get("time_str", ""),
-                "type": "🗑️ 删除标记",
-                "name": item.get("media_name", ""),
-                "count": item.get("marked_count", 0)
-            })
-        
-        all_records.sort(key=lambda x: x.get("time_str", ""), reverse=True)
-        all_records = all_records[:30]
-        
-        if not all_records:
-            return [{"component": "div", "text": "暂无操作记录", "props": {"class": "text-center"}}]
-        
-        rows = []
-        for record in all_records:
-            rows.append({
-                "component": "tr",
-                "content": [
-                    {"component": "td", "text": record.get("time_str", "")},
-                    {"component": "td", "text": record.get("type", "")},
-                    {"component": "td", "text": record.get("name", "")[:50]},
-                    {"component": "td", "text": str(record.get("count", 0))}
-                ]
-            })
+        with self._event_lock:
+            events = self._received_events[:20]
+            total = len(self._received_events)
+            fav = len([e for e in self._received_events if e.get("event_type") == "收藏"])
+            unfav = len([e for e in self._received_events if e.get("event_type") == "取消收藏"])
+            dlt = len([e for e in self._received_events if e.get("event_type") == "删除"])
         
         return [
             {
-                "component": "VCard",
+                "component": "VRow",
                 "content": [
                     {
-                        "component": "VCardTitle",
-                        "text": "操作记录"
+                        "component": "VCol",
+                        "props": {"cols": 12, "md": 3},
+                        "content": [self._stat_card("总事件数", total, "primary")]
                     },
                     {
-                        "component": "VTable",
-                        "props": {"hover": True},
+                        "component": "VCol",
+                        "props": {"cols": 12, "md": 3},
+                        "content": [self._stat_card("收藏", fav, "success")]
+                    },
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12, "md": 3},
+                        "content": [self._stat_card("取消收藏", unfav, "warning")]
+                    },
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12, "md": 3},
+                        "content": [self._stat_card("删除", dlt, "error")]
+                    }
+                ]
+            },
+            {
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
                         "content": [
                             {
-                                "component": "thead",
+                                "component": "VCard",
+                                "props": {"variant": "outlined"},
                                 "content": [
-                                    {"component": "th", "text": "时间"},
-                                    {"component": "th", "text": "操作类型"},
-                                    {"component": "th", "text": "媒体/关键词"},
-                                    {"component": "th", "text": "数量"}
+                                    {
+                                        "component": "VCardTitle",
+                                        "text": "事件记录"
+                                    },
+                                    {
+                                        "component": "VCardText",
+                                        "content": [
+                                            {
+                                                "component": "VTable",
+                                                "props": {"density": "compact", "hover": True},
+                                                "content": [
+                                                    {
+                                                        "component": "thead",
+                                                        "content": [{
+                                                            "component": "tr",
+                                                            "content": [
+                                                                {"component": "th", "text": "时间"},
+                                                                {"component": "th", "text": "类型"},
+                                                                {"component": "th", "text": "媒体"},
+                                                                {"component": "th", "text": "操作者"},
+                                                                {"component": "th", "text": "匹配数"},
+                                                                {"component": "th", "text": "状态"}
+                                                            ]
+                                                        }]
+                                                    },
+                                                    {
+                                                        "component": "tbody",
+                                                        "content": [
+                                                            {
+                                                                "component": "tr",
+                                                                "content": [
+                                                                    {"component": "td", "text": e.get("time", "")},
+                                                                    {"component": "td", "text": e.get("event_type", "")},
+                                                                    {"component": "td", "text": e.get("item_name", "")},
+                                                                    {"component": "td", "text": e.get("user_name", "")},
+                                                                    {"component": "td", "text": str(e.get("matched_count", 0))},
+                                                                    {"component": "td", "text": e.get("status", "")}
+                                                                ]
+                                                            } for e in events
+                                                        ] if events else [{
+                                                            "component": "tr",
+                                                            "content": [{"component": "td", "props": {"colspan": 6, "class": "text-center"}, "text": "暂无数据"}]
+                                                        }]
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
                                 ]
-                            },
-                            {"component": "tbody", "content": rows}
+                            }
                         ]
                     }
                 ]
             }
         ]
-    
+
+    def _stat_card(self, title: str, value: int, color: str) -> dict:
+        return {
+            "component": "VCard",
+            "props": {"variant": "tonal", "color": color},
+            "content": [{
+                "component": "VCardText",
+                "props": {"class": "text-center"},
+                "content": [
+                    {"component": "div", "props": {"class": "text-h5"}, "text": str(value)},
+                    {"component": "div", "props": {"class": "text-caption"}, "text": title}
+                ]
+            }]
+        }
+
+    def handle_emby_webhook(self, request_data: dict = None, request=None) -> dict:
+        try:
+            data = request_data or {}
+            if request and hasattr(request, 'json'):
+                data = request.json() if callable(request.json) else request.json
+            
+            event_type = data.get("Event") or data.get("event", "")
+            logger.info(f"收到事件: {event_type}")
+            
+            if event_type == "item.rate":
+                return self._process_favourite(data)
+            elif event_type == "library.deleted":
+                return self._process_delete(data)
+            return {"code": 200, "message": f"忽略: {event_type}"}
+        except Exception as e:
+            logger.error(f"处理失败: {e}")
+            return {"code": 500, "message": str(e)}
+
+    def _process_favourite(self, data: dict) -> dict:
+        try:
+            logger.info(f"收藏事件完整数据: {json.dumps(data, ensure_ascii=False)}")
+            
+            item = data.get("Item", {})
+            user = data.get("User", {})
+            
+            item_name = item.get("SeriesName") or item.get("ParentName") or item.get("Name", "未知")
+            user_name = user.get("Name", "未知")
+            is_favorite = item.get("UserData", {}).get("IsFavorite", False)
+            
+            cfg = self.get_config() or {}
+            if not cfg.get("downloader"):
+                logger.warning("未配置下载器")
+                return {"code": 400, "message": "未配置下载器"}
+            
+            fuzzy = cfg.get("fuzzy_match", True)
+            logger.info(f"收藏事件: 剧名={item_name}, 用户={user_name}, 收藏={is_favorite}, 模糊匹配={fuzzy}")
+            
+            if is_favorite:
+                action = "收藏"
+                matched, names = self._manage_tag(cfg["downloader"], item_name, cfg.get("seed_tag", "保种"), "add", fuzzy)
+                msg = f"已为 {matched} 个种子添加保种标签"
+            else:
+                action = "取消收藏"
+                matched, names = self._manage_tag(cfg["downloader"], item_name, cfg.get("seed_tag", "保种"), "remove", fuzzy)
+                msg = f"已为 {matched} 个种子移除保种标签"
+            
+            if cfg.get("send_notify") and matched > 0:
+                self._send_notification(f"{action}: {item_name}", msg, names)
+            
+            self._record_event({
+                "event_id": f"{datetime.now().timestamp()}_{action}",
+                "event_type": action,
+                "item_name": item_name,
+                "user_name": user_name,
+                "matched_count": matched,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": msg
+            })
+            return {"code": 200, "message": msg}
+        except Exception as e:
+            logger.error(f"处理收藏失败: {e}")
+            return {"code": 500, "message": str(e)}
+
+    def _process_delete(self, data: dict) -> dict:
+        try:
+            logger.info(f"删除事件完整数据: {json.dumps(data, ensure_ascii=False)}")
+            
+            item = data.get("Item", {})
+            
+            if item.get("Type") == "Episode":
+                logger.info("跳过单集删除")
+                return {"code": 200, "message": "跳过单集删除"}
+            
+            item_name = item.get("SeriesName") or item.get("ParentName") or item.get("Name", "未知")
+            
+            cfg = self.get_config() or {}
+            if not cfg.get("downloader"):
+                return {"code": 400, "message": "未配置下载器"}
+            
+            fuzzy = cfg.get("fuzzy_match", True)
+            delete_action = cfg.get("delete_action", "remove_tag")
+            
+            logger.info(f"删除事件: 剧名={item_name}, 操作={delete_action}, 模糊匹配={fuzzy}")
+            
+            event_id = f"{datetime.now().timestamp()}_delete"
+            self._record_event({
+                "event_id": event_id,
+                "event_type": "删除",
+                "item_name": item_name,
+                "user_name": "系统",
+                "matched_count": 0,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "处理中..."
+            })
+            
+            if cfg.get("async_delete", True):
+                self._executor.submit(self._execute_delete, event_id, cfg["downloader"], item_name, 
+                                     fuzzy, cfg.get("send_notify", True), delete_action,
+                                     cfg.get("seed_tag", "保种"))
+                return {"code": 200, "message": "删除任务已提交"}
+            else:
+                matched, names, success = self._execute_delete_sync(cfg["downloader"], item_name, fuzzy,
+                                                                     delete_action, cfg.get("seed_tag", "保种"))
+                self._update_event_status(event_id, matched, f"完成: 匹配{matched}个, 成功{success}个")
+                if cfg.get("send_notify") and matched > 0:
+                    self._send_notification(f"删除: {item_name}", f"已处理 {success}/{matched} 个种子", names)
+                return {"code": 200, "message": f"处理完成: {success}/{matched}"}
+        except Exception as e:
+            logger.error(f"处理删除失败: {e}")
+            return {"code": 500, "message": str(e)}
+
+    def _execute_delete(self, event_id: str, downloader_name: str, item_name: str, 
+                        fuzzy: bool, send_notify: bool, action: str, tag: str):
+        try:
+            matched, names, hashes = self._find_torrents(downloader_name, item_name, fuzzy)
+            if matched == 0:
+                self._update_event_status(event_id, 0, "未找到匹配的种子")
+                return
+            
+            if action == "remove_tag":
+                success = self._batch_remove_tag(hashes, tag, downloader_name)
+                msg = f"已移除 {success}/{matched} 个种子的保种标签"
+            elif action == "pause":
+                success = self._pause_torrents(hashes, downloader_name)
+                msg = f"已暂停 {success}/{matched} 个种子"
+            elif action == "delete":
+                success = self._delete_torrents(hashes, downloader_name, False)
+                msg = f"已删除 {success}/{matched} 个种子（保留文件）"
+            elif action == "delete_with_file":
+                success = self._delete_torrents(hashes, downloader_name, True)
+                msg = f"已删除 {success}/{matched} 个种子（删除文件）"
+            else:
+                msg = f"未知操作: {action}"
+                success = 0
+            
+            self._update_event_status(event_id, matched, msg)
+            if send_notify and matched > 0:
+                self._send_notification(f"删除: {item_name}", msg, names[:5])
+        except Exception as e:
+            logger.error(f"后台删除失败: {e}")
+            self._update_event_status(event_id, 0, f"失败: {e}")
+
+    def _execute_delete_sync(self, downloader_name: str, item_name: str, fuzzy: bool, action: str, tag: str) -> tuple:
+        matched, names, hashes = self._find_torrents(downloader_name, item_name, fuzzy)
+        if matched == 0:
+            return 0, [], 0
+        
+        if action == "remove_tag":
+            success = self._batch_remove_tag(hashes, tag, downloader_name)
+        elif action == "pause":
+            success = self._pause_torrents(hashes, downloader_name)
+        elif action == "delete":
+            success = self._delete_torrents(hashes, downloader_name, False)
+        elif action == "delete_with_file":
+            success = self._delete_torrents(hashes, downloader_name, True)
+        else:
+            success = 0
+        return matched, names, success
+
+    def _manage_tag(self, downloader_name: str, media_name: str, tag: str, op: str, fuzzy: bool) -> tuple:
+        matched, names, hashes = self._find_torrents(downloader_name, media_name, fuzzy)
+        if matched == 0:
+            return 0, []
+        
+        downloader, dl_type = self._get_downloader(downloader_name)
+        if not downloader:
+            return 0, []
+        
+        success = 0
+        for h in hashes:
+            if op == "add":
+                ok = self._add_tag(h, tag, downloader, dl_type)
+            else:
+                ok = self._remove_tag(h, tag, downloader, dl_type)
+            if ok:
+                success += 1
+        return success, names
+
+    def _find_torrents(self, downloader_name: str, media_name: str, fuzzy: bool) -> tuple:
+        """用剧名作为关键字匹配种子"""
+        logger.info(f"[匹配] 下载器={downloader_name}, 剧名={media_name}, 模糊匹配={fuzzy}")
+        
+        downloader, _ = self._get_downloader(downloader_name)
+        if not downloader:
+            logger.warning("[匹配] 下载器不可用")
+            return 0, [], []
+        
+        torrents, error = downloader.get_torrents()
+        if error:
+            logger.error(f"[匹配] 获取种子列表失败: {error}")
+            return 0, [], []
+        
+        logger.info(f"[匹配] 获取到 {len(torrents)} 个种子，开始匹配...")
+        
+        hashes, names = [], []
+        for t in torrents:
+            name = t.name if hasattr(t, 'name') else t.get("name", "")
+            if not name:
+                continue
+            
+            if fuzzy:
+                match = media_name in name
+            else:
+                match = media_name == name
+            
+            if match:
+                h = t.hashString if hasattr(t, 'hashString') else t.get("hash", "")
+                if h:
+                    hashes.append(h)
+                    names.append(name)
+                    logger.info(f"[匹配] ✓ 匹配成功: {name}")
+        
+        if hashes:
+            logger.info(f"[匹配] 共匹配到 {len(hashes)} 个种子")
+        else:
+            logger.info(f"[匹配] ✗ 未匹配到种子，关键字: {media_name}")
+            sample_names = [t.name if hasattr(t, 'name') else t.get("name", "") for t in torrents[:5]]
+            logger.info(f"[匹配] 种子示例: {sample_names}")
+        
+        return len(hashes), names, hashes
+
+    def _get_downloader(self, name: str):
+        try:
+            service = DownloaderHelper().get_service(name=name)
+            if service and service.instance and not service.instance.is_inactive():
+                dl_type = "qbittorrent" if ('qbittorrent' in str(type(service.instance)).lower() or hasattr(service.instance, 'qbc')) else "transmission"
+                return service.instance, dl_type
+            return None, None
+        except Exception as e:
+            logger.error(f"获取下载器失败: {e}")
+            return None, None
+
+    def _add_tag(self, h: str, tag: str, dl, dl_type: str) -> bool:
+        try:
+            if dl_type == "qbittorrent":
+                if hasattr(dl, 'add_torrent_tags'):
+                    return dl.add_torrent_tags(h, tag)
+                if hasattr(dl, 'qbc'):
+                    dl.qbc.torrents_add_tags(tags=tag, torrent_hashes=h)
+                    return True
+            else:
+                if hasattr(dl, 'add_torrent_label'):
+                    return dl.add_torrent_label(h, tag)
+            return False
+        except Exception as e:
+            logger.error(f"添加标签失败: {e}")
+            return False
+
+    def _remove_tag(self, h: str, tag: str, dl, dl_type: str) -> bool:
+        try:
+            if dl_type == "qbittorrent":
+                if hasattr(dl, 'remove_torrent_tags'):
+                    return dl.remove_torrent_tags(h, tag)
+                if hasattr(dl, 'qbc'):
+                    dl.qbc.torrents_remove_tags(tags=tag, torrent_hashes=h)
+                    return True
+            else:
+                if hasattr(dl, 'remove_torrent_label'):
+                    return dl.remove_torrent_label(h, tag)
+            return False
+        except Exception as e:
+            logger.error(f"移除标签失败: {e}")
+            return False
+
+    def _batch_remove_tag(self, hashes: list, tag: str, dl_name: str) -> int:
+        success = 0
+        dl, dt = self._get_downloader(dl_name)
+        if not dl:
+            return 0
+        for h in hashes:
+            if self._remove_tag(h, tag, dl, dt):
+                success += 1
+        return success
+
+    def _pause_torrents(self, hashes: list, dl_name: str) -> int:
+        dl, _ = self._get_downloader(dl_name)
+        if not dl:
+            return 0
+        success = 0
+        for h in hashes:
+            try:
+                if hasattr(dl, 'pause_torrents') and dl.pause_torrents([h]):
+                    success += 1
+                elif hasattr(dl, 'stop_torrent') and dl.stop_torrent(h):
+                    success += 1
+            except:
+                pass
+        return success
+
+    def _delete_torrents(self, hashes: list, dl_name: str, delete_file: bool) -> int:
+        dl, _ = self._get_downloader(dl_name)
+        if not dl:
+            return 0
+        success = 0
+        for h in hashes:
+            try:
+                if dl.delete_torrents(ids=[h], delete_file=delete_file):
+                    success += 1
+            except:
+                pass
+        return success
+
+    def _update_event_status(self, event_id: str, matched: int, status: str):
+        with self._event_lock:
+            for e in self._received_events:
+                if e.get("event_id") == event_id:
+                    e["matched_count"] = matched
+                    e["status"] = status
+                    self.save_data("received_events", self._received_events)
+                    break
+
+    def _record_event(self, event: dict):
+        with self._event_lock:
+            self._received_events.insert(0, event)
+            if len(self._received_events) > 50:
+                self._received_events = self._received_events[:50]
+            self.save_data("received_events", self._received_events)
+
+    def _send_notification(self, title: str, msg: str, names: list = None):
+        if names:
+            msg += f"\n种子: {', '.join(names[:3])}"
+            if len(names) > 3:
+                msg += f" 等{len(names)}个"
+        self.post_message(title=f"【{self.plugin_name}】{title}", text=msg, mtype=NotificationType.SiteMessage)
+
     def stop_service(self):
-        """停止服务"""
         self._enabled = False
+        self._executor.shutdown(wait=False)
         logger.info("媒体同步保护插件已停止")
