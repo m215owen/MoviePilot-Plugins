@@ -1940,6 +1940,90 @@ class brushflowmod(_PluginBase):
                 self._scheduler = None
         except Exception as e:
             print(str(e))
+    # ========== 在这下面添加新方法 ==========
+
+    def __find_existing_torrent_hash_by_name(self, title: str) -> Optional[str]:
+        """
+        通过标题查找已存在种子的 Hash
+        """
+        try:
+            downloader = self.downloader
+            if not downloader:
+                return None
+            
+            torrents, error = downloader.get_torrents()
+            if error:
+                return None
+            
+            downloader_helper = DownloaderHelper()
+            for torrent in torrents:
+                torrent_title = torrent.get("name") if downloader_helper.is_downloader("qbittorrent", service=self.service_info) else torrent.name
+                if torrent_title == title:
+                    return self.__get_hash(torrent)
+            return None
+        except Exception as e:
+            logger.error(f"查找已存在种子失败: {str(e)}")
+            return None
+
+    def __add_tags_to_existing_torrent(self, torrent_title: str, tags: List[str]) -> bool:
+        """
+        给已存在的种子添加标签（自动去重）
+        """
+        try:
+            downloader = self.downloader
+            if not downloader:
+                return False
+            
+            downloader_helper = DownloaderHelper()
+            torrents, error = downloader.get_torrents()
+            if error:
+                logger.error(f"获取下载器种子列表失败: {error}")
+                return False
+            
+            # 查找匹配的种子
+            target_torrent = None
+            for t in torrents:
+                t_title = t.get("name") if downloader_helper.is_downloader("qbittorrent", service=self.service_info) else t.name
+                if t_title == torrent_title:
+                    target_torrent = t
+                    break
+            
+            if not target_torrent:
+                logger.warning(f"未找到已存在的种子: {torrent_title}")
+                return False
+            
+            torrent_hash = self.__get_hash(target_torrent)
+            
+            # 获取现有标签
+            existing_tags = self.__get_label(target_torrent)
+            
+            # 合并并去重（保留原有顺序）
+            all_tags = []
+            seen = set()
+            for tag in existing_tags + tags:
+                if tag not in seen:
+                    seen.add(tag)
+                    all_tags.append(tag)
+            
+            logger.info(f"种子 {torrent_title} 原有标签: {existing_tags}")
+            logger.info(f"种子 {torrent_title} 新增标签: {[t for t in tags if t not in existing_tags]}")
+            logger.info(f"种子 {torrent_title} 合并后标签: {all_tags}")
+            
+            # 添加标签
+            if downloader_helper.is_downloader("qbittorrent", service=self.service_info):
+                tags_str = ','.join(all_tags)
+                result = downloader.qbc.torrents_add_tags(torrent_hashes=torrent_hash, tags=tags_str)
+                logger.info(f"qBittorrent 为已存在种子设置标签: {all_tags}, 结果: {result}")
+            else:
+                result = downloader.change_torrent(hash_string=torrent_hash, labels=all_tags)
+                logger.info(f"Transmission 为已存在种子设置标签: {all_tags}, 结果: {result}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"为已存在种子添加标签失败: {str(e)}")
+            return False
+
+    # ========== 新方法添加结束 ==========
 
     # region Brush
 
@@ -2044,14 +2128,10 @@ class brushflowmod(_PluginBase):
                 logger.info(f"  完成数: {torrent.grabs}")
                 logger.info(f"  详情页: {torrent.page_url}")
                 logger.info(f"  下载链接: {torrent.enclosure}")
-                logger.info(f"  IMDB ID: {torrent.imdbid}")
-                logger.info(f"  上传系数: {torrent.uploadvolumefactor}")
-                logger.info(f"  下载系数: {torrent.downloadvolumefactor}")
+                logger.info(f"  标签: {torrent.labels}")
                 logger.info(f"  H&R: {torrent.hit_and_run}")
                 logger.info(f"  促销截止: {torrent.freedate}")
                 logger.info(f"  站点名称: {torrent.site_name}")
-                logger.info(f"  站点Cookie: {torrent.site_cookie[:50] if torrent.site_cookie else 'None'}...")
-                logger.info(f"  站点UA: {torrent.site_ua}")
                 logger.info(f"  使用代理: {torrent.site_proxy}")
                 logger.info("-" * 50)
         else:
@@ -3271,6 +3351,36 @@ class brushflowmod(_PluginBase):
             down_speed = down_speed * 1024 if down_speed else None
             # 生成随机Tag
             tag = StringUtils.generate_random_str(10)
+            
+            # ========== 标签处理 ==========
+            # 原有的标签
+            existing_tags = [brush_config.brush_tag, tag]
+            
+            # 定义要排除的标签列表
+            exclude_labels = ['禁转资源']
+            
+            # 添加种子的原始 labels（排除指定标签）
+            if hasattr(torrent, 'labels') and torrent.labels:
+                for label in torrent.labels[:10]:
+                    if label in exclude_labels:
+                        logger.debug(f"跳过标签: {label}")
+                        continue
+                    if label not in existing_tags:
+                        existing_tags.append(label)
+            
+            tags_str = ','.join(existing_tags)
+            logger.info(f"种子 {torrent.title} 准备添加标签: {existing_tags}")
+            # ========================================
+            
+            # ✅ 先检查种子是否已存在
+            existing_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
+            if existing_hash:
+                logger.info(f"种子 {torrent.title} 已存在于下载器中，为其添加标签")
+                # 为已存在的种子添加标签（排除随机tag，因为它是随机生成的）
+                tags_to_add = [t for t in existing_tags if t != tag]
+                self.__add_tags_to_existing_torrent(torrent.title, tags_to_add)
+                return existing_hash
+            
             # 如果开启代理下载以及种子地址不是磁力地址，则请求种子到内存再传入下载器
             if not torrent_content.startswith("magnet"):
                 response = RequestUtils(cookies=cookies,
@@ -3280,27 +3390,65 @@ class brushflowmod(_PluginBase):
                     torrent_content = response.content
                 else:
                     logger.error("尝试通过MP下载种子失败，继续尝试传递种子地址到下载器进行下载")
+            
             if torrent_content:
                 state = downloader.add_torrent(content=torrent_content,
-                                               download_dir=download_dir,
-                                               cookie=cookies,
-                                               category=brush_config.qb_category,
-                                               tag=["已整理", brush_config.brush_tag, tag],
-                                               upload_limit=up_speed,
-                                               download_limit=down_speed)
+                                            download_dir=download_dir,
+                                            cookie=cookies,
+                                            category=brush_config.qb_category,
+                                            tag=tags_str,
+                                            upload_limit=up_speed,
+                                            download_limit=down_speed)
                 if not state:
+                    logger.warning(f"添加种子失败: {torrent.title}")
+                    # 再次尝试查找
+                    existing_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
+                    if existing_hash:
+                        tags_to_add = [t for t in existing_tags if t != tag]
+                        self.__add_tags_to_existing_torrent(torrent.title, tags_to_add)
+                        return existing_hash
                     return None
                 else:
-                    # 获取种子Hash
-                    torrent_hash = downloader.get_torrent_id_by_tag(tags=tag)
+                    # 获取种子Hash，增加重试
+                    torrent_hash = None
+                    for i in range(5):
+                        time.sleep(1)
+                        torrent_hash = downloader.get_torrent_id_by_tag(tags=tag)
+                        if torrent_hash:
+                            break
+                    
                     if not torrent_hash:
-                        logger.error(f"{brush_config.downloader} 获取种子Hash失败，详细信息请查看 README")
-                        return None
+                        torrent_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
+                        if not torrent_hash:
+                            logger.error(f"{brush_config.downloader} 获取种子Hash失败")
+                            return None
                     return torrent_hash
             return None
 
         elif downloader_helper.is_downloader("transmission", service=self.service_info):
-            # 如果开启代理下载以及种子地址不是磁力地址，则请求种子到内存再传入下载器
+            # ========== Transmission 标签处理 ==========
+            existing_labels = [brush_config.brush_tag]
+            
+            exclude_labels = ['禁转资源']
+            
+            if hasattr(torrent, 'labels') and torrent.labels:
+                for label in torrent.labels[:10]:
+                    if label in exclude_labels:
+                        logger.debug(f"跳过标签: {label}")
+                        continue
+                    if label not in existing_labels:
+                        existing_labels.append(label)
+            
+            logger.info(f"种子 {torrent.title} 准备添加标签: {existing_labels}")
+            # ========================================
+            
+            # 检查是否已存在
+            existing_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
+            if existing_hash:
+                logger.info(f"种子 {torrent.title} 已存在于下载器中，为其添加标签")
+                self.__add_tags_to_existing_torrent(torrent.title, existing_labels)
+                return existing_hash
+            
             if not torrent_content.startswith("magnet"):
                 response = RequestUtils(cookies=cookies,
                                         proxies=proxies,
@@ -3309,19 +3457,24 @@ class brushflowmod(_PluginBase):
                     torrent_content = response.content
                 else:
                     logger.error("尝试通过MP下载种子失败，继续尝试传递种子地址到下载器进行下载")
+            
             if torrent_content:
-                torrent = downloader.add_torrent(content=torrent_content,
-                                                 download_dir=download_dir,
-                                                 cookie=cookies,
-                                                 labels=["已整理", brush_config.brush_tag])
-                if not torrent:
+                torrent_result = downloader.add_torrent(content=torrent_content,
+                                                        download_dir=download_dir,
+                                                        cookie=cookies,
+                                                        labels=existing_labels)
+                if not torrent_result:
+                    existing_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
+                    if existing_hash:
+                        self.__add_tags_to_existing_torrent(torrent.title, existing_labels)
+                        return existing_hash
                     return None
                 else:
                     if brush_config.up_speed or brush_config.dl_speed:
-                        downloader.change_torrent(hash_string=torrent.hashString,
-                                                  upload_limit=up_speed,
-                                                  download_limit=down_speed)
-                    return torrent.hashString
+                        downloader.change_torrent(hash_string=torrent_result.hashString,
+                                                upload_limit=up_speed,
+                                                download_limit=down_speed)
+                    return torrent_result.hashString
         return None
 
     def __qb_torrents_reannounce(self, torrent_hashes: List[str]):
