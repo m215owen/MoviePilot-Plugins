@@ -35,11 +35,23 @@
     "description": "Emby收藏时从刷流插件移除种子，Emby删除媒体时标记种子待删除（由刷流插件执行）",
     "labels": "保护,同步,刷流,Emby",
     "version": "1.0.0",
-    "icon": "sync_file.png",
+    "icon": "Amule_B.png",
     "author": "AI",
     "level": 1,
     "history": {
       "v1.0.0": "首次发布：支持Emby Webhook，收藏移除刷流记录，删除标记待删除"
+    }
+  },
+  "brushflowmod": {
+    "name": "站点刷流魔改",
+    "description": "支持短剧标签过滤",
+    "labels": "选种,下载,自动,PT",
+    "version": "1.0.0",
+    "icon": "brush.jpg",
+    "author": "jxxghp,InfinityPacer,Seed680，AI",
+    "level": 2,
+    "history": {
+      "v1.0.0": "ai修改"
     }
   }
 }
