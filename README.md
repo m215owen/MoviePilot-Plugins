@@ -1,3 +1,7 @@
+使用AI对代码进行修改，出问题自己找解决办法吧
+
+
+
 # MoviePilot-Plugins
 
 MoviePilot 官方插件仓库，也是 MoviePilot 插件市场默认读取的插件索引与源码仓库：
@@ -83,7 +87,7 @@ MoviePilot-Plugins/
 - Vue 联邦模式说明：
   - 插件后端需要实现 `get_render_mode()` 并返回 `("vue", "dist/assets")`。
   - 如果需要在主界面左侧导航新增入口，还需要实现 `get_sidebar_nav()`。
-  - 远程组件的构建、暴露名约定、侧栏多入口、静态资源打包方式，请参考 [模块联邦开发指南](https://github.com/jxxghp/MoviePilot-Frontend/blob/v2/docs/module-federation-guide.md)。
+  - 远程组件的构建、暴露名约定、侧栏多入口、静态资源打包方式，请参考 [模块联邦开发指南][def]。
 
 ### 6. 开发与校验建议
 - 这个仓库只提供插件源码与索引，不提供完整宿主环境。开发后应至少在 `MoviePilot` 宿主里完成一次真实加载验证。
@@ -163,3 +167,6 @@ MoviePilot-Plugins/
 
 - 请参阅 [V2 版本插件开发指南](./docs/V2_Plugin_Development.md)。
 - 如果你要先理解本仓库与 `MoviePilot` / `MoviePilot-Frontend` 的分工，以及元数据和发布链路，再开始写代码，建议先看 [仓库指南](./docs/Repository_Guide.md)。
+
+
+[def]: https://github.com/jxxghp/MoviePilot-Frontend/blob/v2/docs/module-federation-guide.md
