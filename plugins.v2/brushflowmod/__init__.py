@@ -104,6 +104,8 @@ class BrushConfig:
 
         # 定义允许覆盖的字段列表
         allowed_fields = {
+            "downloader",
+            "maxdlcount",
             "freeleech",
             "hr",
             "include",
@@ -293,7 +295,7 @@ class brushflowmod(_PluginBase):
     # endregion
 
     def init_plugin(self, config: dict = None):
-
+        self.downloader_helper = DownloaderHelper()
         self._task_brush_enable = False
 
         if not config:
@@ -1983,7 +1985,11 @@ class brushflowmod(_PluginBase):
             # 查找匹配的种子
             target_torrent = None
             for t in torrents:
-                t_title = t.get("name") if downloader_helper.is_downloader("qbittorrent", service=self.service_info) else t.name
+                if downloader_helper.is_downloader("qbittorrent", service=self.service_info):
+                    t_title = t.get("name")
+                else:
+                    t_title = t.name if hasattr(t, 'name') else t.get("name")
+                
                 if t_title == torrent_title:
                     target_torrent = t
                     break
@@ -2015,6 +2021,7 @@ class brushflowmod(_PluginBase):
                 result = downloader.qbc.torrents_add_tags(torrent_hashes=torrent_hash, tags=tags_str)
                 logger.info(f"qBittorrent 为已存在种子设置标签: {all_tags}, 结果: {result}")
             else:
+                # Transmission: 直接设置 labels
                 result = downloader.change_torrent(hash_string=torrent_hash, labels=all_tags)
                 logger.info(f"Transmission 为已存在种子设置标签: {all_tags}, 结果: {result}")
             
@@ -2026,6 +2033,58 @@ class brushflowmod(_PluginBase):
     # ========== 新方法添加结束 ==========
 
     # region Brush
+    def __add_tags_to_existing_torrent_transmission(self, torrent_title: str, labels: List[str]) -> bool:
+        """
+        给 Transmission 中已存在的种子添加标签
+        """
+        try:
+            downloader = self.downloader
+            if not downloader:
+                return False
+            
+            downloader_helper = DownloaderHelper()
+            torrents, error = downloader.get_torrents()
+            if error:
+                logger.error(f"获取下载器种子列表失败: {error}")
+                return False
+            
+            # 查找匹配的种子
+            target_torrent = None
+            for t in torrents:
+                t_title = t.name if hasattr(t, 'name') else t.get("name")
+                if t_title == torrent_title:
+                    target_torrent = t
+                    break
+            
+            if not target_torrent:
+                logger.warning(f"未找到已存在的种子: {torrent_title}")
+                return False
+            
+            torrent_hash = target_torrent.hashString if hasattr(target_torrent, 'hashString') else target_torrent.get("hash")
+            
+            # 获取现有标签
+            existing_labels = target_torrent.labels if hasattr(target_torrent, 'labels') else target_torrent.get("labels", [])
+            
+            # 合并并去重
+            all_labels = []
+            seen = set()
+            for label in existing_labels + labels:
+                if label not in seen:
+                    seen.add(label)
+                    all_labels.append(label)
+            
+            logger.info(f"种子 {torrent_title} 原有标签: {existing_labels}")
+            logger.info(f"种子 {torrent_title} 新增标签: {[l for l in labels if l not in existing_labels]}")
+            logger.info(f"种子 {torrent_title} 合并后标签: {all_labels}")
+            
+            # Transmission 修改标签
+            result = downloader.change_torrent(hash_string=torrent_hash, labels=all_labels)
+            logger.info(f"Transmission 为已存在种子设置标签: {all_labels}, 结果: {result}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"为已存在种子添加标签失败: {str(e)}")
+            return False
 
     def brush(self):
         """
@@ -2082,8 +2141,8 @@ class brushflowmod(_PluginBase):
             for site in site_infos:
                 # 如果站点刷流没有正确响应，说明没有通过前置条件，其他站点也不需要继续刷流了
                 if not self.__brush_site_torrents(siteid=site.id, torrent_tasks=torrent_tasks,
-                                                  statistic_info=statistic_info,
-                                                  subscribe_titles=subscribe_titles):
+                                                statistic_info=statistic_info,
+                                                subscribe_titles=subscribe_titles):
                     logger.info(f"站点 {site.name} 刷流中途结束，停止后续刷流")
                     break
                 else:
@@ -2161,10 +2220,17 @@ class brushflowmod(_PluginBase):
 
         # 过滤种子
         for torrent in torrents:
-            # 判断能否通过刷流前置条件
-            pre_condition_passed, reason = self.__evaluate_pre_conditions_for_brush(include_network_conditions=False)
-            self.__log_brush_conditions(passed=pre_condition_passed, reason=reason)
+            pre_condition_passed, reason = self.__evaluate_pre_conditions_for_brush(
+                include_network_conditions=False, 
+                site_name=siteinfo.name
+            )
             if not pre_condition_passed:
+                # 检查是否是因为 maxdlcount 达到限制
+                if "同时下载任务数已达到最大值" in reason:
+                    logger.info(f"站点 {siteinfo.name} {reason}，跳过本站点刷流")
+                    return True  # 👈 改为 True，继续处理其他站点
+                # 其他前置条件不满足，停止所有站点
+                logger.warning(f"站点 {siteinfo.name} 刷流前置条件不满足: {reason}，停止所有站点刷流")
                 return False
 
             logger.debug(f"种子详情：{torrent}")
@@ -2287,30 +2353,29 @@ class brushflowmod(_PluginBase):
 
         return True, None
 
-    def __evaluate_pre_conditions_for_brush(self, include_network_conditions: bool = True) \
-            -> Tuple[bool, Optional[str]]:
+    def __evaluate_pre_conditions_for_brush(self, include_network_conditions: bool = True, site_name: str = None) -> Tuple[bool, Optional[str]]:
         """
         前置过滤不符合条件的种子
         """
         reasons = [
-            ("maxdlcount", lambda config: self.__get_downloading_count() >= int(config),
-             lambda config: f"当前同时下载任务数已达到最大值 {config}，暂时停止新增任务")
+            ("maxdlcount", lambda config: self.__get_downloading_count(site_name=site_name) >= int(config),
+            lambda config: f"当前同时下载任务数已达到最大值 {config}，暂时停止新增任务")
         ]
 
         if include_network_conditions:
-            # 获取平均带宽
+            # 获取平均带宽（全局检查，不需要站点区分）
             avg_upload_speed, avg_download_speed = self.__get_average_bandwidth()
             if avg_upload_speed is not None and avg_download_speed is not None:
                 reasons.extend([
                     ("maxupspeed", lambda config: avg_upload_speed >= float(config) * 1024,
-                     lambda config: f"当前总上传带宽 {StringUtils.str_filesize(avg_upload_speed)}，"
+                    lambda config: f"当前总上传带宽 {StringUtils.str_filesize(avg_upload_speed)}，"
                                     f"已达到最大值 {config} KB/s，暂时停止新增任务"),
                     ("maxdlspeed", lambda config: avg_download_speed >= float(config) * 1024,
-                     lambda config: f"当前总下载带宽 {StringUtils.str_filesize(avg_download_speed)}，"
+                    lambda config: f"当前总下载带宽 {StringUtils.str_filesize(avg_download_speed)}，"
                                     f"已达到最大值 {config} KB/s，暂时停止新增任务"),
                 ])
 
-        brush_config = self.__get_brush_config()
+        brush_config = self.__get_brush_config(sitename=site_name)
         for condition, check, message in reasons:
             config_value = getattr(brush_config, condition, None)
             if config_value and check(config_value):
@@ -3096,6 +3161,39 @@ class brushflowmod(_PluginBase):
         """
         return self._brush_config if not sitename else self._brush_config.get_site_config(sitename=sitename)
 
+     # ========== 新增方法从这里开始 ==========
+    def __get_downloader_for_site(self, site_name: str) -> Optional[Union[Qbittorrent, Transmission]]:
+        """
+        根据站点获取对应的下载器实例
+        """
+        try:
+            # 获取站点的独立配置
+            brush_config = self.__get_brush_config(sitename=site_name)
+            if not brush_config:
+                return self.downloader  # 降级使用全局下载器
+            
+            # 获取站点指定的下载器名称
+            downloader_name = brush_config.downloader
+            if not downloader_name:
+                return self.downloader  # 降级使用全局下载器
+            
+            # 获取下载器实例
+            service = self.downloader_helper.get_service(name=downloader_name)
+            if not service:
+                logger.error(f"站点 {site_name} 指定的下载器 {downloader_name} 不存在，使用全局下载器")
+                return self.downloader
+            
+            if service.instance.is_inactive():
+                logger.error(f"站点 {site_name} 指定的下载器 {downloader_name} 未连接，使用全局下载器")
+                return self.downloader
+            
+            logger.info(f"站点 {site_name} 使用独立下载器：{downloader_name}")
+            return service.instance
+        except Exception as e:
+            logger.error(f"获取站点 {site_name} 下载器失败：{str(e)}，使用全局下载器")
+            return self.downloader
+         # ========== 新增方法结束 ==========
+
     def __validate_and_fix_config(self, config: dict = None) -> bool:
         """
         检查并修正配置值
@@ -3325,12 +3423,18 @@ class brushflowmod(_PluginBase):
         proxies = settings.PROXY if torrent.site_proxy else None
         # cookie
         cookies = torrent.site_cookie
+        
+        # 根据站点获取下载器
+        downloader = self.__get_downloader_for_site(torrent.site_name)
+        if not downloader:
+            logger.error(f"站点 {torrent.site_name} 无法获取下载器实例")
+            return None
+        
         if torrent_content.startswith("["):
             torrent_content = self.__get_redict_url(url=torrent_content,
                                                     proxies=proxies,
                                                     ua=torrent.site_ua,
                                                     cookie=cookies)
-            # 目前馒头请求实际种子时，不能传入Cookie
             cookies = None
         if not torrent_content:
             logger.error(f"获取下载链接失败：{torrent.title}")
@@ -3340,23 +3444,23 @@ class brushflowmod(_PluginBase):
             torrent_content = self.__reset_download_url(torrent_url=torrent_content, site_id=torrent.site)
             logger.debug(f"站点 {torrent.site_name} 已启用自动跳过提示，种子下载地址更新为 {torrent_content}")
 
-        downloader = self.downloader
-        if not downloader:
-            return None
-
-        downloader_helper = DownloaderHelper()
-        if downloader_helper.is_downloader("qbittorrent", service=self.service_info):
-            # 限速值转为bytes
+        # 判断下载器类型
+        downloader_name = brush_config.downloader
+        is_qb = downloader_name and "qbittorrent" in downloader_name.lower()
+        is_qb = is_qb or (not downloader_name and self.downloader_helper.is_downloader("qbittorrent", service=self.service_info))
+        
+        if is_qb:
+            # qBittorrent 下载逻辑
             up_speed = up_speed * 1024 if up_speed else None
             down_speed = down_speed * 1024 if down_speed else None
             # 生成随机Tag
             tag = StringUtils.generate_random_str(10)
             
             # ========== 标签处理 ==========
-            # 原有的标签
+            # 基础标签
             existing_tags = [brush_config.brush_tag, tag]
             
-            # 定义要排除的标签列表
+            # 定义需要排除的标签
             exclude_labels = ['禁转资源']
             
             # 添加种子的原始 labels（排除指定标签）
@@ -3365,9 +3469,20 @@ class brushflowmod(_PluginBase):
                     if label in exclude_labels:
                         logger.debug(f"跳过标签: {label}")
                         continue
+                    # 检查是否包含排除关键词
+                    skip = False
+                    for exclude in exclude_labels:
+                        if exclude in label:
+                            logger.debug(f"跳过标签: {label}（匹配 {exclude}）")
+                            skip = True
+                            break
+                    if skip:
+                        continue
                     if label not in existing_tags:
                         existing_tags.append(label)
             
+            # 去重（保持顺序）
+            existing_tags = list(dict.fromkeys(existing_tags))
             tags_str = ','.join(existing_tags)
             logger.info(f"种子 {torrent.title} 准备添加标签: {existing_tags}")
             # ========================================
@@ -3381,7 +3496,6 @@ class brushflowmod(_PluginBase):
                 self.__add_tags_to_existing_torrent(torrent.title, tags_to_add)
                 return existing_hash
             
-            # 如果开启代理下载以及种子地址不是磁力地址，则请求种子到内存再传入下载器
             if not torrent_content.startswith("magnet"):
                 response = RequestUtils(cookies=cookies,
                                         proxies=proxies,
@@ -3398,7 +3512,7 @@ class brushflowmod(_PluginBase):
                                             category=brush_config.qb_category,
                                             tag=tags_str,
                                             upload_limit=up_speed,
-                                            download_limit=down_speed)
+                                            download_limit=down_speed)                          
                 if not state:
                     logger.warning(f"添加种子失败: {torrent.title}")
                     # 再次尝试查找
@@ -3425,29 +3539,35 @@ class brushflowmod(_PluginBase):
                     return torrent_hash
             return None
 
-        elif downloader_helper.is_downloader("transmission", service=self.service_info):
-            # ========== Transmission 标签处理 ==========
-            existing_labels = [brush_config.brush_tag]
+        else:
+            # Transmission 下载逻辑
+            # 处理标签：添加原始标签（排除指定标签）
+            existing_labels = ["已整理", brush_config.brush_tag]
             
+            # 定义需要排除的标签
             exclude_labels = ['禁转资源']
             
+            # 添加种子的原始 labels（排除指定标签）
             if hasattr(torrent, 'labels') and torrent.labels:
                 for label in torrent.labels[:10]:
                     if label in exclude_labels:
-                        logger.debug(f"跳过标签: {label}")
+                        logger.debug(f"跳过排除标签: {label}")
+                        continue
+                    # 检查是否包含排除关键词
+                    skip = False
+                    for exclude in exclude_labels:
+                        if exclude in label:
+                            logger.debug(f"跳过标签: {label}（匹配 {exclude}）")
+                            skip = True
+                            break
+                    if skip:
                         continue
                     if label not in existing_labels:
                         existing_labels.append(label)
             
+            # 去重（保持顺序）
+            existing_labels = list(dict.fromkeys(existing_labels))
             logger.info(f"种子 {torrent.title} 准备添加标签: {existing_labels}")
-            # ========================================
-            
-            # 检查是否已存在
-            existing_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
-            if existing_hash:
-                logger.info(f"种子 {torrent.title} 已存在于下载器中，为其添加标签")
-                self.__add_tags_to_existing_torrent(torrent.title, existing_labels)
-                return existing_hash
             
             if not torrent_content.startswith("magnet"):
                 response = RequestUtils(cookies=cookies,
@@ -3464,10 +3584,6 @@ class brushflowmod(_PluginBase):
                                                         cookie=cookies,
                                                         labels=existing_labels)
                 if not torrent_result:
-                    existing_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
-                    if existing_hash:
-                        self.__add_tags_to_existing_torrent(torrent.title, existing_labels)
-                        return existing_hash
                     return None
                 else:
                     if brush_config.up_speed or brush_config.dl_speed:
@@ -3532,11 +3648,18 @@ class brushflowmod(_PluginBase):
         获取种子标签
         """
         try:
-            return [str(tag).strip() for tag in torrent.get("tags").split(',')] \
-                if DownloaderHelper().is_downloader("qbittorrent",
-                                                    service=self.service_info) else torrent.labels or []
+            if DownloaderHelper().is_downloader("qbittorrent", service=self.service_info):
+                # qBittorrent: tags 是逗号分隔的字符串
+                tags = torrent.get("tags", "")
+                return [str(tag).strip() for tag in tags.split(',') if tag.strip()]
+            else:
+                # Transmission: labels 是列表
+                labels = torrent.labels if hasattr(torrent, 'labels') else torrent.get("labels", [])
+                if isinstance(labels, str):
+                    return [str(label).strip() for label in labels.split(',') if label.strip()]
+                return [str(label).strip() for label in labels if label]
         except Exception as e:
-            print(str(e))
+            logger.error(f"获取种子标签失败: {str(e)}")
             return []
 
     def __get_torrent_info(self, torrent: Any) -> dict:
@@ -3856,19 +3979,25 @@ class brushflowmod(_PluginBase):
 
         return ret_info
 
-    def __get_downloading_count(self) -> int:
+    def __get_downloading_count(self, site_name: str = None) -> int:
         """
         获取正在下载的任务数量
         """
         try:
-            brush_config = self.__get_brush_config()
-            downloader = self.downloader
+            brush_config = self.__get_brush_config(sitename=site_name)
+            
+            # 根据站点获取下载器
+            if site_name:
+                downloader = self.__get_downloader_for_site(site_name)
+            else:
+                downloader = self.downloader
+                
             if not downloader:
                 return 0
 
             torrents = downloader.get_downloading_torrents(tags=brush_config.brush_tag)
             if torrents is None:
-                logger.warning("获取下载数量失败，可能是下载器连接发生异常")
+                logger.warning(f"获取下载数量失败，可能是下载器连接发生异常")
                 return 0
 
             return len(torrents)

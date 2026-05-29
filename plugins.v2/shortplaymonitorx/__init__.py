@@ -2,7 +2,6 @@ import datetime
 import os
 import re
 import threading
-import shutil
 from pathlib import Path
 from threading import Lock
 from typing import Any, List, Dict, Tuple, Optional
@@ -92,7 +91,6 @@ class ShortPlayMonitorx(_PluginBase):
     _interval = 10
     _notify = False
     _medias = {}
-    _pt_detail_cache = None  # 缓存PT站详情
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -290,9 +288,6 @@ class ShortPlayMonitorx(_PluginBase):
         :param source_dir: 监控目录
         """
         try:
-            # 清空缓存
-            self._pt_detail_cache = None
-            
             # 转移路径
             dest_dir = self._dirconf.get(source_dir)
             # 是否重命名
@@ -352,6 +347,12 @@ class ShortPlayMonitorx(_PluginBase):
                     print(str(e))
                     transfer_flag = False
                     logger.error(f"{event_path} tmdb刮削失败")
+                # 广播事件
+                # self.eventmanager.send_event(EventType.TransferComplete, {
+                #     'meta': file_meta,
+                #     'mediainfo': mediainfo,
+                #     'transferinfo': transferinfo
+                # })
             if not transfer_flag:
                 target_path = event_path.replace(source_dir, dest_dir)
 
@@ -372,38 +373,9 @@ class ShortPlayMonitorx(_PluginBase):
                         target = target_path.replace(dest_dir, "")
                         parent = Path(Path(target).parents[0])
                         last = target.replace(str(parent), "")
-                        
-                        # 优先从 PT 站获取片名作为文件夹名
-                        src_folder_name = str(parent)
-                        
-                        # 尝试从 PT 站获取详情（包含片名）
-                        pt_detail = None
-                        try:
-                            # 用一个临时路径获取详情
-                            temp_path = Path(event_path)
-                            pt_detail = self.gen_file_thumb_from_site(title=src_folder_name, file_path=temp_path)
-                        except Exception as e:
-                            logger.debug(f"获取PT详情失败: {e}")
-                        
-                        if pt_detail and pt_detail.get("title"):
-                            title = pt_detail["title"]
-                            logger.info(f"从 PT 站获取文件夹名: {src_folder_name} -> {title}")
-                        else:
-                            # 使用 WordsMatcher 进行智能识别
-                            title, _ = WordsMatcher().prepare(src_folder_name)
-                            
-                            # 如果识别结果为空，则回退到原有的取.前的逻辑
-                            if not title:
-                                title = Path(parent).name.split(".")[0]
-                                logger.warning(f"WordsMatcher 未能识别文件夹名 '{src_folder_name}'，回退到 '{title}'")
-                            else:
-                                logger.info(f"WordsMatcher 识别文件夹名：{src_folder_name} -> {title}")
-                        
+                        # 取.第一个
+                        title = Path(parent).name.split(".")[0]
                         target_path = Path(dest_dir).joinpath(title + last)
-                        
-                        # 保存 PT 详情供后续使用
-                        if pt_detail:
-                            self._pt_detail_cache = pt_detail
                     else:
                         logger.error(f"{target_path} 智能重命名失败")
                         return
@@ -443,64 +415,37 @@ class ShortPlayMonitorx(_PluginBase):
                                                       transfer_type=self._transfer_type)
                     if retcode == 0:
                         logger.info(f"文件 {event_path} 硬链接完成")
-                        
-                        # 生成 tvshow.nfo（优先使用PT站详情）
+                        # 生成 tvshow.nfo
                         if not (target_path.parent / "tvshow.nfo").exists():
-                            pt_detail = self._pt_detail_cache
-                            
-                            if pt_detail and pt_detail.get("title"):
-                                # 使用 PT 站详情生成完整 NFO
-                                self.__gen_tv_nfo_file(
-                                    dir_path=target_path.parent,
-                                    title=pt_detail.get("title", title),
-                                    plot=pt_detail.get("plot", ""),
-                                    actors=pt_detail.get("actors", ""),
-                                    category=pt_detail.get("category", ""),
-                                    episodes=pt_detail.get("episodes", "")
-                                )
-                            else:
-                                # 回退到简单版 NFO
-                                self.__gen_tv_nfo_file_simple(dir_path=target_path.parent, title=title)
+                            self.__gen_tv_nfo_file(dir_path=target_path.parent,
+                                                   title=title)
 
                         # 生成缩略图
                         if not (target_path.parent / "poster.jpg").exists():
-                            pt_detail = self._pt_detail_cache
-                            
-                            if pt_detail and pt_detail.get("poster_path") and Path(pt_detail["poster_path"]).exists():
-                                # 直接使用下载的海报
-                                shutil.copy(pt_detail["poster_path"], target_path.parent / "poster.jpg")
-                                logger.info(f"已复制海报: {target_path.parent / 'poster.jpg'}")
-                                # 裁剪封面（如果需要）
-                                if cover_conf:
-                                    self.__save_poster(input_path=target_path.parent / "poster.jpg",
-                                                       poster_path=target_path.parent / "poster.jpg",
-                                                       cover_conf=cover_conf)
+                            thumb_path = self.gen_file_thumb(title=title,
+                                                             rename_conf=rename_conf,
+                                                             file_path=target_path)
+                            if thumb_path and Path(thumb_path).exists():
+                                self.__save_poster(input_path=thumb_path,
+                                                   poster_path=target_path.parent / "poster.jpg",
+                                                   cover_conf=cover_conf)
+                                if (target_path.parent / "poster.jpg").exists():
+                                    logger.info(f"{target_path.parent / 'poster.jpg'} 缩略图已生成")
+                                thumb_path.unlink()
                             else:
-                                # 使用ffmpeg截取缩略图
-                                thumb_path = self.gen_file_thumb(title=title,
-                                                                 rename_conf=rename_conf,
-                                                                 file_path=target_path)
-                                if thumb_path and Path(thumb_path).exists():
-                                    self.__save_poster(input_path=thumb_path,
-                                                       poster_path=target_path.parent / "poster.jpg",
-                                                       cover_conf=cover_conf)
-                                    if (target_path.parent / "poster.jpg").exists():
-                                        logger.info(f"{target_path.parent / 'poster.jpg'} 缩略图已生成")
-                                    thumb_path.unlink()
-                                else:
-                                    # 检查是否有缩略图
-                                    thumb_files = SystemUtils.list_files(directory=target_path.parent,
-                                                                         extensions=[".jpg"])
-                                    if thumb_files:
-                                        # 生成poster
-                                        for thumb in thumb_files:
-                                            self.__save_poster(input_path=thumb,
-                                                               poster_path=target_path.parent / "poster.jpg",
-                                                               cover_conf=cover_conf)
-                                            break
-                                        # 删除多余jpg
-                                        for thumb in thumb_files:
-                                            Path(thumb).unlink()
+                                # 检查是否有缩略图
+                                thumb_files = SystemUtils.list_files(directory=target_path.parent,
+                                                                     extensions=[".jpg"])
+                                if thumb_files:
+                                    # 生成poster
+                                    for thumb in thumb_files:
+                                        self.__save_poster(input_path=thumb,
+                                                           poster_path=target_path.parent / "poster.jpg",
+                                                           cover_conf=cover_conf)
+                                        break
+                                    # 删除多余jpg
+                                    for thumb in thumb_files:
+                                        Path(thumb).unlink()
                     else:
                         logger.error(f"文件 {event_path} 硬链接失败，错误码：{retcode}")
             if self._notify:
@@ -627,63 +572,22 @@ class ShortPlayMonitorx(_PluginBase):
         except Exception as e:
             print(str(e))
 
-    def __gen_tv_nfo_file(self, dir_path: Path, title: str, plot: str = "", 
-                          actors: str = "", category: str = "", episodes: str = ""):
+    def __gen_tv_nfo_file(self, dir_path: Path, title: str):
         """
-        生成完整的电视剧NFO文件（增强版）
+        生成电视剧的NFO描述文件
+        :param dir_path: 电视剧根目录
         """
+        # 开始生成XML
         logger.info(f"正在生成电视剧NFO文件：{dir_path.name}")
-        
         doc = minidom.Document()
         root = DomUtils.add_node(doc, doc, "tvshow")
-        
-        # 标题
-        DomUtils.add_node(doc, root, "title", title)
-        DomUtils.add_node(doc, root, "originaltitle", title)
-        
-        # 简介
-        if plot:
-            DomUtils.add_node(doc, root, "plot", plot)
-        
-        # 类别（按/分割）
-        if category:
-            for genre in category.split("/"):
-                genre = genre.strip()
-                if genre:
-                    DomUtils.add_node(doc, root, "genre", genre)
-        
-        # 集数
-        if episodes:
-            DomUtils.add_node(doc, root, "episode", str(episodes))
-        
-        # 季数（短剧默认-1）
-        DomUtils.add_node(doc, root, "season", "-1")
-        
-        # 演员
-        if actors:
-            for actor_name in actors.split("/"):
-                actor_name = actor_name.strip()
-                if actor_name:
-                    actor_node = DomUtils.add_node(doc, root, "actor")
-                    DomUtils.add_node(doc, actor_node, "name", actor_name)
-                    DomUtils.add_node(doc, actor_node, "type", "Actor")
-        
-        # 保存
-        self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
 
-    def __gen_tv_nfo_file_simple(self, dir_path: Path, title: str):
-        """
-        生成简单的电视剧NFO文件（回退版本）
-        """
-        logger.info(f"正在生成简单版电视剧NFO文件：{dir_path.name}")
-        doc = minidom.Document()
-        root = DomUtils.add_node(doc, doc, "tvshow")
-        
+        # 标题
         DomUtils.add_node(doc, root, "title", title)
         DomUtils.add_node(doc, root, "originaltitle", title)
         DomUtils.add_node(doc, root, "season", "-1")
         DomUtils.add_node(doc, root, "episode", "-1")
-        
+        # 保存
         self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
 
     def __save_nfo(self, doc, file_path: Path):
@@ -694,36 +598,36 @@ class ShortPlayMonitorx(_PluginBase):
         file_path.write_bytes(xml_str)
         logger.info(f"NFO文件已保存：{file_path}")
 
-    def gen_file_thumb_from_site(self, title: str, file_path: Path) -> Optional[Dict]:
+    def gen_file_thumb_from_site(self, title: str, file_path: Path):
         """
-        从agsv、萝莉站或ptskit查询封面和元数据
-        返回包含海报和完整详情的字典
+        从agsv或者萝莉站查询封面
         """
         try:
-            detail = None
-            # 1. 先从 AGSV 查询
+            image = None
+            # 查询索引
             domain = "agsvpt.com"
             site = SiteOper().get_by_domain(domain)
             index = SitesHelper().get_indexer(domain)
             if site:
                 req_url = f"https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=419&search={title}"
                 image_xpath = "//*[@id='kdescr']/img[1]/@src"
+                # 查询站点资源
                 logger.info(f"开始检索 {site.name} {title}")
-                detail = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
-            
-            # 2. 再从 萝莉站 查询
-            if not detail or not detail.get("poster"):
+                image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+            if not image:
                 domain = "ilolicon.com"
                 site = SiteOper().get_by_domain(domain)
                 index = SitesHelper().get_indexer(domain)
                 if site:
                     req_url = f"https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=402&search={title}"
+
                     image_xpath = "//*[@id='kdescr']/img[1]/@src"
+                    # 查询站点资源
                     logger.info(f"开始检索 {site.name} {title}")
-                    detail = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+                    image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
 
             # 3. 最后从 ptskit 查询
-            if not detail or not detail.get("poster"):
+            if not image:
                 domain = "ptskit.org"
                 site = SiteOper().get_by_domain(domain)
                 index = SitesHelper().get_indexer(domain)
@@ -731,27 +635,44 @@ class ShortPlayMonitorx(_PluginBase):
                     req_url = f"https://www.ptskit.org/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&tag_id=238&search={title}"
                     image_xpath = "//*[@id='kdescr']/img/@src"
                     logger.info(f"开始检索 {site.name} {title}")
-                    detail = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+                    image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
 
-            if not detail or not detail.get("poster"):
+            if not image:
                 logger.error(f"检索站点 {title} 封面失败")
                 return None
 
             # 下载图片保存
-            thumb_path = file_path.with_name(file_path.stem + "-site.jpg")
-            if self.__save_image(url=detail["poster"], file_path=thumb_path):
-                logger.info(f"{file_path} 缩略图已生成：{thumb_path}")
-                detail["poster_path"] = str(thumb_path)
-                return detail
-            
+            if self.__save_image(url=image, file_path=file_path):
+                return file_path
             return None
         except Exception as e:
-            logger.error(f"检索站点 {title} 失败 {str(e)}")
+            logger.error(f"检索站点 {title} 封面失败 {str(e)}")
             return None
 
-    def __get_site_torrents(self, url: str, site, image_xpath, index) -> Optional[Dict]:
+    @retry(RequestException, logger=logger)
+    def __save_image(self, url: str, file_path: Path):
         """
-        查询站点资源，返回包含海报和完整详情的字典
+        下载图片并保存
+        """
+        try:
+            logger.info(f"正在下载{file_path.stem}图片：{url} ...")
+            r = RequestUtils().get_res(url=url, raise_exception=True)
+            if r:
+                file_path.write_bytes(r.content)
+                logger.info(f"图片已保存：{file_path}")
+                return True
+            else:
+                logger.info(f"{file_path.stem}图片下载失败，请检查网络连通性")
+                return False
+        except RequestException as err:
+            raise err
+        except Exception as err:
+            logger.error(f"{file_path.stem}图片下载失败：{str(err)}")
+            return False
+
+    def __get_site_torrents(self, url: str, site, image_xpath, index):
+        """
+        查询站点资源
         """
         page_source = self.__get_page_source(url=url, site=site)
         if not page_source:
@@ -774,66 +695,12 @@ class ShortPlayMonitorx(_PluginBase):
             logger.error(f"请求种子详情页失败 {torrents[0].get('page_url')}")
             return None
 
-        # 提取海报
-        image = html.xpath(image_xpath)[0] if html.xpath(image_xpath) else ""
-        
-        # 提取 kdescr 区域的所有文本节点
-        kdescr_texts = html.xpath('//*[@id="kdescr"]/text()')
-        
-        detail = {
-            "poster": str(image) if image else "",
-            "title": "",
-            "category": "",
-            "episodes": "",
-            "actors": "",
-            "plot": ""
-        }
-        
-        # 解析各个字段
-        for text in kdescr_texts:
-            text = text.strip()
-            if not text:
-                continue
-            if text.startswith("片　　名"):
-                detail["title"] = text.replace("片　　名", "").strip()
-                logger.debug(f"提取片名: {detail['title']}")
-            elif text.startswith("类　　别"):
-                detail["category"] = text.replace("类　　别", "").strip()
-                logger.debug(f"提取类别: {detail['category']}")
-            elif text.startswith("集　　数"):
-                detail["episodes"] = text.replace("集　　数", "").strip()
-                logger.debug(f"提取集数: {detail['episodes']}")
-            elif text.startswith("主　　演"):
-                detail["actors"] = text.replace("主　　演", "").strip()
-                logger.debug(f"提取主演: {detail['actors'][:50]}...")
-        
-        # 提取简介（在简　　介之后、引用之前的内容）
-        plot_elements = html.xpath('//*[@id="kdescr"]')
-        if plot_elements:
-            # 获取所有文本
-            all_text = etree.tostring(plot_elements[0], method='text', encoding='unicode')
-            # 查找 "简　　介" 的位置
-            if "简　　介" in all_text:
-                plot_start = all_text.find("简　　介")
-                # 从简　　介之后开始截取
-                plot_text = all_text[plot_start + 4:]
-                
-                # 查找 "引用" 的位置，如果存在则截取到引用之前
-                if "引用" in plot_text:
-                    ref_pos = plot_text.find("引用")
-                    plot_text = plot_text[:ref_pos]
-                
-                # 清理文本：去除多余空白和换行
-                plot_text = re.sub(r'\s+', ' ', plot_text).strip()
-                
-                # 取前1000字符作为简介
-                if plot_text:
-                    detail["plot"] = plot_text[:1000]
-                    logger.debug(f"提取简介长度: {len(detail['plot'])}, 内容: {detail['plot'][:100]}...")
-        
-        logger.info(f"解析PT详情: title={detail['title']}, category={detail['category']}, episodes={detail['episodes']}")
-        
-        return detail
+        image = html.xpath(image_xpath)[0]
+        if not image:
+            logger.error(f"未获取到种子封面图 {torrents[0].get('page_url')}")
+            return None
+
+        return str(image)
 
     def __get_page_source(self, url: str, site):
         """
@@ -868,16 +735,25 @@ class ShortPlayMonitorx(_PluginBase):
 
     def gen_file_thumb(self, title: str, file_path: Path, rename_conf: str):
         """
-        处理一个文件，生成缩略图
+        处理一个文件
         """
-        # 智能重命名时从站点检索（已在__handle_file中处理，这里只做ffmpeg截取）
+        # 智能重命名时从站点检索
+        if str(rename_conf) == "smart":
+            thumb_path = file_path.with_name(file_path.stem + "-site.jpg")
+            if thumb_path.exists():
+                logger.info(f"缩略图已存在：{thumb_path}")
+                return
+            self.gen_file_thumb_from_site(title=title, file_path=thumb_path)
+            if Path(thumb_path).exists():
+                logger.info(f"{file_path} 缩略图已生成：{thumb_path}")
+                return thumb_path
         # 单线程处理
         with ffmpeg_lock:
             try:
                 thumb_path = file_path.with_name(file_path.stem + "-thumb.jpg")
                 if thumb_path.exists():
                     logger.info(f"缩略图已存在：{thumb_path}")
-                    return thumb_path
+                    return
                 self.get_thumb(video_path=str(file_path),
                                image_path=str(thumb_path),
                                frames=self._timeline)
@@ -905,27 +781,6 @@ class ShortPlayMonitorx(_PluginBase):
         if result:
             return True
         return False
-
-    @retry(RequestException, logger=logger)
-    def __save_image(self, url: str, file_path: Path):
-        """
-        下载图片并保存
-        """
-        try:
-            logger.info(f"正在下载{file_path.stem}图片：{url} ...")
-            r = RequestUtils().get_res(url=url, raise_exception=True)
-            if r:
-                file_path.write_bytes(r.content)
-                logger.info(f"图片已保存：{file_path}")
-                return True
-            else:
-                logger.info(f"{file_path.stem}图片下载失败，请检查网络连通性")
-                return False
-        except RequestException as err:
-            raise err
-        except Exception as err:
-            logger.error(f"{file_path.stem}图片下载失败：{str(err)}")
-            return False
 
     def __update_config(self):
         """
@@ -1153,7 +1008,7 @@ class ShortPlayMonitorx(_PluginBase):
                                         'props': {
                                             'type': 'info',
                                             'variant': 'tonal',
-                                            'text': '默认从tmdb刮削，刮削失败则从PT站刮削。当重命名方式为smart时，如站点管理已配置AGSV、ilolicon、ptskit，则优先从站点获取短剧封面和元数据，生成的NFO包含完整的类别、集数、主演、简介等信息。'
+                                            'text': '默认从tmdb刮削，刮削失败则从pt站刮削。当重命名方式为smart时，如站点管理已配置AGSV、ilolicon，则优先从站点获取短剧封面。'
                                         }
                                     }
                                 ]
