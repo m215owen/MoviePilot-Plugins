@@ -65,7 +65,7 @@ class ShortPlayMonitorx(_PluginBase):
     # 插件版本
     plugin_version = "5.0"
     # 插件作者
-    plugin_author = "thsrite魔改"
+    plugin_author = "thsrite"
     # 作者主页
     author_url = "https://github.com/thsrite"
     # 插件配置项ID前缀
@@ -301,52 +301,53 @@ class ShortPlayMonitorx(_PluginBase):
                 return
             # 识别媒体信息
             mediainfo: MediaInfo = self.chain.recognize_media(meta=file_meta)
+            logger.info(f"recognize_media 返回结果: {mediainfo}")
 
             transfer_flag = False
-            title = None
-            # 走tmdb刮削
-            if mediainfo:
-                try:
-                    # 查询转移目的目录
-                    target_dir = DirectoryHelper().get_dir(mediainfo, src_path=Path(source_dir))
-                    if not target_dir or not target_dir.library_path:
-                        target_dir = TransferDirectoryConf()
-                        target_dir.library_path = dest_dir
-                        target_dir.transfer_type = self._transfer_type
-                        target_dir.renaming = True
-                        target_dir.notify = False
-                        target_dir.overwrite_mode = 'never'
-                        target_dir.library_storage = "local"
-                    else:
-                        target_dir.transfer_type = self._transfer_type
+            title = file_meta.name
+            # # 走tmdb刮削
+            # if mediainfo:
+            #     try:
+            #         # 查询转移目的目录
+            #         target_dir = DirectoryHelper().get_dir(mediainfo, src_path=Path(source_dir))
+            #         if not target_dir or not target_dir.library_path:
+            #             target_dir = TransferDirectoryConf()
+            #             target_dir.library_path = dest_dir
+            #             target_dir.transfer_type = self._transfer_type
+            #             target_dir.renaming = True
+            #             target_dir.notify = False
+            #             target_dir.overwrite_mode = 'never'
+            #             target_dir.library_storage = "local"
+            #         else:
+            #             target_dir.transfer_type = self._transfer_type
 
-                    if not target_dir.library_path:
-                        logger.error(f"未配置监控目录 {source_dir} 的目的目录")
-                        return
+            #         if not target_dir.library_path:
+            #             logger.error(f"未配置监控目录 {source_dir} 的目的目录")
+            #             return
 
-                    # 更新媒体图片
-                    self.chain.obtain_images(mediainfo=mediainfo)
-                    episodes_info = self.tmdbchain.tmdb_episodes(tmdbid=mediainfo.tmdb_id,
-                                                                 season=file_meta.begin_season or 1)
-                    mediainfo.category = ""
-                    # 转移
-                    transferinfo: TransferInfo = self.chain.transfer(mediainfo=mediainfo,
-                                                                     path=Path(event_path),
-                                                                     target=Path(dest_dir),
-                                                                     meta=file_meta,
-                                                                     episodes_info=episodes_info)
-                    if not transferinfo:
-                        logger.error("文件转移模块运行失败")
-                        transfer_flag = False
-                    else:
-                        self.chain.scrape_metadata(fileitem=transferinfo.target_diritem,
-                                                   meta=file_meta,
-                                                   mediainfo=mediainfo)
-                        transfer_flag = True
-                except Exception as e:
-                    print(str(e))
-                    transfer_flag = False
-                    logger.error(f"{event_path} tmdb刮削失败")
+            #         # 更新媒体图片
+            #         self.chain.obtain_images(mediainfo=mediainfo)
+            #         episodes_info = self.tmdbchain.tmdb_episodes(tmdbid=mediainfo.tmdb_id,
+            #                                                      season=file_meta.begin_season or 1)
+            #         mediainfo.category = ""
+            #         # 转移
+            #         transferinfo: TransferInfo = self.chain.transfer(mediainfo=mediainfo,
+            #                                                          path=Path(event_path),
+            #                                                          target=Path(dest_dir),
+            #                                                          meta=file_meta,
+            #                                                          episodes_info=episodes_info)
+            #         if not transferinfo:
+            #             logger.error("文件转移模块运行失败")
+            #             transfer_flag = False
+            #         else:
+            #             self.chain.scrape_metadata(fileitem=transferinfo.target_diritem,
+            #                                        meta=file_meta,
+            #                                        mediainfo=mediainfo)
+            #             transfer_flag = True
+            #     except Exception as e:
+            #         print(str(e))
+            #         transfer_flag = False
+            #         logger.error(f"{event_path} tmdb刮削失败")
                 # 广播事件
                 # self.eventmanager.send_event(EventType.TransferComplete, {
                 #     'meta': file_meta,
@@ -361,7 +362,7 @@ class ShortPlayMonitorx(_PluginBase):
                     rename_conf = bool(rename_conf)
                     target = target_path.replace(dest_dir, "")
                     parent = Path(Path(target).parents[0])
-                    last = target.replace(str(parent), "")
+                    last = target.replace(str(parent), "", 1)
                     if rename_conf:
                         # 自定义识别次
                         title, _ = WordsMatcher().prepare(str(parent))
@@ -372,7 +373,7 @@ class ShortPlayMonitorx(_PluginBase):
                     if str(rename_conf) == "smart":
                         target = target_path.replace(dest_dir, "")
                         parent = Path(Path(target).parents[0])
-                        last = target.replace(str(parent), "")
+                        last = target.replace(str(parent), "", 1)
                         # 取.第一个
                         title = Path(parent).name.split(".")[0]
                         target_path = Path(dest_dir).joinpath(title + last)
@@ -414,40 +415,66 @@ class ShortPlayMonitorx(_PluginBase):
                                                       target_file=target_path,
                                                       transfer_type=self._transfer_type)
                     if retcode == 0:
-                        logger.info(f"文件 {event_path} 硬链接完成")
-                        # 生成 tvshow.nfo
-                        if not (target_path.parent / "tvshow.nfo").exists():
-                            self.__gen_tv_nfo_file(dir_path=target_path.parent,
-                                                   title=title)
+                        transfer_names = {"link": "硬链接", "softlink": "软链接", "move": "移动", "copy": "复制"}
+                        transfer_name = transfer_names.get(self._transfer_type, "转移")
+                        logger.info(f"文件 {event_path} {transfer_name}完成")
 
-                        # 生成缩略图
-                        if not (target_path.parent / "poster.jpg").exists():
-                            thumb_path = self.gen_file_thumb(title=title,
-                                                             rename_conf=rename_conf,
-                                                             file_path=target_path)
-                            if thumb_path and Path(thumb_path).exists():
-                                self.__save_poster(input_path=thumb_path,
-                                                   poster_path=target_path.parent / "poster.jpg",
-                                                   cover_conf=cover_conf)
-                                if (target_path.parent / "poster.jpg").exists():
-                                    logger.info(f"{target_path.parent / 'poster.jpg'} 缩略图已生成")
-                                thumb_path.unlink()
+                        # ========== 生成 NFO 和海报 ==========
+                        nfo_path = target_path.parent / "tvshow.nfo"
+                        if not nfo_path.exists():
+                            use_douban = (
+                                mediainfo 
+                                and getattr(mediainfo, 'source', None) == 'douban' 
+                                and getattr(mediainfo, 'douban_id', None)
+                            )
+                            
+                            if use_douban:
+                                logger.info(f"使用豆瓣信息生成 NFO：{title}")
+                                self.__gen_tv_nfo_with_douban(dir_path=target_path.parent, mediainfo=mediainfo)
+                                logger.info(f"已使用豆瓣信息生成 NFO：{nfo_path}")
+                                
+                                # 尝试下载豆瓣海报
+                                try:
+                                    poster_path = target_path.parent / "poster.jpg"
+                                    if not poster_path.exists() and mediainfo.poster_path:
+                                        poster_url = mediainfo.poster_path
+                                        if not poster_url.startswith('http'):
+                                            poster_url = f"https://img9.doubanio.com/view/photo/l/public/{poster_url}"
+                                        if self.__save_image(url=poster_url, file_path=poster_path):
+                                            self.__save_poster(input_path=poster_path, poster_path=poster_path, cover_conf=cover_conf)
+                                            logger.info(f"豆瓣海报已保存：{poster_path}")
+                                except Exception as e:
+                                    logger.warning(f"豆瓣海报下载失败：{e}")
                             else:
-                                # 检查是否有缩略图
-                                thumb_files = SystemUtils.list_files(directory=target_path.parent,
-                                                                     extensions=[".jpg"])
-                                if thumb_files:
-                                    # 生成poster
-                                    for thumb in thumb_files:
-                                        self.__save_poster(input_path=thumb,
-                                                           poster_path=target_path.parent / "poster.jpg",
-                                                           cover_conf=cover_conf)
-                                        break
-                                    # 删除多余jpg
-                                    for thumb in thumb_files:
-                                        Path(thumb).unlink()
-                    else:
-                        logger.error(f"文件 {event_path} 硬链接失败，错误码：{retcode}")
+                                # 没有豆瓣，尝试从 PT 站获取
+                                logger.info(f"未获取到豆瓣信息，尝试从 PT 站搜索：{title}")
+                                
+                                temp_poster = target_path.parent / "temp_site_poster.jpg"
+                                
+                                site_thumb, pt_tv_info = self.gen_file_thumb_from_site(
+                                    title=str(title),
+                                    file_path=temp_poster, 
+                                    get_nfo=True
+                                )
+                                
+                                if pt_tv_info and pt_tv_info.get("title"):
+                                    self.__gen_tv_nfo_with_pt(dir_path=target_path.parent, tv_info=pt_tv_info)
+                                    logger.info(f"已使用 PT 站信息生成 NFO：{nfo_path}")
+                                    
+                                    poster_path = target_path.parent / "poster.jpg"
+                                    if site_thumb and temp_poster.exists():
+                                        self.__save_poster(input_path=temp_poster, poster_path=poster_path, cover_conf=cover_conf)
+                                        logger.info(f"PT 站封面已保存：{poster_path}")
+                                else:
+                                    self.__gen_tv_nfo_file(dir_path=target_path.parent, title=str(title))
+                                    logger.info(f"已使用标题生成基础 NFO：{nfo_path}")
+                                
+                                # 清理临时文件
+                                if temp_poster.exists():
+                                    try:
+                                        temp_poster.unlink()
+                                    except Exception:
+                                        pass
             if self._notify:
                 # 发送消息汇总
                 media_list = self._medias.get(mediainfo.title_year if mediainfo else title) or {}
@@ -572,6 +599,22 @@ class ShortPlayMonitorx(_PluginBase):
         except Exception as e:
             print(str(e))
 
+    def __save_image(self, url: str, file_path: Path):
+        """下载图片并保存"""
+        try:
+            logger.info(f"正在下载图片：{url} ...")
+            r = RequestUtils().get_res(url=url, raise_exception=True)
+            if r:
+                file_path.write_bytes(r.content)
+                logger.info(f"图片已保存：{file_path}")
+                return True
+            else:
+                logger.info(f"图片下载失败，请检查网络连通性")
+                return False
+        except Exception as err:
+            logger.error(f"图片下载失败：{str(err)}")
+            return False
+
     def __gen_tv_nfo_file(self, dir_path: Path, title: str):
         """
         生成电视剧的NFO描述文件
@@ -590,6 +633,97 @@ class ShortPlayMonitorx(_PluginBase):
         # 保存
         self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
 
+    def __gen_tv_nfo_with_douban(self, dir_path: Path, mediainfo: MediaInfo):
+        logger.info(f"正在使用豆瓣信息生成电视剧NFO文件：{dir_path.name}")
+        doc = minidom.Document()
+        root = DomUtils.add_node(doc, doc, "tvshow")
+        
+        DomUtils.add_node(doc, root, "title", mediainfo.title or "")
+        DomUtils.add_node(doc, root, "originaltitle", mediainfo.original_title or mediainfo.title or "")
+        
+        if mediainfo.year:
+            DomUtils.add_node(doc, root, "year", mediainfo.year)
+        
+        if mediainfo.overview:
+            DomUtils.add_node(doc, root, "plot", mediainfo.overview)
+        
+        # 国家/地区
+        if mediainfo.production_countries:
+            for country in mediainfo.production_countries:
+                if isinstance(country, dict):
+                    DomUtils.add_node(doc, root, "country", country.get("name", ""))
+                else:
+                    DomUtils.add_node(doc, root, "country", str(country))
+        
+        # 类型
+        if mediainfo.genres:
+            for genre in mediainfo.genres:
+                if isinstance(genre, dict):
+                    DomUtils.add_node(doc, root, "genre", genre.get("name", ""))
+                else:
+                    DomUtils.add_node(doc, root, "genre", str(genre))
+        
+        # 语言
+        if mediainfo.languages:
+            for lang in mediainfo.languages:
+                DomUtils.add_node(doc, root, "language", lang)
+        
+        # 评分
+        if mediainfo.vote_average:
+            DomUtils.add_node(doc, root, "rating", str(mediainfo.vote_average))
+        
+        # 豆瓣ID
+        if mediainfo.douban_id:
+            node = DomUtils.add_node(doc, root, "uniqueid", mediainfo.douban_id)
+            node.setAttribute("type", "douban")
+            node.setAttribute("default", "true")
+            
+        DomUtils.add_node(doc, root, "season", "1")
+        DomUtils.add_node(doc, root, "episode", "-1")
+        
+        self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
+
+    def __gen_tv_nfo_with_pt(self, dir_path: Path, tv_info: Dict):
+        """
+        使用 PT 站信息生成电视剧 NFO 文件
+        :param dir_path: 电视剧根目录
+        :param tv_info: PT 站获取的剧集信息
+        """
+        logger.info(f"正在使用 PT 站信息生成电视剧 NFO：{dir_path.name}")
+        doc = minidom.Document()
+        root = DomUtils.add_node(doc, doc, "tvshow")
+        
+        # 标题
+        title = tv_info.get("title", dir_path.name)
+        DomUtils.add_node(doc, root, "title", title)
+        DomUtils.add_node(doc, root, "originaltitle", title)
+        
+        # 年份
+        if tv_info.get("year"):
+            DomUtils.add_node(doc, root, "year", tv_info["year"])
+        
+        # 剧情简介（完整描述）
+        if tv_info.get("overview"):
+            DomUtils.add_node(doc, root, "plot", tv_info["overview"])
+        
+        # 国家/地区
+        if tv_info.get("country"):
+            DomUtils.add_node(doc, root, "country", tv_info["country"])
+        
+        # 类型/类别
+        if tv_info.get("genre"):
+            DomUtils.add_node(doc, root, "genre", tv_info["genre"])
+        
+        # 来源信息
+        if tv_info.get("source"):
+            DomUtils.add_node(doc, root, "source", tv_info["source"])
+        
+        # 默认值
+        DomUtils.add_node(doc, root, "season", "1")
+        DomUtils.add_node(doc, root, "episode", "-1")
+        
+        # 保存
+        self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
     def __save_nfo(self, doc, file_path: Path):
         """
         保存NFO
@@ -598,109 +732,156 @@ class ShortPlayMonitorx(_PluginBase):
         file_path.write_bytes(xml_str)
         logger.info(f"NFO文件已保存：{file_path}")
 
-    def gen_file_thumb_from_site(self, title: str, file_path: Path):
+    def gen_file_thumb_from_site(self, title: str, file_path: Path = None, get_nfo: bool = False):
         """
-        从agsv或者萝莉站查询封面
+        从 AGSV 或者萝莉站查询封面和剧集信息
+        :param title: 搜索标题
+        :param file_path: 封面保存路径（可选）
+        :param get_nfo: 是否获取 NFO 信息
+        :return: 如果 get_nfo=True，返回 (封面路径, NFO信息字典)；否则返回封面路径
         """
         try:
             image = None
-            # 查询索引
-            domain = "agsvpt.com"
-            site = SiteOper().get_by_domain(domain)
-            index = SitesHelper().get_indexer(domain)
-            if site:
-                req_url = f"https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=419&search={title}"
-                image_xpath = "//*[@id='kdescr']/img[1]/@src"
-                # 查询站点资源
+            tv_info = None
+            
+            # 站点配置
+            sites_config = [
+                {
+                    "domain": "agsvpt.com",
+                    "cat": "419",
+                    "name": "AGSV",
+                    "search_url": "https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=419&search={title}",
+                    "img_xpath": "//*[@id='kdescr']/img[1]/@src",
+                    "title_index": 3,
+                    "year_index": 4,
+                    "country_index": 5,
+                    "genre_index": 6,
+                    "overview_index": 8,
+                },
+                {
+                    "domain": "ilolicon.com",
+                    "cat": "402",
+                    "name": "萝莉站",
+                    "search_url": "https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=402&search={title}",
+                    "img_xpath": "//*[@id='kdescr']/img[1]/@src",
+                    "title_index": 1,
+                    "year_index": 2,
+                    "country_index": 3,
+                    "genre_index": 4,
+                    "overview_index": 7,
+                }
+            ]
+            
+            for site_config in sites_config:
+                domain = site_config["domain"]
+                site = SiteOper().get_by_domain(domain)
+                index = SitesHelper().get_indexer(domain)
+                
+                if not site:
+                    logger.debug(f"站点 {domain} 未配置，跳过")
+                    continue
+                    
+                # 搜索 URL
+                req_url = site_config["search_url"].format(title=title)
                 logger.info(f"开始检索 {site.name} {title}")
-                image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
-            if not image:
-                domain = "ilolicon.com"
-                site = SiteOper().get_by_domain(domain)
-                index = SitesHelper().get_indexer(domain)
-                if site:
-                    req_url = f"https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=402&search={title}"
+                
+                # 获取搜索结果
+                page_source = self.__get_page_source(url=req_url, site=site)
+                if not page_source:
+                    logger.error(f"请求站点 {site.name} 失败")
+                    continue
+                    
+                _spider = SiteSpider(indexer=index, page=1)
+                torrents = _spider.parse(page_source)
+                if not torrents:
+                    logger.info(f"未检索到站点 {site.name} 资源")
+                    continue
 
-                    image_xpath = "//*[@id='kdescr']/img[1]/@src"
-                    # 查询站点资源
-                    logger.info(f"开始检索 {site.name} {title}")
-                    image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+                # 获取种子详情页
+                torrent_detail_source = self.__get_page_source(url=torrents[0].get("page_url"), site=site)
+                if not torrent_detail_source:
+                    logger.error(f"请求种子详情页失败 {torrents[0].get('page_url')}")
+                    continue
 
-            # 3. 最后从 ptskit 查询
-            if not image:
-                domain = "ptskit.org"
-                site = SiteOper().get_by_domain(domain)
-                index = SitesHelper().get_indexer(domain)
-                if site:
-                    req_url = f"https://www.ptskit.org/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&tag_id=238&search={title}"
-                    image_xpath = "//*[@id='kdescr']/img/@src"
-                    logger.info(f"开始检索 {site.name} {title}")
-                    image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+                html = etree.HTML(torrent_detail_source)
+                if html is None:
+                    logger.error(f"解析种子详情页失败 {torrents[0].get('page_url')}")
+                    continue
 
-            if not image:
-                logger.error(f"检索站点 {title} 封面失败")
-                return None
+                # 获取封面图
+                image_elem = html.xpath(site_config["img_xpath"])
+                if image_elem:
+                    image = str(image_elem[0])
+                    logger.info(f"获取到封面图：{image}")
 
-            # 下载图片保存
-            if self.__save_image(url=image, file_path=file_path):
-                return file_path
-            return None
-        except Exception as e:
-            logger.error(f"检索站点 {title} 封面失败 {str(e)}")
-            return None
+                # 如果需要获取 NFO 信息
+                if get_nfo:
+                    tv_info = {
+                        "source": site_config["name"],
+                        "title": title,
+                        "year": "",
+                        "country": "",
+                        "genre": "",
+                        "overview": ""
+                    }
+                    
+                    # 获取所有描述文本
+                    desc_texts = html.xpath("//*[@id='kdescr']/text()")
+                    logger.info(f"获取到 {len(desc_texts)} 段描述文本")
+                     
+                     # 先打印所有文本用于调试
+                    for idx, text_item in enumerate(desc_texts, start=1):
+                        if text_item and text_item.strip():
+                            logger.info(f"  text[{idx}]: {text_item.strip()[:80]}")
+                    
+                    # 按内容匹配
+                    for text in desc_texts:
+                        text = text.strip()
+                        if not text:
+                            continue
+                        
+                        if '◎片　　名' in text:
+                            tv_info["title"] = re.sub(r'◎片　　名　*', '', text).strip()
+                        elif '◎年　　代' in text:
+                            tv_info["year"] = re.sub(r'◎年　　代　*', '', text).strip()
+                        elif '◎产　　地' in text:
+                            tv_info["country"] = re.sub(r'◎产　　地　*', '', text).strip()
+                        elif '◎类　　别' in text:
+                            tv_info["genre"] = re.sub(r'◎类　　别　*', '', text).strip()
+                        elif '◎简　　介' in text:
+                            tv_info["overview"] = re.sub(r'◎简　　介　*', '', text).strip()
+                    
+                    # 如果没有解析到标题，使用原标题
+                    if not tv_info.get("title"):
+                        tv_info["title"] = title
+                    
+                    # 保存封面 URL
+                    if image:
+                        tv_info["poster_url"] = image
+                    
+                    logger.info(f"解析到剧集信息：标题={tv_info.get('title')}, 年份={tv_info.get('year')}, "
+                                f"地区={tv_info.get('country')}, 类型={tv_info.get('genre')}")
 
-    @retry(RequestException, logger=logger)
-    def __save_image(self, url: str, file_path: Path):
-        """
-        下载图片并保存
-        """
-        try:
-            logger.info(f"正在下载{file_path.stem}图片：{url} ...")
-            r = RequestUtils().get_res(url=url, raise_exception=True)
-            if r:
-                file_path.write_bytes(r.content)
-                logger.info(f"图片已保存：{file_path}")
-                return True
+                # 找到第一个成功的站点就退出
+                break
+                            
+            # 处理封面保存
+            thumb_path = None
+            if image and file_path:
+                if self.__save_image(url=image, file_path=file_path):
+                    thumb_path = file_path
+            
+            # 返回结果
+            if get_nfo:
+                return thumb_path, tv_info
             else:
-                logger.info(f"{file_path.stem}图片下载失败，请检查网络连通性")
-                return False
-        except RequestException as err:
-            raise err
-        except Exception as err:
-            logger.error(f"{file_path.stem}图片下载失败：{str(err)}")
-            return False
-
-    def __get_site_torrents(self, url: str, site, image_xpath, index):
-        """
-        查询站点资源
-        """
-        page_source = self.__get_page_source(url=url, site=site)
-        if not page_source:
-            logger.error(f"请求站点 {site.name} 失败")
+                return thumb_path
+                
+        except Exception as e:
+            logger.error(f"检索站点 {title} 失败 {str(e)}")
+            if get_nfo:
+                return None, None
             return None
-        _spider = SiteSpider(indexer=index, page=1)
-        torrents = _spider.parse(page_source)
-        if not torrents:
-            logger.error(f"未检索到站点 {site.name} 资源")
-            return None
-
-        # 获取种子详情页
-        torrent_detail_source = self.__get_page_source(url=torrents[0].get("page_url"), site=site)
-        if not torrent_detail_source:
-            logger.error(f"请求种子详情页失败 {torrents[0].get('page_url')}")
-            return None
-
-        html = etree.HTML(torrent_detail_source)
-        if not html:
-            logger.error(f"请求种子详情页失败 {torrents[0].get('page_url')}")
-            return None
-
-        image = html.xpath(image_xpath)[0]
-        if not image:
-            logger.error(f"未获取到种子封面图 {torrents[0].get('page_url')}")
-            return None
-
-        return str(image)
 
     def __get_page_source(self, url: str, site):
         """

@@ -53,5 +53,15 @@
     "history": {
       "v1.0.0": "ai修改"
     }
+  },
+  "FindBrokenSymlinks": {
+    "name": "查找失效软链接",
+    "description": "查找并管理指定目录中的失效软链接",
+    "labels": "工具,文件管理",
+    "version": "1.0.0",
+    "icon": "mdi-link-off",
+    "author": "AI",
+    "system_version": ">=2.12.0",
+    "level": 1
   }
 }

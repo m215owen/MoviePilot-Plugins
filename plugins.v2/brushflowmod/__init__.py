@@ -276,6 +276,12 @@ class brushflowmod(_PluginBase):
     # 可使用的用户级别
     auth_level = 2
 
+    # 私有属性
+    sites_helper = None
+    site_oper = None
+    torrents_chain = None
+    subscribe_oper = None
+    downloader_helper = None
     # 刷流配置
     _brush_config = None
     # Brush任务是否启动
@@ -295,6 +301,10 @@ class brushflowmod(_PluginBase):
     # endregion
 
     def init_plugin(self, config: dict = None):
+        self.sites_helper = SitesHelper()
+        self.site_oper = SiteOper()
+        self.torrents_chain = TorrentsChain()
+        self.subscribe_oper = SubscribeOper()
         self.downloader_helper = DownloaderHelper()
         self._task_brush_enable = False
 
@@ -314,6 +324,12 @@ class brushflowmod(_PluginBase):
         self._brush_config = BrushConfig(config=config)
 
         brush_config = self._brush_config
+
+        # 判断是否存在插件冲突，如果存在则停用
+        if not self.__check_and_resolve_plugin_conflict():
+            self._brush_config.enabled = False
+            self.__update_config()
+            return
 
         # 这里先过滤掉已删除的站点并保存，特别注意的是，这里保留了界面选择站点时的顺序，以便后续站点随机刷流或顺序刷流
         if brush_config.brushsites:
@@ -433,6 +449,10 @@ class brushflowmod(_PluginBase):
 
         brush_config = self.__get_brush_config()
         if not brush_config:
+            return services
+
+        # 判断是否存在插件冲突，如果存在则停用
+        if not self.__check_and_resolve_plugin_conflict():
             return services
 
         if self._task_brush_enable:
@@ -814,10 +834,10 @@ class brushflowmod(_PluginBase):
 
         # 站点选项
         site_options = [{"title": site.get("name"), "value": site.get("id")}
-                        for site in SitesHelper().get_indexers()]
+                        for site in self.sites_helper.get_indexers()]
         # 下载器选项
         downloader_options = [{"title": config.name, "value": config.name}
-                              for config in DownloaderHelper().get_configs().values()]
+                              for config in self.downloader_helper.get_configs().values()]
         return [
             {
                 'component': 'VForm',
@@ -1288,7 +1308,7 @@ class brushflowmod(_PluginBase):
                                                         'component': 'VTextField',
                                                         'props': {
                                                             'model': 'size',
-                                                            'label': '种子大小（GB）',
+                                                            'label': '种子大小（MB）',
                                                             'placeholder': '如：5 或 5-10'
                                                         }
                                                     }
@@ -1872,15 +1892,59 @@ class brushflowmod(_PluginBase):
             {'title': '状态', 'key': 'status', 'sortable': True},
         ]
         # 种子数据明细
-        items = [
+        torrent_trs = [
             {
-                'site': data.get("site_name"),
-                'title': data.get("title"),
-                'size': StringUtils.str_filesize(data.get("size")),
-                'uploaded': StringUtils.str_filesize(data.get("uploaded") or 0),
-                'downloaded': StringUtils.str_filesize(data.get("downloaded") or 0),
-                'ratio': round(data.get('ratio') or 0, 2),
-                'status': "已删除" if data.get("deleted") else "正常"
+                'component': 'tr',
+                'props': {
+                    'class': 'text-sm'
+                },
+                'content': [
+                    {
+                        'component': 'td',
+                        'props': {
+                            'class': 'whitespace-nowrap break-keep text-high-emphasis'
+                        },
+                        'text': data.get("site_name")
+                    },
+                    {
+                        'component': 'td',
+                        'html': f'<span style="font-size: .85rem;">{data.get("title")}</span>' +
+                                (f'<br><span style="font-size: 0.75rem;">{data.get("description")}</span>' if data.get(
+                                    "description") else "")
+
+                    },
+                    {
+                        'component': 'td',
+                        'text': StringUtils.str_filesize(data.get("size"))
+                    },
+                    {
+                        'component': 'td',
+                        'text': StringUtils.str_filesize(data.get("uploaded") or 0)
+                    },
+                    {
+                        'component': 'td',
+                        'text': StringUtils.str_filesize(data.get("downloaded") or 0)
+                    },
+                    {
+                        'component': 'td',
+                        'text': round(data.get('ratio') or 0, 2)
+                    },
+                    {
+                        'component': 'td',
+                        'text': "是" if data.get("hit_and_run") else "否"
+                    },
+                    {
+                        'component': 'td',
+                        'text': f"{data.get('seeding_time') / 3600:.1f}" if data.get('seeding_time') else "N/A"
+                    },
+                    {
+                        'component': 'td',
+                        'props': {
+                            'class': 'text-no-wrap'
+                        },
+                        'text': "已删除" if data.get("deleted") else "正常"
+                    }
+                ]
             } for data in data_list
         ]
 
@@ -1888,37 +1952,94 @@ class brushflowmod(_PluginBase):
         return [
             {
                 'component': 'VRow',
-                'props': {
-                    'style': {
-                        'overflow': 'hidden',
-                    }
-                },
                 'content': self.__get_total_elements() + [
                     # 种子明细
                     {
-                        'component': 'VRow',
+                        'component': 'VCol',
                         'props': {
-                            'class': 'd-none d-sm-block',
+                            'cols': 12,
                         },
                         'content': [
                             {
-                                'component': 'VCol',
+                                'component': 'VTable',
                                 'props': {
-                                    'cols': 12,
+                                    'hover': True
                                 },
                                 'content': [
                                     {
-                                        'component': 'VDataTableVirtual',
+                                        'component': 'thead',
                                         'props': {
-                                            'class': 'text-sm',
-                                            'headers': headers,
-                                            'items': items,
-                                            'height': '30rem',
-                                            'density': 'compact',
-                                            'fixed-header': True,
-                                            'hide-no-data': True,
-                                            'hover': True
-                                        }
+                                            'class': 'text-no-wrap'
+                                        },
+                                        'content': [
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '站点'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '标题'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '大小'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '上传量'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '下载量'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '分享率'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': 'HR'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '做种时间'
+                                            },
+                                            {
+                                                'component': 'th',
+                                                'props': {
+                                                    'class': 'text-start ps-4'
+                                                },
+                                                'text': '状态'
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        'component': 'tbody',
+                                        'content': torrent_trs
                                     }
                                 ]
                             }
@@ -2090,6 +2211,9 @@ class brushflowmod(_PluginBase):
         """
         定时刷流，添加下载任务
         """
+        if not self.__check_and_resolve_plugin_conflict():
+            return
+
         brush_config = self.__get_brush_config()
 
         if not brush_config.brushsites or not brush_config.downloader or not self.downloader:
@@ -2124,7 +2248,7 @@ class brushflowmod(_PluginBase):
             # 获取所有站点的信息，并过滤掉不存在的站点
             site_infos = []
             for siteid in brush_config.brushsites:
-                siteinfo = SiteOper().get(siteid)
+                siteinfo = self.site_oper.get(siteid)
                 if siteinfo:
                     site_infos.append(siteinfo)
 
@@ -2141,8 +2265,8 @@ class brushflowmod(_PluginBase):
             for site in site_infos:
                 # 如果站点刷流没有正确响应，说明没有通过前置条件，其他站点也不需要继续刷流了
                 if not self.__brush_site_torrents(siteid=site.id, torrent_tasks=torrent_tasks,
-                                                statistic_info=statistic_info,
-                                                subscribe_titles=subscribe_titles):
+                                                  statistic_info=statistic_info,
+                                                  subscribe_titles=subscribe_titles):
                     logger.info(f"站点 {site.name} 刷流中途结束，停止后续刷流")
                     break
                 else:
@@ -2159,7 +2283,7 @@ class brushflowmod(_PluginBase):
         """
         针对站点进行刷流
         """
-        siteinfo = SiteOper().get(siteid)
+        siteinfo = self.site_oper.get(siteid)
         if not siteinfo:
             logger.warning(f"站点不存在：{siteid}")
             return True
@@ -2318,7 +2442,7 @@ class brushflowmod(_PluginBase):
         # 如果没有明确指定增加的种子大小，则检查配置中是否有种子大小下限，如果有，使用这个大小作为增加的种子大小
         preset_condition = False
         if not add_torrent_size and brush_config.size:
-            size_limits = [float(size) * 1024 ** 3 for size in brush_config.size.split("-")]
+            size_limits = [float(size) * 1024 ** 2 for size in brush_config.size.split("-")]
             add_torrent_size = size_limits[0]  # 使用配置的种子大小下限
             preset_condition = True
 
@@ -2353,12 +2477,9 @@ class brushflowmod(_PluginBase):
 
         return True, None
 
-    def __evaluate_pre_conditions_for_brush(self, include_network_conditions: bool = True, site_name: str = None) -> Tuple[bool, Optional[str]]:
-        """
-        前置过滤不符合条件的种子
-        """
+    def __evaluate_pre_conditions_for_brush(self, include_network_conditions: bool = True, site_name: str = None):
         reasons = [
-            ("maxdlcount", lambda config: self.__get_downloading_count(site_name=site_name) >= int(config),
+            ("maxdlcount", lambda config: self.__get_downloading_count(site_name=site_name) >= int(config),  # ✅ 传入 site_name
             lambda config: f"当前同时下载任务数已达到最大值 {config}，暂时停止新增任务")
         ]
 
@@ -2368,14 +2489,14 @@ class brushflowmod(_PluginBase):
             if avg_upload_speed is not None and avg_download_speed is not None:
                 reasons.extend([
                     ("maxupspeed", lambda config: avg_upload_speed >= float(config) * 1024,
-                    lambda config: f"当前总上传带宽 {StringUtils.str_filesize(avg_upload_speed)}，"
+                     lambda config: f"当前总上传带宽 {StringUtils.str_filesize(avg_upload_speed)}，"
                                     f"已达到最大值 {config} KB/s，暂时停止新增任务"),
                     ("maxdlspeed", lambda config: avg_download_speed >= float(config) * 1024,
-                    lambda config: f"当前总下载带宽 {StringUtils.str_filesize(avg_download_speed)}，"
+                     lambda config: f"当前总下载带宽 {StringUtils.str_filesize(avg_download_speed)}，"
                                     f"已达到最大值 {config} KB/s，暂时停止新增任务"),
                 ])
 
-        brush_config = self.__get_brush_config(sitename=site_name)
+        brush_config = self.__get_brush_config(sitename=site_name)  # ✅ 现在 site_name 有定义了
         for condition, check, message in reasons:
             config_value = getattr(brush_config, condition, None)
             if config_value and check(config_value):
@@ -2456,11 +2577,11 @@ class brushflowmod(_PluginBase):
 
         # 种子大小（GB）
         if brush_config.size:
-            sizes = [float(size) * 1024 ** 3 for size in brush_config.size.split("-")]
+            sizes = [float(size) * 1024 ** 2 for size in brush_config.size.split("-")]
             if len(sizes) == 1 and torrent.size < sizes[0]:
-                return False, f"种子大小 {self.__bytes_to_gb(torrent.size):.1f} GB，不符合条件"
+                return False, f"种子大小 {self.__bytes_to_mb(torrent.size):.1f} MB，不符合条件"
             elif len(sizes) > 1 and not sizes[0] <= torrent.size <= sizes[1]:
-                return False, f"种子大小 {self.__bytes_to_gb(torrent.size):.1f} GB，不在指定范围内"
+                return False, f"种子大小 {self.__bytes_to_mb(torrent.size):.1f} MB，不在指定范围内"
 
         # 做种人数
         if brush_config.seeder:
@@ -2476,13 +2597,8 @@ class brushflowmod(_PluginBase):
                 if not (seeders_range[0] <= torrent.seeders <= seeders_range[1]):
                     return False, f"做种人数 {torrent.seeders}，不在指定范围内"
 
-        # 发布时间：用户时间 - 站点时间 - 时区偏移
-        # e.g.1: 用户UTC+8，站点UTC，timezone_offset应为+8，种子在UTC 0:00/UTC+8 8:00发布；
-        #        9:17 - 0:00 - 8:00 = 1:17；1小时17分为正确的发布时间与当前的时间差
-        # e.g.2: 用户UTC，站点UTC+8，timezone_offset应为-8，种子在UTC 0:00/UTC+8 8:00发布：
-        #        1:17 - 8:00 - (-8:00) = 1:17；1小时17分为正确的发布时间与当前的时间差
-        # timezone_offset为后加功能，默认为0，方便后续更多与时间相关的功能开发，之前在单独站点配置中使用pubtime计算过时区偏移的用户也不受影响
-        pubdate_minutes = self.__get_pubminutes(torrent.pubdate) - brush_config.timezone_offset
+        # 发布时间
+        pubdate_minutes = self.__get_pubminutes(torrent.pubdate)
         # 已支持独立站点配置，取消单独适配站点时区逻辑，可通过配置项「pubtime」自行适配
         # pubdate_minutes = self.__adjust_site_pubminutes(pubdate_minutes, torrent)
         if brush_config.pubtime:
@@ -2490,11 +2606,11 @@ class brushflowmod(_PluginBase):
             if len(pubtimes) == 1:
                 # 单个值：选择发布时间小于等于该值的种子
                 if pubdate_minutes > pubtimes[0]:
-                    return False, f"发布时间（站点时区）{torrent.pubdate}，当前配置时区偏移 {brush_config.timezone_offset} 小时，{pubdate_minutes:.0f} 分钟前，不符合条件"
+                    return False, f"发布时间 {torrent.pubdate}，{pubdate_minutes:.0f} 分钟前，不符合条件"
             else:
                 # 范围值：选择发布时间在范围内的种子
                 if not (pubtimes[0] <= pubdate_minutes <= pubtimes[1]):
-                    return False, f"发布时间（站点时区）{torrent.pubdate}，当前配置时区偏移 {brush_config.timezone_offset} 小时，{pubdate_minutes:.0f} 分钟前，不在指定范围内"
+                    return False, f"发布时间 {torrent.pubdate}，{pubdate_minutes:.0f} 分钟前，不在指定范围内"
 
         return True, None
 
@@ -2517,6 +2633,9 @@ class brushflowmod(_PluginBase):
         """
         定时检查，删除下载任务
         """
+        if not self.__check_and_resolve_plugin_conflict():
+            return
+
         brush_config = self.__get_brush_config()
 
         if not brush_config.downloader or not self.downloader:
@@ -2597,7 +2716,7 @@ class brushflowmod(_PluginBase):
 
                 if need_delete_hashes:
                     # 如果是QB，则重新汇报Tracker
-                    if DownloaderHelper().is_downloader("qbittorrent", service=self.service_info):
+                    if self.downloader_helper.is_downloader("qbittorrent", service=self.service_info):
                         self.__qb_torrents_reannounce(torrent_hashes=need_delete_hashes)
                     # 删除种子
                     if downloader.delete_torrents(ids=need_delete_hashes, delete_file=True):
@@ -2639,7 +2758,7 @@ class brushflowmod(_PluginBase):
                                              seeding_torrents_dict: Dict[str, Any]):
         brush_config = self.__get_brush_config()
 
-        if not DownloaderHelper().is_downloader("qbittorrent", service=self.service_info):
+        if not self.downloader_helper.is_downloader("qbittorrent", service=self.service_info):
             logger.info("同步种子刷流标签记录目前仅支持qbittorrent")
             return
 
@@ -2750,25 +2869,6 @@ class brushflowmod(_PluginBase):
                 return True, f"H&R种子，分享率 {torrent_info.get('ratio'):.2f}，大于 {brush_config.seed_ratio}"
             return False, "H&R种子，未能满足设置的H&R删除条件"
 
-        while brush_config.del_no_free and torrent_info.get("downloaded") < torrent_info.get("total_size"):
-            if not torrent_task.get("freedate", None):
-                logger.warning(f"配置了‘删除促销过期的未完成下载’，但未获取到该种子的促销截止时间，跳过。")
-                break
-            try:
-                now = datetime.now()
-                freedate_origin = torrent_task.get("freedate")
-                freedate = freedate_origin.replace("T", " ").replace("Z", "")
-                freedate = datetime.strptime(freedate, "%Y-%m-%d %H:%M:%S")
-                delta_minutes = (((freedate - now).total_seconds() + 60) // 60) - brush_config.timezone_offset
-                logger.debug(
-                    f"促销截止（站点时间）: {freedate_origin}, 时区偏移: {brush_config.timezone_offset}, 用户当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}, 时间差: {delta_minutes}分")
-                if delta_minutes <= 0:
-                    return True, "促销过期"
-            except Exception as e:
-                logger.warning(f"处理‘删除促销过期的未完成下载’时报错，继续判断其他删除条件。")
-                logger.debug(f"error: {e}")
-            break
-
         # 处理其他场景，1. 不是H&R种子；2. 是H&R种子但没有特定条件配置
         reason = reason if not hit_and_run else "H&R种子（未设置H&R条件），未能满足设置的删除条件"
         if brush_config.seed_time and torrent_info.get("seeding_time") >= float(brush_config.seed_time) * 3600:
@@ -2798,32 +2898,12 @@ class brushflowmod(_PluginBase):
         """
         brush_config = self.__get_brush_config(sitename=site_name)
 
-        should_delete = False
         reason = "未能满足动态删除设置的前置删除条件"
-
-        while brush_config.del_no_free and torrent_info.get("downloaded") < torrent_info.get("total_size"):
-            if not torrent_task.get("freedate", None):
-                logger.warning(f"配置了‘删除促销过期的未完成下载’，但未获取到该种子的促销截止时间，跳过。")
-                break
-            try:
-                now = datetime.now()
-                freedate_origin = torrent_task.get("freedate")
-                freedate = freedate_origin.replace("T", " ").replace("Z", "")
-                freedate = datetime.strptime(freedate, "%Y-%m-%d %H:%M:%S")
-                delta_minutes = (((freedate - now).total_seconds() + 60) // 60) - brush_config.timezone_offset
-                logger.debug(
-                    f"促销截止（站点时间）: {freedate_origin}, 时区偏移: {brush_config.timezone_offset}, 用户当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}, 时间差: {delta_minutes}分")
-                if delta_minutes <= 0:
-                    return True, f"促销已过期"
-            except Exception as e:
-                logger.warning(f"处理‘删除促销过期的未完成下载’时报错，继续判断其他删除条件。")
-                logger.debug(f"error: {e}")
-            break
 
         if brush_config.download_time and torrent_info.get("downloaded") < torrent_info.get(
                 "total_size") and torrent_info.get("dltime") >= float(brush_config.download_time) * 3600:
             reason = f"下载耗时 {torrent_info.get('dltime') / 3600:.1f} 小时，大于 {brush_config.download_time} 小时"
-        elif not should_delete:
+        else:
             return False, reason
 
         return True, reason
@@ -3367,8 +3447,7 @@ class brushflowmod(_PluginBase):
                 return data
         return None
 
-    @staticmethod
-    def __reset_download_url(torrent_url, site_id) -> str:
+    def __reset_download_url(self, torrent_url, site_id) -> str:
         """
         处理下载地址
         """
@@ -3377,7 +3456,7 @@ class brushflowmod(_PluginBase):
             if not torrent_url or torrent_url.startswith("magnet"):
                 return torrent_url
 
-            indexers = SitesHelper().get_indexers()
+            indexers = self.sites_helper.get_indexers()
             if not indexers:
                 return torrent_url
 
@@ -3423,13 +3502,6 @@ class brushflowmod(_PluginBase):
         proxies = settings.PROXY if torrent.site_proxy else None
         # cookie
         cookies = torrent.site_cookie
-        
-        # 根据站点获取下载器
-        downloader = self.__get_downloader_for_site(torrent.site_name)
-        if not downloader:
-            logger.error(f"站点 {torrent.site_name} 无法获取下载器实例")
-            return None
-        
         if torrent_content.startswith("["):
             torrent_content = self.__get_redict_url(url=torrent_content,
                                                     proxies=proxies,
@@ -3444,13 +3516,14 @@ class brushflowmod(_PluginBase):
             torrent_content = self.__reset_download_url(torrent_url=torrent_content, site_id=torrent.site)
             logger.debug(f"站点 {torrent.site_name} 已启用自动跳过提示，种子下载地址更新为 {torrent_content}")
 
-        # 判断下载器类型
-        downloader_name = brush_config.downloader
-        is_qb = downloader_name and "qbittorrent" in downloader_name.lower()
-        is_qb = is_qb or (not downloader_name and self.downloader_helper.is_downloader("qbittorrent", service=self.service_info))
-        
-        if is_qb:
-            # qBittorrent 下载逻辑
+        # ✅ 添加这行：根据站点获取下载器
+        downloader = self.__get_downloader_for_site(torrent.site_name)
+        if not downloader:
+            logger.error(f"站点 {torrent.site_name} 无法获取下载器实例")
+            return None
+
+        if isinstance(downloader, Qbittorrent):
+            # 限速值转为bytes
             up_speed = up_speed * 1024 if up_speed else None
             down_speed = down_speed * 1024 if down_speed else None
             # 生成随机Tag
@@ -3496,6 +3569,7 @@ class brushflowmod(_PluginBase):
                 self.__add_tags_to_existing_torrent(torrent.title, tags_to_add)
                 return existing_hash
             
+            # 如果开启代理下载以及种子地址不是磁力地址，则请求种子到内存再传入下载器
             if not torrent_content.startswith("magnet"):
                 response = RequestUtils(cookies=cookies,
                                         proxies=proxies,
@@ -3504,7 +3578,6 @@ class brushflowmod(_PluginBase):
                     torrent_content = response.content
                 else:
                     logger.error("尝试通过MP下载种子失败，继续尝试传递种子地址到下载器进行下载")
-            
             if torrent_content:
                 state = downloader.add_torrent(content=torrent_content,
                                             download_dir=download_dir,
@@ -3512,33 +3585,17 @@ class brushflowmod(_PluginBase):
                                             category=brush_config.qb_category,
                                             tag=tags_str,
                                             upload_limit=up_speed,
-                                            download_limit=down_speed)                          
+                                            download_limit=down_speed)
                 if not state:
-                    logger.warning(f"添加种子失败: {torrent.title}")
-                    # 再次尝试查找
-                    existing_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
-                    if existing_hash:
-                        tags_to_add = [t for t in existing_tags if t != tag]
-                        self.__add_tags_to_existing_torrent(torrent.title, tags_to_add)
-                        return existing_hash
                     return None
                 else:
-                    # 获取种子Hash，增加重试
-                    torrent_hash = None
-                    for i in range(5):
-                        time.sleep(1)
-                        torrent_hash = downloader.get_torrent_id_by_tag(tags=tag)
-                        if torrent_hash:
-                            break
-                    
+                    # 获取种子Hash
+                    torrent_hash = downloader.get_torrent_id_by_tag(tags=tag)
                     if not torrent_hash:
-                        torrent_hash = self.__find_existing_torrent_hash_by_name(torrent.title)
-                        if not torrent_hash:
-                            logger.error(f"{brush_config.downloader} 获取种子Hash失败")
-                            return None
+                        logger.error(f"{brush_config.downloader} 获取种子Hash失败，详细信息请查看 README")
+                        return None
                     return torrent_hash
             return None
-
         else:
             # Transmission 下载逻辑
             # 处理标签：添加原始标签（排除指定标签）
@@ -3577,20 +3634,19 @@ class brushflowmod(_PluginBase):
                     torrent_content = response.content
                 else:
                     logger.error("尝试通过MP下载种子失败，继续尝试传递种子地址到下载器进行下载")
-            
             if torrent_content:
                 torrent_result = downloader.add_torrent(content=torrent_content,
-                                                        download_dir=download_dir,
-                                                        cookie=cookies,
-                                                        labels=existing_labels)
+                                                 download_dir=download_dir,
+                                                 cookie=cookies,
+                                                 labels=existing_labels)
                 if not torrent_result:
                     return None
                 else:
                     if brush_config.up_speed or brush_config.dl_speed:
                         downloader.change_torrent(hash_string=torrent_result.hashString,
-                                                upload_limit=up_speed,
-                                                download_limit=down_speed)
-                    return torrent_result.hashString
+                                                  upload_limit=up_speed,
+                                                  download_limit=down_speed)
+                    return torrent_result.hashString 
         return None
 
     def __qb_torrents_reannounce(self, torrent_hashes: List[str]):
@@ -3616,7 +3672,7 @@ class brushflowmod(_PluginBase):
         获取种子hash
         """
         try:
-            return torrent.get("hash") if DownloaderHelper().is_downloader("qbittorrent", service=self.service_info) \
+            return torrent.get("hash") if self.downloader_helper.is_downloader("qbittorrent", service=self.service_info) \
                 else torrent.hashString
         except Exception as e:
             print(str(e))
@@ -3633,8 +3689,8 @@ class brushflowmod(_PluginBase):
             all_hashes = []
             for torrent in torrents:
                 # 根据下载器类型获取Hash值
-                hash_value = torrent.get("hash") if DownloaderHelper().is_downloader("qbittorrent",
-                                                                                     service=self.service_info) \
+                hash_value = torrent.get("hash") if self.downloader_helper.is_downloader("qbittorrent",
+                                                                                         service=self.service_info) \
                     else torrent.hashString
                 if hash_value:
                     all_hashes.append(hash_value)
@@ -3648,7 +3704,7 @@ class brushflowmod(_PluginBase):
         获取种子标签
         """
         try:
-            if DownloaderHelper().is_downloader("qbittorrent", service=self.service_info):
+            if self.downloader_helper.is_downloader("qbittorrent", service=self.service_info):
                 # qBittorrent: tags 是逗号分隔的字符串
                 tags = torrent.get("tags", "")
                 return [str(tag).strip() for tag in tags.split(',') if tag.strip()]
@@ -3668,7 +3724,7 @@ class brushflowmod(_PluginBase):
         """
         date_now = int(time.time())
         # QB
-        if DownloaderHelper().is_downloader("qbittorrent", service=self.service_info):
+        if self.downloader_helper.is_downloader("qbittorrent", service=self.service_info):
             """
             {
               "added_on": 1693359031,
@@ -3980,25 +4036,52 @@ class brushflowmod(_PluginBase):
         return ret_info
 
     def __get_downloading_count(self, site_name: str = None) -> int:
-        """
-        获取正在下载的任务数量
-        """
         try:
             brush_config = self.__get_brush_config(sitename=site_name)
             
-            # 根据站点获取下载器
             if site_name:
                 downloader = self.__get_downloader_for_site(site_name)
             else:
                 downloader = self.downloader
+                logger.info(f"全局检查，使用全局下载器统计任务数")
                 
             if not downloader:
                 return 0
 
             torrents = downloader.get_downloading_torrents(tags=brush_config.brush_tag)
             if torrents is None:
-                logger.warning(f"获取下载数量失败，可能是下载器连接发生异常")
+                logger.warning(f"获取下载数量失败")
                 return 0
+            if site_name:
+                logger.info(f"站点 {site_name} 下载器中带'{brush_config.brush_tag}'标签的种子数量: {len(torrents)}")
+                for t in torrents:
+                    if isinstance(downloader, Qbittorrent):
+                        logger.info(f"  种子: {t.get('name')}, 状态: {t.get('state')}, 进度: {t.get('progress')}")
+                    else:
+                        status = t.status if hasattr(t, 'status') else t.get("status", -1)
+                        progress = t.progress if hasattr(t, 'progress') else t.get("progress", 0)
+                        logger.info(f"  种子: {t.name}, 状态: {status}, 进度: {progress}")
+            else:
+                # 全局检查：只显示数量
+                logger.info(f"全局下载器中带'{brush_config.brush_tag}'标签的种子数量: {len(torrents)}")
+            
+            # 统计下载中的数量
+            downloading_count = 0
+            for torrent in torrents:
+                if isinstance(downloader, Qbittorrent):
+                    state = torrent.get("state", "")
+                    if state in ["downloading", "stalledDL", "metaDL", "checkingDL", "queuedDL"]:
+                        downloading_count += 1
+                else:
+                    status = torrent.status if hasattr(torrent, 'status') else torrent.get("status", -1)
+                    if status in [3, 4] or str(status).lower() in ["downloading", "download", "leech"]:
+                        downloading_count += 1
+            
+            logger.info(f"站点 {site_name} 真正在下载的任务数: {downloading_count}")
+            return downloading_count
+        except Exception as e:
+            logger.error(f"获取下载数量发生异常: {e}")
+            return 0
 
             return len(torrents)
         except Exception as e:
@@ -4081,7 +4164,7 @@ class brushflowmod(_PluginBase):
         if not self._subscribe_infos:
             self._subscribe_infos = {}
 
-        subscribes = SubscribeOper().list()
+        subscribes = self.subscribe_oper.list()
         if subscribes:
             # 遍历订阅
             for subscribe in subscribes:
@@ -4160,6 +4243,11 @@ class brushflowmod(_PluginBase):
         if not size_in_bytes:
             return 0.0
         return size_in_bytes / (1024 ** 3)
+
+    @staticmethod
+    def __bytes_to_mb(size_in_bytes: float) -> float:
+        """字节转MB"""
+        return size_in_bytes / (1024 ** 2)
 
     @staticmethod
     def __is_number_or_range(value):
@@ -4294,8 +4382,7 @@ class brushflowmod(_PluginBase):
             # 情况2: 时间段跨越午夜
             return now >= start_time or now <= end_time
 
-    @staticmethod
-    def __get_site_by_torrent(torrent: Any) -> Tuple[int, str]:
+    def __get_site_by_torrent(self, torrent: Any) -> Tuple[int, str]:
         """
         根据tracker获取站点信息
         """
@@ -4344,3 +4431,21 @@ class brushflowmod(_PluginBase):
 
         # 当找不到对应的站点信息时，返回一个默认值
         return 0, domain
+    def __check_and_resolve_plugin_conflict(self) -> bool:
+        """
+        判断是否存在插件冲突
+        """
+        brush_config = self.__get_brush_config()
+        if not brush_config:
+            return True
+
+        official_config = self.get_config("BrushFlow")
+        if not official_config:
+            return True
+
+        official_enabled = official_config.get("enabled")
+        if official_enabled and brush_config.enabled:
+            logger.warning("官方插件与当前插件只能同时启用一个，请重新配置")
+            return False
+
+        return True
