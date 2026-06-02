@@ -41,6 +41,7 @@ MAX_CACHE_SIZE = 1000
 MAX_RETRIES = 3
 RETRY_DELAY = 1
 LOCK_TIMEOUT = 30
+MAX_DISPLAY_CACHE = 50  # 面板最多显示50条缓存
 
 # 系统文件夹黑名单
 SYSTEM_FOLDERS = {'@Recycle', '#recycle', '@eaDir', 'System Volume Information', '$RECYCLE.BIN', '.DS_Store', 'Thumbs.db'}
@@ -86,6 +87,10 @@ class CacheEntry:
     def is_expired(self, ttl: int = 3600) -> bool:
         """检查是否过期（默认1小时）"""
         return time.time() - self.timestamp > ttl
+    
+    def update_timestamp(self):
+        """更新时间戳"""
+        self.timestamp = time.time()
 
 
 class FileMonitorHandler(FileSystemEventHandler):
@@ -159,6 +164,11 @@ class ShortPlayProcessor(_PluginBase):
         self._image = False
         self._timeline = "00:00:10"
         
+        # ========== 三个数据源开关 ==========
+        self._enable_local_nfo = True      # 本地NFO识别开关
+        self._enable_mp_recognition = True  # MP识别开关（豆瓣/TMDB）
+        self._enable_pt_search = True       # PT站点搜索开关
+        
         # 配置字典
         self._dirconf: Dict[str, str] = {}
         self._renameconf: Dict[str, str] = {}
@@ -196,10 +206,10 @@ class ShortPlayProcessor(_PluginBase):
     def _init_regex_patterns(self):
         """初始化正则表达式模式"""
         
-        # 剧名清理模式
+        # 剧名清理模式（按顺序执行）
         self._title_clean_patterns = [
             (r'^\d+[-－—]\s*', ''),           # 去除开头序号
-            (r'\.[^.]*', ''),                  # 去除第一个点号及之后所有内容（包括后续的点号）
+            (r'\..*', ''),                    # 去除点号及之后所有内容（删除拼音后缀）
             (r'[（(].*$', ''),                 # 去除括号及之后内容
             (r'\[[^\]]+\]', ''),              # 去除方括号内容
             (r'[-–—_\s]+$', ''),              # 去除末尾分隔符
@@ -282,6 +292,11 @@ class ShortPlayProcessor(_PluginBase):
         self._scan_interval = int(config.get("scan_interval", 60))
         self._scan_enabled = config.get("scan_enabled", True)
         self._image = config.get("image", False)
+        
+        # ========== 加载三个数据源开关配置 ==========
+        self._enable_local_nfo = config.get("enable_local_nfo", True)
+        self._enable_mp_recognition = config.get("enable_mp_recognition", True)
+        self._enable_pt_search = config.get("enable_pt_search", True)
         
         # 预编译排除关键词
         self._compiled_exclude_patterns = []
@@ -541,13 +556,16 @@ class ShortPlayProcessor(_PluginBase):
                         mediainfo = cached.mediainfo
                         pt_tv_info = cached.pt_tv_info
                         title = cached.title
-                        logger.debug(f"使用缓存的剧集信息: {title}")
+                        logger.debug(f"💾 使用缓存: {title}")
+                        cached.update_timestamp()
                     else:
+                        logger.debug(f"⏰ 缓存过期，重新识别: {cache_key}")
                         del self._series_cache[cache_key]
                         mediainfo, pt_tv_info, title = self._fetch_series_info(
                             folder_path, clean_title
                         )
                 else:
+                    logger.debug(f"🆕 首次识别: {clean_title}")
                     mediainfo, pt_tv_info, title = self._fetch_series_info(
                         folder_path, clean_title
                     )
@@ -610,50 +628,59 @@ class ShortPlayProcessor(_PluginBase):
         return False
     
     def _fetch_series_info(self, folder_path: Path, clean_title: str) -> Tuple[Optional[MediaInfo], Optional[Dict], str]:
-        """获取剧集信息"""
-        # 1. 优先本地 NFO
-        local_nfo_info = self._get_info_from_local_nfo(folder_path)
-        if local_nfo_info:
-            logger.info(f"使用本地 NFO: {local_nfo_info['title']}")
-            mediainfo = self._create_mediainfo_from_local(local_nfo_info, clean_title)
-            return mediainfo, None, local_nfo_info['title']
+        """获取剧集信息（根据开关控制数据源）"""
         
-        # 2. 尝试 MP 识别（豆瓣或TMDB）
-        try:
-            file_meta = MetaInfoPath(folder_path)
-            mediainfo = self.chain.recognize_media(meta=file_meta)
-            
-            if mediainfo and getattr(mediainfo, 'source', None) in ['douban', 'themoviedb']:
-                recognized_title = mediainfo.title
-                if self._is_title_match(recognized_title, clean_title):
-                    logger.info(f"✅MP识别成功 使用 {mediainfo.source} 信息: {recognized_title}")
-                    title = recognized_title
-                    
-                    if hasattr(mediainfo, 'poster_path') and mediainfo.poster_path:
-                        if 'm_ratio_poster' in mediainfo.poster_path:
-                            mediainfo.poster_path = mediainfo.poster_path.replace('m_ratio_poster', 'm')
-                    
-                    if hasattr(mediainfo, 'actors') and mediainfo.actors:
-                        pass
-                    elif hasattr(mediainfo, 'douban_info') and mediainfo.douban_info:
-                        self._extract_actors_from_douban(mediainfo)
-                    
-                    return mediainfo, None, title
+        # ========== 1. 本地 NFO（根据开关） ==========
+        if self._enable_local_nfo:
+            local_nfo_info = self._get_info_from_local_nfo(folder_path)
+            if local_nfo_info:
+                logger.info(f"✅ 使用本地 NFO: {local_nfo_info['title']}")
+                mediainfo = self._create_mediainfo_from_local(local_nfo_info, clean_title)
+                return mediainfo, None, local_nfo_info['title']
+            else:
+                logger.debug("📁 未找到本地 NFO")
+        
+        # ========== 2. MP 识别（豆瓣/TMDB，根据开关） ==========
+        if self._enable_mp_recognition:
+            try:
+                file_meta = MetaInfoPath(Path(f"{clean_title}"))
+                mediainfo = self.chain.recognize_media(meta=file_meta)
+                
+                if mediainfo and getattr(mediainfo, 'source', None) in ['douban', 'themoviedb']:
+                    recognized_title = mediainfo.title
+                    if self._is_title_match(recognized_title, clean_title):
+                        logger.info(f"✅ MP识别成功: {recognized_title} ({mediainfo.source})")
+                        title = recognized_title
+                        
+                        if hasattr(mediainfo, 'poster_path') and mediainfo.poster_path:
+                            if 'm_ratio_poster' in mediainfo.poster_path:
+                                mediainfo.poster_path = mediainfo.poster_path.replace('m_ratio_poster', 'm')
+                        
+                        if hasattr(mediainfo, 'actors') and mediainfo.actors:
+                            logger.debug(f"🎭 获取到 {len(mediainfo.actors)} 个演员")
+                        elif hasattr(mediainfo, 'douban_info') and mediainfo.douban_info:
+                            self._extract_actors_from_douban(mediainfo)
+                        
+                        return mediainfo, None, title
+                    else:
+                        logger.debug(f"⚠️ 标题不匹配: '{recognized_title}' ≠ '{clean_title}'")
                 else:
-                    logger.debug(f"识别的标题 '{recognized_title}' 与搜索名 '{clean_title}' 不匹配，跳过")
-        except Exception as e:
-            logger.debug(f"MP识别失败: {e}")
+                    logger.debug(f"🔍 MP识别无结果: {clean_title}")
+            except Exception as e:
+                logger.debug(f"❌ MP识别异常: {e}")
         
-        # 3. 尝试 PT 站搜索
-        logger.info(f"尝试从 PT 站搜索：{clean_title}")
-        pt_tv_info = self._search_pt_site(clean_title)
+        # ========== 3. PT 站搜索（根据开关） ==========
+        if self._enable_pt_search:
+            logger.debug(f"🔍 开始 PT 站搜索: {clean_title}")
+            pt_tv_info = self._search_pt_site(clean_title)
+            if pt_tv_info and pt_tv_info.get("title"):
+                logger.info(f"✅ PT站搜索成功: {pt_tv_info['title']} ({pt_tv_info.get('source', 'PT站')})")
+                return None, pt_tv_info, pt_tv_info['title']
+            else:
+                logger.debug(f"🔍 PT站搜索无结果: {clean_title}")
         
-        if pt_tv_info and pt_tv_info.get("title"):
-            logger.info(f"使用 PT 站信息: {pt_tv_info['title']}")
-            return None, pt_tv_info, pt_tv_info['title']
-        
-        # 4. 使用文件夹名
-        logger.info(f"剧名: {clean_title}")
+        # ========== 4. 使用文件夹名 ==========
+        logger.info(f"📁 使用文件夹名: {clean_title}")
         return None, None, clean_title
     
     def _fix_douban_poster_url(self, url: str) -> str:
@@ -687,26 +714,28 @@ class ShortPlayProcessor(_PluginBase):
         if rename_conf == "smart":
             if episode is None and season_num is not None:
                 episode = 1
+                logger.debug(f"📺 无集数信息，使用默认第1集")
         
         if rename_conf == "smart" and episode is not None and season_num is not None:
             season_str = f"S{season_num:02d}"
             episode_str = f"E{episode:02d}"
             new_name = f"{season_str}{episode_str}{source_path.suffix}"
             target_path = target_folder / new_name
-            logger.debug(f"重命名: {source_path.name} -> {new_name}")
+            logger.debug(f"✏️ 重命名: {source_path.name} -> {new_name}")
         else:
             target_path = target_folder / source_path.name
-            logger.debug(f"非智能模式，保持原文件名: {source_path.name}")
+            if episode is None:
+                logger.debug(f"📄 保持原名: {source_path.name}")
         
         target_path = self._resolve_conflict(target_path, source_path)
         if not target_path:
             return None
         
         if self._transfer_file(source_path, target_path):
-            logger.info(f"整理完成: {source_path.name} -> {target_path}")
+            logger.info(f"✅ {source_path.name} -> {target_path.name}")
             return target_path
         
-        logger.error(f"文件转移失败: {source_path}")
+        logger.error(f"❌ 转移失败: {source_path.name}")
         return None
     
     def _resolve_conflict(self, target_path: Path, source_path: Path) -> Optional[Path]:
@@ -716,23 +745,23 @@ class ShortPlayProcessor(_PluginBase):
         
         try:
             if target_path.samefile(source_path):
-                logger.debug(f"文件已处理过，跳过: {target_path}")
+                logger.debug(f"⏭️ 文件已处理过，跳过: {target_path.name}")
                 return target_path
             
             if target_path.stat().st_size == source_path.stat().st_size:
-                logger.warning(f"同名同大小文件已存在，跳过: {target_path}")
+                logger.warning(f"⚠️ 同名同大小文件已存在，跳过: {target_path.name}")
                 return None
             
             tmp_path = target_path.with_suffix(target_path.suffix + '.tmp')
             if self._transfer_file(source_path, tmp_path):
                 target_path.unlink(missing_ok=True)
                 tmp_path.rename(target_path)
-                logger.debug(f"文件大小不同替换: {source_path.name} -> {target_path.name}")
+                logger.debug(f"🔄 文件冲突，替换: {source_path.name} -> {target_path.name}")
                 return target_path
             return None
             
         except Exception as e:
-            logger.error(f"检查文件冲突失败: {e}")
+            logger.error(f"❌ 检查文件冲突失败: {e}")
             return None
     
     def _transfer_file(self, source: Path, target: Path, is_metadata: bool = False) -> bool:
@@ -777,6 +806,7 @@ class ShortPlayProcessor(_PluginBase):
             source_nfo = source_folder / "tvshow.nfo"
             if source_nfo.exists():
                 self._transfer_file(source_nfo, nfo_path, is_metadata=True)
+                logger.debug(f"📄 复制本地NFO: {nfo_path.name}")
             else:
                 self._generate_nfo(target_folder, mediainfo, title, pt_tv_info)
         
@@ -804,7 +834,7 @@ class ShortPlayProcessor(_PluginBase):
         poster_path = target_folder / "poster.jpg"
         
         if poster_path.exists():
-            logger.info(f"海报已存在，跳过: {poster_path}")
+            logger.debug(f"📷 海报已存在，跳过: {poster_path.name}")
             if self._image and cover_conf and cover_conf != "None":
                 self._crop_poster(poster_path, cover_conf)
             return
@@ -812,6 +842,7 @@ class ShortPlayProcessor(_PluginBase):
         source_poster = source_folder / "poster.jpg"
         if source_poster.exists():
             self._transfer_file(source_poster, poster_path, is_metadata=True)
+            logger.info(f"📷 复制本地海报: {poster_path.name}")
             if self._image and cover_conf and cover_conf != "None":
                 self._crop_poster(poster_path, cover_conf)
             return
@@ -819,11 +850,14 @@ class ShortPlayProcessor(_PluginBase):
         poster_url = None
         if mediainfo and getattr(mediainfo, 'source', None) in ['douban', 'themoviedb']:
             poster_url = getattr(mediainfo, 'poster_path', None)
+            logger.debug(f"📷 从 {mediainfo.source} 获取海报" + (f": {poster_url[:80]}..." if poster_url else " - 无URL"))
         elif pt_tv_info and pt_tv_info.get("poster_url"):
             poster_url = pt_tv_info.get("poster_url")
+            logger.debug(f"📷 从 PT站 获取海报: {poster_url[:80]}...")
         
         if poster_url:
             if self._download_image(poster_url, poster_path):
+                logger.info(f"📷 海报下载成功: {poster_path.name}")
                 if self._image and cover_conf and cover_conf != "None":
                     self._crop_poster(poster_path, cover_conf)
     
@@ -994,13 +1028,15 @@ class ShortPlayProcessor(_PluginBase):
             try:
                 site = SiteOper().get_by_domain(site_config["domain"])
                 if not site:
+                    logger.debug(f"⚠️ 站点 {site_config['domain']} 未配置，跳过")
                     continue
                 
                 req_url = site_config["search_url"].format(title=title)
-                logger.debug(f"搜索 {site_config['name']}: {title}")
+                logger.debug(f"🔍 搜索 {site_config['name']}: {title}")
                 
                 page_source = self._get_page_source(req_url, site)
                 if not page_source:
+                    logger.debug(f"⚠️ 请求失败: {site_config['name']}")
                     continue
                 
                 indexer = SitesHelper().get_indexer(site_config["domain"])
@@ -1010,6 +1046,7 @@ class ShortPlayProcessor(_PluginBase):
                 spider = SiteSpider(indexer=indexer, page=1)
                 torrents = spider.parse(page_source)
                 if not torrents:
+                    logger.debug(f"🔍 未找到种子: {site_config['name']}")
                     continue
                 
                 detail_url = torrents[0].get("page_url")
@@ -1026,16 +1063,19 @@ class ShortPlayProcessor(_PluginBase):
                 
                 image_elem = html.xpath(site_config["img_xpath"])
                 poster_url = str(image_elem[0]) if image_elem else None
+                if poster_url:
+                    logger.debug(f"📷 获取到封面: {poster_url[:80]}...")
                 
                 tv_info = self._parse_pt_nfo(html, title, site_config["name"])
                 if poster_url:
                     tv_info["poster_url"] = poster_url
                 
                 if tv_info.get("title"):
+                    logger.debug(f"✅ 解析成功: {tv_info['title']}")
                     return tv_info
                     
             except Exception as e:
-                logger.error(f"搜索站点 {site_config.get('name', 'unknown')} 失败: {e}")
+                logger.debug(f"❌ 搜索站点 {site_config.get('name', 'unknown')} 异常: {e}")
                 continue
         
         return None
@@ -1140,7 +1180,7 @@ class ShortPlayProcessor(_PluginBase):
                 cropped = image.crop((0, top, image.width, bottom))
             
             cropped.save(poster_path)
-            logger.info(f"海报已裁剪: {poster_path}")
+            logger.info(f"📷 海报已裁剪: {poster_path.name}")
             
         except Exception as e:
             logger.error(f"裁剪海报失败: {e}")
@@ -1151,11 +1191,9 @@ class ShortPlayProcessor(_PluginBase):
             if 'doubanio.com' in url:
                 return self._download_douban_image(url, file_path)
             
-            logger.info(f"下载图片: {url}")
             r = RequestUtils().get_res(url=url, raise_exception=True)
             if r and r.status_code == 200:
                 file_path.write_bytes(r.content)
-                logger.info(f"图片下载成功: {file_path}")
                 return True
             else:
                 logger.warning(f"图片下载失败: {getattr(r, 'status_code', 'N/A')}")
@@ -1178,7 +1216,6 @@ class ShortPlayProcessor(_PluginBase):
                 r = RequestUtils().get_res(url=try_url, raise_exception=True)
                 if r and r.status_code == 200:
                     file_path.write_bytes(r.content)
-                    logger.info(f"豆瓣图片下载成功: {file_path}")
                     return True
             except Exception:
                 continue
@@ -1286,7 +1323,7 @@ class ShortPlayProcessor(_PluginBase):
         """保存NFO"""
         xml_str = doc.toprettyxml(indent="  ", encoding="utf-8")
         file_path.write_bytes(xml_str)
-        logger.info(f"NFO文件已保存: {file_path}")
+        logger.info(f"NFO文件已保存: {file_path.name}")
     
     def _add_actors_to_nfo(self, nfo_path: Path, actors: List[str]):
         """添加演员到NFO"""
@@ -1313,7 +1350,7 @@ class ShortPlayProcessor(_PluginBase):
             
             if added:
                 tree.write(nfo_path, encoding="utf-8", xml_declaration=True)
-                logger.info(f"已将 {added} 个演员添加到 NFO")
+                logger.debug(f"已将 {added} 个演员添加到 NFO")
                 
         except Exception as e:
             logger.error(f"添加演员失败: {e}")
@@ -1350,7 +1387,7 @@ class ShortPlayProcessor(_PluginBase):
             
             if added:
                 tree.write(nfo_path, encoding="utf-8", xml_declaration=True)
-                logger.info(f"已将 {added} 个演员同步到 tag")
+                logger.debug(f"已将 {added} 个演员同步到 tag")
                 
         except Exception as e:
             logger.error(f"同步演员到 tag 失败: {e}")
@@ -1515,7 +1552,10 @@ class ShortPlayProcessor(_PluginBase):
             "interval": self._interval,
             "scan_interval": self._scan_interval,
             "scan_enabled": self._scan_enabled,
-            "image": self._image
+            "image": self._image,
+            "enable_local_nfo": self._enable_local_nfo,
+            "enable_mp_recognition": self._enable_mp_recognition,
+            "enable_pt_search": self._enable_pt_search
         })
     
     def _clear_cache(self):
@@ -1574,7 +1614,7 @@ class ShortPlayProcessor(_PluginBase):
         if Path(event_path).suffix.lower() not in settings.RMT_MEDIAEXT:
             return
         
-        logger.info(f"检测到文件: {event_path}")
+        logger.info(f"📹 检测到文件: {Path(event_path).name}")
         self._process_file_with_retry(event_path, source_dir)
     
     # ========== 插件接口 ==========
@@ -1631,6 +1671,40 @@ class ShortPlayProcessor(_PluginBase):
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 3},
                                 "content": [{"component": "VSwitch", "props": {"model": "image", "label": "封面裁剪"}}]
+                            }
+                        ]
+                    },
+                    # ========== 数据源配置行 ==========
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {"component": "VCard", "props": {"variant": "tonal", "color": "primary", "class": "mt-2"}, "content": [
+                                        {"component": "VCardTitle", "text": "🔍 数据源配置"},
+                                        {"component": "VCardText", "content": [
+                                            {"component": "VRow", "content": [
+                                                {
+                                                    "component": "VCol",
+                                                    "props": {"cols": 12, "md": 4},
+                                                    "content": [{"component": "VSwitch", "props": {"model": "enable_local_nfo", "label": "📁 本地NFO识别", "hint": "优先读取源目录中的 tvshow.nfo"}}]
+                                                },
+                                                {
+                                                    "component": "VCol",
+                                                    "props": {"cols": 12, "md": 4},
+                                                    "content": [{"component": "VSwitch", "props": {"model": "enable_mp_recognition", "label": "🎬 MP识别（豆瓣/TMDB）", "hint": "使用MoviePilot识别接口"}}]
+                                                },
+                                                {
+                                                    "component": "VCol",
+                                                    "props": {"cols": 12, "md": 4},
+                                                    "content": [{"component": "VSwitch", "props": {"model": "enable_pt_search", "label": "🌐 PT站点搜索", "hint": "从AGSV/萝莉站/PTSKit搜索"}}]
+                                                }
+                                            ]}
+                                        ]}
+                                    ]}
+                                ]
                             }
                         ]
                     },
@@ -1691,7 +1765,7 @@ class ShortPlayProcessor(_PluginBase):
                                 "component": "VCol",
                                 "props": {"cols": 12},
                                 "content": [{"component": "VAlert", "props": {"type": "info", "variant": "tonal", 
-                                    "text": "数据优先级：本地NFO > 豆瓣 > PT站 > 基础信息"}}]
+                                    "text": "数据优先级：本地NFO > MP识别 > PT站搜索 > 基础信息。可关闭任意数据源。"}}]
                             }
                         ]
                     }
@@ -1700,7 +1774,10 @@ class ShortPlayProcessor(_PluginBase):
         ], {
             "enabled": False, "onlyonce": False, "monitor_confs": "", "transfer_type": "link",
             "exclude_keywords": "", "notify": False, "interval": 10, "scan_interval": 60,
-            "scan_enabled": True, "image": False
+            "scan_enabled": True, "image": False,
+            "enable_local_nfo": True,
+            "enable_mp_recognition": True,
+            "enable_pt_search": True
         }
     
     def get_page(self) -> List[dict]:
@@ -1708,6 +1785,13 @@ class ShortPlayProcessor(_PluginBase):
         stats = self._get_stats()
         
         with self._lock:
+            # 按时间排序（最新在前），只取最近 MAX_DISPLAY_CACHE 条
+            sorted_cache = sorted(
+                self._series_cache.items(),
+                key=lambda x: x[1].timestamp,
+                reverse=True
+            )[:MAX_DISPLAY_CACHE]
+            
             # 按来源分类系列缓存
             cache_by_type = {
                 "system": [],   # 系统识别（豆瓣/TMDB）
@@ -1715,7 +1799,7 @@ class ShortPlayProcessor(_PluginBase):
                 "local": []     # 本地识别（本地NFO/文件夹名）
             }
             
-            for cache_key, cache_entry in self._series_cache.items():
+            for cache_key, cache_entry in sorted_cache:
                 # 处理后的剧集名（目标文件夹名）
                 recognized_name = cache_entry.title if cache_entry.title else "未知"
                 # 原始文件夹名
@@ -1793,7 +1877,7 @@ class ShortPlayProcessor(_PluginBase):
                         "count": file_count
                     })
             
-            # 按文件数量排序
+            # 按文件数量排序（处理文件多的排在前面）
             for key in cache_by_type:
                 cache_by_type[key].sort(key=lambda x: x.get("count", 0), reverse=True)
             
