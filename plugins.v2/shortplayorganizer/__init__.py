@@ -478,7 +478,7 @@ class ShortPlayOrganizer(_PluginBase):
             # 复制 NFO
             nfo_path = source_folder / "tvshow.nfo"
             if nfo_path.exists() and not (target_folder / "tvshow.nfo").exists():
-                self._transfer_file(nfo_path, target_folder / "tvshow.nfo", is_metadata=True)
+                result = SystemUtils.copy(nfo_path, target_folder / "tvshow.nfo")
                 logger.debug(f"已复制 NFO: {nfo_path.name}")
             
             # 同步演员到 tag
@@ -493,7 +493,7 @@ class ShortPlayOrganizer(_PluginBase):
             for poster_name in ["poster.jpg", "poster.png", "poster.jpeg", "0.jpg"]:
                 poster_path = source_folder / poster_name
                 if poster_path.exists():
-                    self._transfer_file(poster_path, target_folder / "poster.jpg", is_metadata=True)
+                    result = SystemUtils.copy(poster_path, target_folder / "poster.jpg")
                     logger.info(f"已复制海报: {poster_name}")
                     break
 

@@ -19,6 +19,7 @@ class MediaSyncProtection(_PluginBase):
     plugin_version = "1.0.0"
     plugin_author = "AI"
     plugin_config_prefix = "mediasyncprotection_"
+    author_url = "https://github.com/m216owen/MoviePilot-Plugins"
     plugin_order = 24
     auth_level = 1
 

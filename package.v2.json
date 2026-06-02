@@ -1,45 +1,26 @@
 {
-  "ShortPlayMonitorx": {
-    "name": "短剧刮削自用版",
-    "description": "监控视频短剧创建，从PT站（PTSKit/AGSV/萝莉站）刮削元数据，生成NFO和海报",
+  "ShortPlayProcessor": {
+    "name": "短剧处理器",
+    "description": "监控短剧目录，自动刮削元数据并整理到媒体库（优先本地NFO，支持豆瓣/PT站）",
     "labels": "刮削",
-    "version": "5.0",
-    "icon": "Amule_B.png",
-    "author": "thsrite",
-    "level": 1,
-    "history": {
-      "v5.0": "支持PTSKit站点，从详情页提取完整元数据（片名、类别、集数、主演、简介）",
-      "v4.0.3": "修复主程序依赖调整",
-      "v4.0.2": "修复软连接bug",
-      "v4.0.1": "适配主程序调整",
-      "v4.0": "支持MoviePilot V2 版本",
-      "v3.2": "支持消息发送",
-      "v3.1": "支持自定义转移方式",
-      "v3.0": "默认从tmdb刮削，刮削失败则从pt站刮削"
-    }
-  },
-  "ShortPlayOrganizer": {
-    "name": "短剧整理器",
-    "description": "读取tvshow.nfo中的片名，按Emby标准格式整理短剧文件",
-    "labels": "整理,短剧,Emby",
     "version": "1.0.0",
     "icon": "Amule_B.png",
-    "author": "AI",
+    "author": "thsrite,AI",
     "level": 1,
     "history": {
-      "v1.0.0": "首次发布：读取NFO片名，Emby格式重命名，复制海报和元数据"
+      "v1.0.0": "支持PTSKit站点，从详情页提取完整元数据（片名、类别、集数、主演、简介）"
     }
   },
   "MediaSyncProtection": {
     "name": "媒体同步保护",
-    "description": "Emby收藏时从刷流插件移除种子，Emby删除媒体时标记种子待删除（由刷流插件执行）",
+    "description": "监听Emby Webhook，收藏时添加/移除保种标签，删除时对种子执行操作",
     "labels": "保护,同步,刷流,Emby",
     "version": "1.0.0",
     "icon": "Amule_B.png",
     "author": "AI",
     "level": 1,
     "history": {
-      "v1.0.0": "首次发布：支持Emby Webhook，收藏移除刷流记录，删除标记待删除"
+      "v1.0.0": "AI编写初始版本，支持Emby收藏同步保护和删除保护"
     }
   },
   "brushflowmod": {
@@ -48,20 +29,10 @@
     "labels": "选种,下载,自动,PT",
     "version": "1.0.0",
     "icon": "brush.jpg",
-    "author": "jxxghp,InfinityPacer,Seed680，AI",
+    "author": "jxxghp,InfinityPacer,Seed680,AI",
     "level": 2,
     "history": {
-      "v1.0.0": "ai修改"
+      "v1.0.0": "ai编写初始版本，基于原刷流插件，增加短剧标签过滤功能"
     }
-  },
-  "FindBrokenSymlinks": {
-    "name": "查找失效软链接",
-    "description": "查找并管理指定目录中的失效软链接",
-    "labels": "工具,文件管理",
-    "version": "1.0.0",
-    "icon": "mdi-link-off",
-    "author": "AI",
-    "system_version": ">=2.12.0",
-    "level": 1
   }
 }
