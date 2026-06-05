@@ -1,21 +1,19 @@
 import datetime
+import json
 import os
 import re
 import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from dataclasses import dataclass, field
-from enum import Enum
+from difflib import SequenceMatcher
+from functools import wraps
 from pathlib import Path
-from threading import Lock, RLock
-from typing import Any, List, Dict, Tuple, Optional, Set, Callable
+from threading import RLock
+from typing import Any, List, Dict, Tuple, Optional
 from xml.dom import minidom
 
 import chardet
-import pytz
-from PIL import Image
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from lxml import etree
 from watchdog.events import FileSystemEventHandler
@@ -23,122 +21,234 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
 from app.core.config import settings
-from app.core.meta.words import WordsMatcher
 from app.core.metainfo import MetaInfoPath
+from app.core.event import eventmanager, Event
 from app.db.site_oper import SiteOper
 from app.helper.sites import SitesHelper
 from app.log import logger
 from app.modules.indexer.spider import SiteSpider
 from app.plugins import _PluginBase
 from app.schemas import MediaInfo
-from app.schemas.types import NotificationType
+from app.schemas.types import EventType, NotificationType
 from app.utils.dom import DomUtils
 from app.utils.http import RequestUtils
 from app.utils.system import SystemUtils
 
-# ========== 常量定义 ==========
+# ========== 常量 ==========
 MAX_CACHE_SIZE = 1000
 MAX_RETRIES = 3
 RETRY_DELAY = 1
-LOCK_TIMEOUT = 30
-MAX_DISPLAY_CACHE = 50  # 面板最多显示50条缓存
+CACHE_TTL_SECONDS = 3600
+FAILED_CACHE_TTL = 3600
+FETCH_TIMEOUT = 30
 
-# 系统文件夹黑名单
-SYSTEM_FOLDERS = {'@Recycle', '#recycle', '@eaDir', 'System Volume Information', '$RECYCLE.BIN', '.DS_Store', 'Thumbs.db'}
+SYSTEM_FOLDERS = {
+    '@Recycle', '#recycle', '@eaDir', 'System Volume Information',
+    '$RECYCLE.BIN', '.DS_Store', 'Thumbs.db'
+}
+
+TITLE_CLEAN_PATTERNS = [
+    (re.compile(r'^\d+[-－—]\s*'), ''),
+    (re.compile(r'\..*'), ''),
+    (re.compile(r'[（(].*$'), ''),
+    (re.compile(r'\[[^\]]+\]'), ''),
+    (re.compile(r'[-–—_\s]+$'), ''),
+]
+
+EPISODE_PATTERNS = [
+    re.compile(r'[eE][pP]?(\d{1,3})'),
+    re.compile(r'第(\d+)集'),
+]
+
+FILENAME_CLEAN = re.compile(r'[\\/*?:"<>|]')
+
+DEFAULT_SITES = [
+    {
+        "domain": "agsvpt.com",
+        "name": "AGSV",
+        "search_url": "https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=419&search={title}",
+        "fields": {
+            "title_index": 1,      # 片名所在索引
+            "year_index": 2,       # 年代所在索引
+            "country_index": 3,    # 产地所在索引
+            "genre_index": 4,      # 类别所在索引
+            "overview_index": 6    # 简介所在索引
+        }
+    },
+    {
+        "domain": "ilolicon.com",
+        "name": "萝莉站",
+        "search_url": "https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=402&search={title}",
+        "fields": {
+            "title_index": 0,
+            "year_index": 1,
+            "country_index": 2,
+            "genre_index": 3,
+            "actors_index": 4,
+            "overview_index": 6
+        }
+    },
+    {
+        "domain": "ptskit.org",
+        "name": "PTSKit",
+        "search_url": "https://www.ptskit.org/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&tag_id=238&search={title}",
+        "fields": {
+            "title_index": 1,
+            "genre_index": 2,
+            "actors_index": 4,
+            "overview_index": 6
+        }
+    }
+]
 
 
-class TransferType(str, Enum):
-    """转移类型"""
-    MOVE = "move"
-    COPY = "copy"
-    LINK = "link"
-    SOFTLINK = "softlink"
+def log_method(log_args: bool = True, log_result: bool = False):
+    """方法日志装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            method_name = func.__name__
+            logger.debug(f"[日志] >>> 进入方法: {method_name}")
+            
+            if log_args and args:
+                # 截断过长的参数
+                safe_args = []
+                for arg in args:
+                    if isinstance(arg, str) and len(arg) > 100:
+                        safe_args.append(arg[:100] + "...")
+                    else:
+                        safe_args.append(arg)
+                logger.debug(f"[日志] 参数: {safe_args}")
+            
+            if log_args and kwargs:
+                safe_kwargs = {}
+                for k, v in kwargs.items():
+                    if isinstance(v, str) and len(v) > 100:
+                        safe_kwargs[k] = v[:100] + "..."
+                    else:
+                        safe_kwargs[k] = v
+                logger.debug(f"[日志] 关键字参数: {safe_kwargs}")
+            
+            start_time = time.time()
+            try:
+                result = func(self, *args, **kwargs)
+                elapsed = (time.time() - start_time) * 1000
+                
+                if log_result:
+                    logger.debug(f"[日志] <<< 方法完成: {method_name} (耗时: {elapsed:.2f}ms)")
+                else:
+                    logger.debug(f"[日志] <<< 方法完成: {method_name} (耗时: {elapsed:.2f}ms)")
+                return result
+            except Exception as e:
+                elapsed = (time.time() - start_time) * 1000
+                logger.error(f"[日志] ❌ 方法异常: {method_name} (耗时: {elapsed:.2f}ms) - {e}", exc_info=True)
+                raise
+        return wrapper
+    return decorator
 
 
-class ProcessStatus(str, Enum):
-    """处理状态"""
-    PENDING = "pending"
-    PROCESSING = "processing"
-    SUCCESS = "success"
-    FAILED = "failed"
-    SKIPPED = "skipped"
-
-
-@dataclass
-class ProcessRecord:
-    """处理记录"""
-    file_path: str
-    title: str
-    target_path: str
-    status: ProcessStatus
-    timestamp: datetime.datetime
-    error_msg: str = ""
-    retry_count: int = 0
-
-
-@dataclass
-class CacheEntry:
-    """缓存条目"""
-    mediainfo: Optional[MediaInfo]
-    pt_tv_info: Optional[Dict]
-    title: str
-    timestamp: float = field(default_factory=time.time)
-    
-    def is_expired(self, ttl: int = 3600) -> bool:
-        """检查是否过期（默认1小时）"""
-        return time.time() - self.timestamp > ttl
-    
-    def update_timestamp(self):
-        """更新时间戳"""
-        self.timestamp = time.time()
+def log_step(step_name: str):
+    """步骤日志装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            logger.info(f"[步骤] 🔸 {step_name} - 开始")
+            start_time = time.time()
+            try:
+                result = func(self, *args, **kwargs)
+                elapsed = (time.time() - start_time) * 1000
+                logger.info(f"[步骤] ✅ {step_name} - 完成 (耗时: {elapsed:.2f}ms)")
+                return result
+            except Exception as e:
+                elapsed = (time.time() - start_time) * 1000
+                logger.error(f"[步骤] ❌ {step_name} - 失败 (耗时: {elapsed:.2f}ms): {e}", exc_info=True)
+                raise
+        return wrapper
+    return decorator
 
 
 class FileMonitorHandler(FileSystemEventHandler):
-    """目录监控响应类 - 优化版"""
-    
-    def __init__(self, watching_path: str, file_change: Any, delay: float = 0.5, **kwargs):
-        super().__init__(**kwargs)
-        self._watch_path = watching_path
-        self.file_change = file_change
-        self.delay = delay
-        self._pending_events: Dict[str, float] = {}
-        self._lock = Lock()
-    
+    """文件监控处理器"""
+    def __init__(self, plugin, source_dir, max_wait=10.0):
+        super().__init__()
+        self.plugin = plugin
+        self.source_dir = source_dir
+        self.max_wait = max_wait
+        self._pending = set()
+        self._title_mapping: Dict[str, str] = {}  # 原始文件夹名 -> 最终标题的映射
+        logger.debug(f"[监控] 初始化监控处理器: {source_dir}, 防抖等待: {max_wait}s")
+
     def on_created(self, event):
-        if not event.is_directory:
-            self._handle_event(event.src_path)
-    
+        if not event.is_directory and self._is_video(event.src_path):
+            logger.info(f"[监控] 检测到文件创建: {event.src_path}")
+            self._handle(event.src_path)
+
     def on_moved(self, event):
-        if not event.is_directory:
-            self._handle_event(event.dest_path)
-    
-    def _handle_event(self, path: str):
-        """处理事件（去抖）"""
-        with self._lock:
-            self._pending_events[path] = time.time()
-        
-        def delayed_process():
-            time.sleep(self.delay)
-            with self._lock:
-                if self._pending_events.get(path) and time.time() - self._pending_events[path] >= self.delay:
-                    self._pending_events.pop(path, None)
-                    self.file_change.event_handler(
-                        event=None,
-                        source_dir=self._watch_path,
-                        event_path=path
-                    )
-        
-        threading.Thread(target=delayed_process, daemon=True).start()
+        if not event.is_directory and self._is_video(event.dest_path):
+            logger.info(f"[监控] 检测到文件移动: {event.src_path} -> {event.dest_path}")
+            self._handle(event.dest_path)
+
+    def _is_video(self, path: str) -> bool:
+        suffix = Path(path).suffix.lower()
+        is_video = suffix in settings.RMT_MEDIAEXT
+        if is_video:
+            logger.debug(f"[监控] 识别为视频文件: {path}")
+        return is_video
+
+    def _handle(self, path: str):
+        if path in self._pending:
+            logger.debug(f"[监控] 文件已在处理队列中，跳过: {path}")
+            return
+        self._pending.add(path)
+        logger.debug(f"[监控] 加入处理队列: {path}, 当前队列: {len(self._pending)}")
+        threading.Thread(target=self._delayed_process, args=(path,), daemon=True).start()
+
+    def _delayed_process(self, path: str):
+        try:
+            logger.debug(f"[监控] 开始延迟处理: {path}")
+            self._wait_stable(path)
+            self._pending.discard(path)
+            logger.info(f"[监控] 开始处理文件: {path}")
+            self.plugin.process_file(path, self.source_dir)
+        except Exception as e:
+            logger.error(f"[监控] 处理异常 {path}: {e}", exc_info=True)
+            self._pending.discard(path)
+
+    def _wait_stable(self, path: str):
+        """等待文件写入完成"""
+        logger.debug(f"[监控] 等待文件稳定: {path}")
+        last_size = -1
+        stable_count = 0
+        start = time.time()
+        while time.time() - start < self.max_wait:
+            try:
+                size = os.path.getsize(path)
+                if size == 0:
+                    logger.debug(f"[监控] 文件大小为0，等待写入: {path}")
+                    time.sleep(0.3)
+                    continue
+                if size == last_size:
+                    stable_count += 1
+                    if stable_count >= 2:
+                        logger.debug(f"[监控] 文件已稳定，大小: {size} bytes")
+                        return
+                else:
+                    stable_count = 0
+                    last_size = size
+                    logger.debug(f"[监控] 文件大小变化: {last_size} -> {size}")
+            except (FileNotFoundError, OSError) as e:
+                logger.debug(f"[监控] 文件访问异常: {e}")
+                pass
+            time.sleep(0.3)
+        logger.debug(f"[监控] 等待超时，强制处理: {path}")
 
 
 class ShortPlayProcessor(_PluginBase):
-    """短剧处理器 - 整合刮削和整理功能"""
-
-    # 插件元数据
+    """短剧处理器"""
     plugin_name = "短剧处理器"
-    plugin_desc = "监控短剧目录，自动刮削元数据并整理到媒体库（优先本地NFO，支持豆瓣/PT站）"
+    plugin_desc = "监控短剧目录，自动刮削元数据并整理到媒体库"
     plugin_icon = "Amule_B.png"
-    plugin_version = "1.0.0"
+    plugin_version = "3.0.0"
     plugin_author = "thsrite,AI"
     author_url = "https://github.com/m216owen/MoviePilot-Plugins"
     plugin_config_prefix = "shortplayprocessor_"
@@ -147,2014 +257,2139 @@ class ShortPlayProcessor(_PluginBase):
 
     def __init__(self):
         super().__init__()
-        
-        # 预编译正则表达式
-        self._init_regex_patterns()
-        
-        # 配置属性
+        logger.debug("[初始化] 创建 ShortPlayProcessor 实例")
         self._enabled = False
         self._onlyonce = False
+        self._supplement = False
         self._monitor_confs = ""
-        self._transfer_type = TransferType.LINK
+        self._transfer_type = "link"
         self._exclude_keywords = ""
         self._notify = False
         self._interval = 10
         self._scan_interval = 60
         self._scan_enabled = True
-        self._image = False
-        self._timeline = "00:00:10"
-        
-        # ========== 三个数据源开关 ==========
-        self._enable_local_nfo = True      # 本地NFO识别开关
-        self._enable_mp_recognition = True  # MP识别开关（豆瓣/TMDB）
-        self._enable_pt_search = True       # PT站点搜索开关
-        
-        # 配置字典
+
+        self._enable_local_nfo = True
+        self._enable_mp_recognition = True
+        self._enable_pt_search = True
+        self._pt_priority = ""
+
+        self._polling_interval = 5
+        self._debounce_max_wait = 10.0
+        self._enable_incremental_scan = True
+        self._media_root = ""
+
         self._dirconf: Dict[str, str] = {}
         self._renameconf: Dict[str, str] = {}
-        self._coverconf: Dict[str, str] = {}
-        
-        # 缓存和状态
-        self._success_cache: OrderedDict[str, ProcessRecord] = OrderedDict()
-        self._series_cache: Dict[str, CacheEntry] = {}
-        self._processing_files: Set[str] = set()
-        self._failed_records: List[ProcessRecord] = []
-        self._medias: Dict[str, Dict] = {}
-        self._scanning = False
-        self._compiled_exclude_patterns: List[Any] = []
-        
-        # 统计信息
-        self._stats = {
-            'total_processed': 0,
-            'success_count': 0,
-            'failed_count': 0,
-            'skipped_count': 0,
-            'last_process_time': None,
-            'start_time': datetime.datetime.now()
-        }
-        
-        # 线程安全
-        self._lock = RLock()
-        self._cache_lock = Lock()
-        
-        # 监控器
-        self._observer: List[Any] = []
-        
-        # 定时器
-        self._scheduler: Optional[BackgroundScheduler] = None
-    
-    def _init_regex_patterns(self):
-        """初始化正则表达式模式"""
-        
-        # 剧名清理模式（按顺序执行）
-        self._title_clean_patterns = [
-            (r'^\d+[-－—]\s*', ''),           # 去除开头序号
-            (r'\..*', ''),                    # 去除点号及之后所有内容（删除拼音后缀）
-            (r'[（(].*$', ''),                 # 去除括号及之后内容
-            (r'\[[^\]]+\]', ''),              # 去除方括号内容
-            (r'[-–—_\s]+$', ''),              # 去除末尾分隔符
-        ]
-        
-        # 站点配置
-        self._sites_config = [
-            {
-                "domain": "agsvpt.com",
-                "name": "AGSV",
-                "search_url": "https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=419&search={title}",
-                "img_xpath": "//*[@id='kdescr']/img[1]/@src"
-            },
-            {
-                "domain": "ilolicon.com",
-                "name": "萝莉站",
-                "search_url": "https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=402&search={title}",
-                "img_xpath": "//*[@id='kdescr']/img[1]/@src"
-            },
-            {
-                "domain": "ptskit.org",
-                "name": "PTSKit",
-                "search_url": "https://www.ptskit.org/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&tag_id=238&search={title}",
-                "img_xpath": "//*[@id='kdescr']/img[1]/@src"
-            }
-        ]
 
+        # 缓存
+        self._success_cache: OrderedDict = OrderedDict()
+        self._series_cache: OrderedDict = OrderedDict()
+        self._failed_records: List[dict] = []
+
+        # 运行时状态
+        self._lock = RLock()
+        self._processing_files: set = set()
+        self._medias: Dict[str, dict] = {}
+        self._scanning = False
+        self._last_scan_time: Dict[str, float] = {}
+        self._compiled_exclude_patterns: List[re.Pattern] = []
+
+        # 统计
+        self._stats = {
+            'total_processed': 0, 'success_count': 0, 'failed_count': 0,
+            'last_process_time': None, 'start_time': datetime.datetime.now(),
+            'mp_calls': 0, 'mp_hits': 0, 'pt_calls': 0, 'pt_hits': 0, 'nfo_calls': 0, 'nfo_hits': 0,
+        }
+
+        self._observer = []
+        self._site_cache: Dict[str, Any] = {}
+        self._indexer_cache: Dict[str, Any] = {}
+
+        self._pending_tasks: Dict[str, threading.Timer] = {}
+        self._last_source = '-'
+        self._sites_config = [s.copy() for s in DEFAULT_SITES]
+        
+        logger.debug("[初始化] 实例创建完成")
+
+    # ========== 搜索方法 ==========
+
+    @log_method(log_args=True, log_result=False)
+    def search_pt(self, title: str) -> Optional[dict]:
+        """PT站搜索 - 汇总多个站点结果"""
+        if not self._enable_pt_search:
+            logger.debug(f"[PT搜索] PT搜索已禁用，跳过 {title}")
+            return None
+        
+        with self._lock:
+            self._stats['pt_calls'] = self._stats.get('pt_calls', 0) + 1
+        
+        logger.info(f"[PT搜索] 🔍 开始搜索: {title}")
+        
+        # 汇总结果
+        merged_result = None
+        
+        for idx, site_config in enumerate(DEFAULT_SITES):
+            domain = site_config["domain"]
+            logger.debug(f"[PT搜索] 尝试站点 #{idx+1}: {site_config['name']} ({domain})")
+
+            site = SiteOper().get_by_domain(domain)
+            if not site:
+                logger.debug(f"[PT搜索] 站点未配置: {domain}")
+                continue
+
+            indexer = SitesHelper().get_indexer(domain)
+            if not indexer:
+                logger.debug(f"[PT搜索] 站点索引器不存在: {domain}")
+                continue
+
+            logger.info(f"[PT搜索] 请求站点: {site_config['name']} - {title}")
+
+            try:
+                search_url = site_config["search_url"].format(title=title)
+                logger.debug(f"[PT搜索] 搜索URL: {search_url}")
+                
+                ret = RequestUtils(cookies=site.cookie, timeout=30).get_res(search_url, allow_redirects=True)
+                if not ret:
+                    logger.warning(f"[PT搜索] 请求失败: {site_config['name']}")
+                    continue
+
+                logger.debug(f"[PT搜索] 响应状态码: {ret.status_code}")
+                page_source = ret.text
+                logger.debug(f"[PT搜索] 响应内容长度: {len(page_source)} bytes")
+
+                spider = SiteSpider(indexer=indexer, page=1)
+                torrents = spider.parse(page_source)
+                if not torrents:
+                    logger.debug(f"[PT搜索] 未解析到种子: {site_config['name']}")
+                    continue
+                
+                logger.debug(f"[PT搜索] 解析到 {len(torrents)} 个种子")
+
+                detail_url = torrents[0].get("page_url")
+                if not detail_url:
+                    logger.debug(f"[PT搜索] 未获取到详情页URL")
+                    continue
+
+                logger.debug(f"[PT搜索] 详情页URL: {detail_url}")
+                ret = RequestUtils(cookies=site.cookie, timeout=30).get_res(detail_url, allow_redirects=True)
+                if not ret:
+                    logger.warning(f"[PT搜索] 详情页请求失败")
+                    continue
+
+                detail_source = ret.text
+                html = etree.HTML(detail_source)
+                if html is None:
+                    logger.debug(f"[PT搜索] HTML解析失败")
+                    continue
+
+                desc_elem = html.xpath("//*[@id='kdescr']")
+                if not desc_elem:
+                    logger.debug(f"[PT搜索] 未找到描述元素")
+                    continue
+
+                full_text = desc_elem[0].xpath("string()").strip()
+                logger.debug(f"[PT识别] 描述文本长度: {len(full_text)}")
+
+                poster_url = ""
+                img_elements = html.xpath("//*[@id='kdescr']/img[1]/@src")
+                if img_elements:
+                    poster_url = str(img_elements[0])
+                    logger.debug(f"[PT识别] 海报URL: {poster_url}")
+
+                # 正则提取字段
+                patterns = [
+                    (r'片\s*名\s*[:：]?\s*([^\n]+)', 'title'),
+                    (r'年\s*代\s*[:：]?\s*(\d{4})', 'year'),
+                    (r'产\s*地\s*[:：]?\s*([^\n]+)', 'country'),
+                    (r'类\s*别\s*[:：]?\s*([^\n]+)', 'genre'),
+                    (r'主\s*演\s*[:：]?\s*([^\n]+)', 'actors'),
+                    (r'简\s*介\s*[:：]?\s*\n?\s*([^\n]+)', 'overview'),
+                ]
+                
+                result = {
+                    "title": title,
+                    "original_title": title,
+                    "year": "",
+                    "overview": "",
+                    "genres": [],
+                    "production_countries": [],
+                    "actors": [],
+                    "poster_path": poster_url,
+                    "source": site_config['name']
+                }
+                
+                # 执行正则匹配
+                for pattern, field in patterns:
+                    match = re.search(pattern, full_text, re.IGNORECASE)
+                    if match:
+                        value = match.group(1).strip()
+                        if field == 'title':
+                            result["title"] = value
+                            result["original_title"] = value
+                            logger.debug(f"[PT识别] 片名: {value}")
+                        elif field == 'year':
+                            result["year"] = value
+                            logger.debug(f"[PT识别] 年代: {value}")
+                        elif field == 'country':
+                            result["production_countries"] = [value]
+                            logger.debug(f"[PT识别] 产地: {value}")
+                        elif field == 'genre':
+                            genres = re.split(r'[/,、\s]+', value)
+                            result["genres"] = [g.strip() for g in genres if g.strip()]
+                            logger.debug(f"[PT识别] 类别: {value}")
+                        elif field == 'actors':
+                            actors = re.split(r'[/,、\s]+', value)
+                            result["actors"] = [a.strip() for a in actors if a.strip()]
+                            logger.debug(f"[PT识别] 主演: {value}")
+                        elif field == 'overview':
+                            result["overview"] = value
+                            logger.debug(f"[PT识别] 简介: {value[:100]}...")
+
+                if result.get("title"):
+                    with self._lock:
+                        self._stats['pt_hits'] = self._stats.get('pt_hits', 0) + 1
+                    
+                    # 合并结果
+                    if merged_result is None:
+                        merged_result = result
+                        logger.info(f"[PT搜索] 初始化结果: {result['title']} (来源: {site_config['name']})")
+                    else:
+                        # 补充缺失的字段
+                        if not merged_result.get("year") and result.get("year"):
+                            merged_result["year"] = result["year"]
+                            logger.debug(f"[PT搜索] 补充年份: {result['year']} (来自 {site_config['name']})")
+                        
+                        if not merged_result.get("overview") and result.get("overview"):
+                            merged_result["overview"] = result["overview"]
+                            logger.debug(f"[PT搜索] 补充简介 (来自 {site_config['name']})")
+                        
+                        if not merged_result.get("genres") and result.get("genres"):
+                            merged_result["genres"] = result["genres"]
+                            logger.debug(f"[PT搜索] 补充类型: {result['genres']} (来自 {site_config['name']})")
+                        
+                        if not merged_result.get("actors") and result.get("actors"):
+                            merged_result["actors"] = result["actors"]
+                            logger.debug(f"[PT搜索] 补充演员: {result['actors']} (来自 {site_config['name']})")
+                        
+                        if not merged_result.get("production_countries") and result.get("production_countries"):
+                            merged_result["production_countries"] = result["production_countries"]
+                            logger.debug(f"[PT搜索] 补充产地: {result['production_countries']} (来自 {site_config['name']})")
+                        
+                        # 来源信息累积
+                        merged_result["source"] = f"{merged_result['source']} + {site_config['name']}"
+                        
+                        logger.info(f"[PT搜索] 合并结果，当前来源: {merged_result['source']}")
+                    
+                    # 如果有海报URL且当前没有，使用
+                    if poster_url and not merged_result.get("poster_path"):
+                        merged_result["poster_path"] = poster_url
+                    
+                    # 继续搜索其他站点，不返回
+                else:
+                    logger.debug(f"[PT搜索] 站点 {site_config['name']} 未解析到标题信息")
+
+            except Exception as e:
+                logger.error(f"[PT搜索] 异常: {e}", exc_info=True)
+                continue
+
+        if merged_result:
+            logger.info(f"[PT搜索] ✅ 搜索完成，汇总来源: {merged_result['source']}")
+            logger.debug(f"[PT识别] 完整数据: title={result['title']}, year={result['year']}, actors={result['actors']}")
+            return merged_result
+        else:
+            logger.warning(f"[PT搜索] ❌ 所有站点搜索失败: {title}")
+            return None
+
+    @log_method(log_args=True, log_result=False)
+    def search_mp(self, file_path: Path) -> Optional[dict]:
+        """
+        MP识别（豆瓣/TMDB）- 使用真实文件路径
+        
+        Args:
+            file_path: 视频文件的真实路径
+        
+        Returns:
+            返回 MediaInfo 字典，失败返回 None
+        """
+        if not self._enable_mp_recognition:
+            logger.debug(f"[MP识别] MP识别已禁用，跳过 {file_path}")
+            return None
+        
+        with self._lock:
+            self._stats['mp_calls'] = self._stats.get('mp_calls', 0) + 1
+        
+        logger.info(f"[MP识别] 🔍 开始识别: {file_path}")
+        
+        if not file_path or not file_path.exists():
+            logger.warning(f"[MP识别] 文件不存在: {file_path}")
+            return None
+        
+        try:
+            logger.debug(f"[MP识别] 创建 MetaInfoPath 对象")
+            file_meta = MetaInfoPath(file_path)
+            logger.info(f"[MP识别] 文件解析: name={file_meta.name}, season={file_meta.season}, episode={file_meta.episode}")
+            
+            logger.debug(f"[MP识别] 调用识别接口 chain.recognize_media")
+            mediainfo = self.chain.recognize_media(meta=file_meta)
+            
+            if mediainfo and getattr(mediainfo, 'source', None) in ['douban', 'themoviedb']:
+                result = {
+                    "title": mediainfo.title,
+                    "original_title": getattr(mediainfo, 'original_title', '') or getattr(mediainfo, 'original_name', '') or mediainfo.title,
+                    "year": mediainfo.year or '',
+                    "overview": getattr(mediainfo, 'overview', ''),
+                    "genres": getattr(mediainfo, 'genres', []),
+                    "production_countries": getattr(mediainfo, 'production_countries', []),
+                    "actors": getattr(mediainfo, 'actors', []),
+                    "poster_path": getattr(mediainfo, 'poster_path', ''),
+                    "tmdb_id": getattr(mediainfo, 'tmdb_id', ''),
+                    "douban_id": getattr(mediainfo, 'douban_id', ''),
+                    "source": mediainfo.source
+                }
+                with self._lock:
+                    self._stats['mp_hits'] = self._stats.get('mp_hits', 0) + 1
+                logger.info(f"[MP识别] ✅ 识别成功: {result['title']} (来源: {result['source']}, 类型: {result.get('year', '未知年份')})")
+                logger.debug(f"[MP识别] 完整数据: {result}")
+                return result
+            else:
+                logger.warning(f"[MP识别] ❌ 未识别到有效结果 (mediainfo存在: {mediainfo is not None})")
+                
+        except Exception as e:
+            logger.error(f"[MP识别] 异常: {e}", exc_info=True)
+        
+        return None
+
+    @log_method(log_args=True, log_result=False)
+    def search_local_nfo(self, title: str, source_dir: str) -> Optional[dict]:
+        """本地NFO搜索"""
+        if not self._enable_local_nfo:
+            logger.debug(f"[本地NFO] 本地NFO已禁用，跳过 {title}")
+            return None
+        
+        with self._lock:
+            self._stats['nfo_calls'] = self._stats.get('nfo_calls', 0) + 1
+        
+        logger.info(f"[本地NFO] 🔍 开始搜索: {title}")
+
+        try:
+            source_folder = Path(source_dir) / title
+            if not source_folder.exists():
+                logger.debug(f"[本地NFO] 目录不存在: {source_folder}")
+                return None
+
+            nfo_file = source_folder / "tvshow.nfo"
+            if not nfo_file.exists():
+                logger.debug(f"[本地NFO] NFO文件不存在: {nfo_file}")
+                return None
+
+            logger.debug(f"[本地NFO] 读取NFO文件: {nfo_file}")
+            mediainfo = self._read_local_nfo(source_folder)
+            if not mediainfo or not mediainfo.title:
+                logger.debug(f"[本地NFO] NFO解析失败或无标题")
+                return None
+
+            result = {
+                "title": mediainfo.title,
+                "original_title": getattr(mediainfo, 'original_title', '') or mediainfo.title,
+                "year": mediainfo.year or '',
+                "overview": getattr(mediainfo, 'overview', ''),
+                "genres": getattr(mediainfo, 'genres', []),
+                "production_countries": getattr(mediainfo, 'production_countries', []),
+                "actors": getattr(mediainfo, 'actors', []),
+                "poster_path": getattr(mediainfo, 'poster_path', ''),
+                "tmdb_id": getattr(mediainfo, 'tmdb_id', ''),
+                "douban_id": getattr(mediainfo, 'douban_id', ''),
+                "source": "local_nfo"
+            }
+            with self._lock:
+                self._stats['nfo_hits'] = self._stats.get('nfo_hits', 0) + 1
+            logger.info(f"[本地NFO] ✅ 搜索成功: {result['title']} (年份: {result['year']})")
+            logger.debug(f"[本地NFO] 完整数据: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"[本地NFO] 异常: {e}", exc_info=True)
+
+        return None
+
+    @log_method(log_args=True, log_result=False)
+    def merge_search_results(self, title: str, source_dir: str = None, video_path: Path = None) -> dict:
+        """合并搜索结果（PT > MP > 本地NFO，列表合并去重）"""
+        cache_key = f"{title}_{source_dir}_{video_path}" if video_path else f"{title}_{source_dir}"
+        
+        logger.info(f"[合并] 🔄 开始合并搜索: {title}")
+        logger.debug(f"[合并] 缓存键: {cache_key}")
+        
+        with self._lock:
+            cached = self._series_cache.get(cache_key)
+            if cached and time.time() - cached.get('ts', 0) < CACHE_TTL_SECONDS:
+                logger.info(f"[缓存] ✅ 命中缓存: {title} (缓存时间: {datetime.datetime.fromtimestamp(cached.get('ts', 0)).strftime('%H:%M:%S')})")
+                return cached.get('result', {}).copy()
+        
+        logger.debug(f"[合并] 缓存未命中，执行搜索")
+        
+        result = {
+            "title": title,
+            "originaltitle": title,
+            "year": "",
+            "plot": "",
+            "country": "",
+            "genre": "",
+            "genres": [],
+            "actors": [],
+            "tag": [],
+            "poster_url": "",
+            "source": "文件夹名",
+            "tmdb_id": "",
+            "douban_id": ""
+        }
+
+        # 记录搜索来源
+        search_sources = []
+
+        # 1. PT搜索
+        if self._enable_pt_search:
+            logger.info(f"[合并] 步骤1: PT站搜索")
+            pt_result = self.search_pt(title)
+            if pt_result:
+                search_sources.append("PT")
+                logger.info(f"[合并] PT搜索返回: {pt_result.get('title')}")
+                if pt_result.get("title"):
+                    result["title"] = pt_result["title"]
+                    result["originaltitle"] = pt_result.get("original_title", pt_result["title"])
+                if pt_result.get("year"):
+                    result["year"] = pt_result["year"]
+                if pt_result.get("overview"):
+                    result["plot"] = pt_result["overview"]
+                if pt_result.get("production_countries"):
+                    result["country"] = pt_result["production_countries"][0] if pt_result["production_countries"] else ""
+                if pt_result.get("genres"):
+                    for g in pt_result["genres"]:
+                        if g and g not in result["genres"]:
+                            result["genres"].append(g)
+                    result["genre"] = result["genres"][0] if result["genres"] else ""
+                if pt_result.get("actors"):
+                    for a in pt_result["actors"]:
+                        if a and a not in result["actors"]:
+                            result["actors"].append(a)
+                    result["tag"] = result["actors"].copy()
+                if pt_result.get("poster_path"):
+                    result["poster_url"] = pt_result["poster_path"]
+                result["source"] = f"PT({pt_result.get('source', '')})"
+
+        # 2. MP识别
+        if self._enable_mp_recognition and video_path and video_path.exists():
+            logger.info(f"[合并] 步骤2: MP识别 (文件: {video_path})")
+            mp_result = self.search_mp(video_path)
+            if mp_result:
+                search_sources.append("MP")
+                logger.info(f"[合并] MP识别返回: {mp_result.get('title')}")
+                if not result["title"] or result["title"] == title:
+                    if mp_result.get("title"):
+                        result["title"] = mp_result["title"]
+                        result["originaltitle"] = mp_result.get("original_title", mp_result["title"])
+                if not result["year"] and mp_result.get("year"):
+                    result["year"] = mp_result["year"]
+                if not result["plot"] and mp_result.get("overview"):
+                    result["plot"] = mp_result["overview"]
+                if not result["country"] and mp_result.get("production_countries"):
+                    result["country"] = mp_result["production_countries"][0] if mp_result["production_countries"] else ""
+                if mp_result.get("genres"):
+                    for g in mp_result["genres"]:
+                        if g and g not in result["genres"]:
+                            result["genres"].append(g)
+                    if not result["genre"] and result["genres"]:
+                        result["genre"] = result["genres"][0]
+                if mp_result.get("actors"):
+                    for a in mp_result["actors"]:
+                        if a and a not in result["actors"]:
+                            result["actors"].append(a)
+                    result["tag"] = result["actors"].copy()
+                if not result["poster_url"] and mp_result.get("poster_path"):
+                    result["poster_url"] = mp_result["poster_path"]
+                if mp_result.get("tmdb_id"):
+                    result["tmdb_id"] = mp_result["tmdb_id"]
+                if mp_result.get("douban_id"):
+                    result["douban_id"] = mp_result["douban_id"]
+                if result["source"] == "文件夹名":
+                    result["source"] = f"MP({mp_result.get('source', '')})"
+
+        # 3. 本地NFO
+        if self._enable_local_nfo and source_dir:
+            logger.info(f"[合并] 步骤3: 本地NFO搜索")
+            local_result = self.search_local_nfo(title, source_dir)
+            if local_result:
+                search_sources.append("NFO")
+                logger.info(f"[合并] 本地NFO返回: {local_result.get('title')}")
+                if not result["title"] or result["title"] == title:
+                    if local_result.get("title"):
+                        result["title"] = local_result["title"]
+                        result["originaltitle"] = local_result.get("original_title", local_result["title"])
+                if not result["year"] and local_result.get("year"):
+                    result["year"] = local_result["year"]
+                if not result["plot"] and local_result.get("overview"):
+                    result["plot"] = local_result["overview"]
+                if not result["country"] and local_result.get("production_countries"):
+                    result["country"] = local_result["production_countries"][0] if local_result["production_countries"] else ""
+                if local_result.get("genres"):
+                    for g in local_result["genres"]:
+                        if g and g not in result["genres"]:
+                            result["genres"].append(g)
+                    if not result["genre"] and result["genres"]:
+                        result["genre"] = result["genres"][0]
+                if local_result.get("actors"):
+                    for a in local_result["actors"]:
+                        if a and a not in result["actors"]:
+                            result["actors"].append(a)
+                    result["tag"] = result["actors"].copy()
+                if not result["poster_url"] and local_result.get("poster_path"):
+                    result["poster_url"] = local_result["poster_path"]
+                if local_result.get("tmdb_id"):
+                    result["tmdb_id"] = local_result["tmdb_id"]
+                if local_result.get("douban_id"):
+                    result["douban_id"] = local_result["douban_id"]
+                if result["source"] == "文件夹名":
+                    result["source"] = "本地NFO"
+
+        with self._lock:
+            self._series_cache[cache_key] = {
+                'result': result.copy(),
+                'ts': time.time()
+            }
+            while len(self._series_cache) > MAX_CACHE_SIZE:
+                removed_key = next(iter(self._series_cache))
+                del self._series_cache[removed_key]
+                logger.debug(f"[缓存] 清理旧缓存: {removed_key}")
+        
+        logger.info(f"[合并] ✅ 合并完成 - 最终标题: {result['title']}, 年份: {result['year'] or '未知'}, 来源: {result['source']}, 搜索来源: {', '.join(search_sources) if search_sources else '无'}")
+        logger.debug(f"[合并] 完整结果: {result}")
+        return result
+
+    # ========== 生命周期 ==========
+
+    def _cancel_pending_tasks(self):
+        for name, task in list(self._pending_tasks.items()):
+            if task.is_alive():
+                logger.debug(f"[任务] 取消任务: {name}")
+                task.cancel()
+        self._pending_tasks.clear()
+        logger.debug("[任务] 所有待处理任务已取消")
+
+    @log_method(log_args=True)
     def init_plugin(self, config: dict = None):
-        """初始化插件"""
         if not config:
+            logger.warning("[初始化] 配置为空，跳过初始化")
             return
+
+        logger.info("[初始化] ========== 开始初始化短剧处理器 ==========")
+        logger.debug(f"[初始化] 配置内容: {config}")
+
+        old_enabled = self._enabled
+        old_monitor_confs = self._monitor_confs
+
+        need_once = config.get("onlyonce", False)
+        need_supplement = config.get("supplement", False)
         
-        # 加载配置
+        logger.info(f"[初始化] 加载配置 - 启用: {config.get('enabled')}, 一次性扫描: {need_once}, 补充元数据: {need_supplement}")
+        
         self._load_config(config)
-        
-        # 清空旧配置
-        self._dirconf.clear()
-        self._renameconf.clear()
-        self._coverconf.clear()
-        
-        # 停止现有服务
-        self.stop_service()
-        
-        if not (self._enabled or self._onlyonce):
+
+        if not self._enabled:
+            logger.info("[初始化] 插件未启用")
+            if old_enabled:
+                logger.info("[初始化] 插件状态从启用变为禁用，停止监控并保存缓存")
+                self._stop_monitors()
+                self._save_cache()
             return
+
+        logger.info("[初始化] 插件已启用，加载缓存和站点配置")
         
-        # 解析监控目录配置
-        if not self._parse_monitor_configs():
-            logger.warning("监控目录配置解析失败")
-            return
+        if not old_enabled or not self._success_cache:
+            logger.debug("[初始化] 加载缓存")
+            self._load_cache()
+
+        self._init_sites()
+        self._apply_pt_priority()
+
+        if old_monitor_confs != self._monitor_confs or not self._observer:
+            logger.info("[初始化] 监控配置变更，重新启动监控")
+            self._stop_monitors()
+            self._parse_monitor_configs()
+
+        if need_once:
+            logger.info("[初始化] 执行一次性扫描任务 (3秒后)")
+            t = threading.Timer(3, self.scan_all_dirs)
+            self._pending_tasks['onlyonce'] = t
+            t.start()
+
+        if need_supplement:
+            logger.info("[初始化] 执行一次性补充元数据任务 (3秒后)")
+            t = threading.Timer(3, self._supplement_all_metadata)
+            self._pending_tasks['supplement'] = t
+            t.start()
+
+        if need_once or need_supplement:
+            logger.debug("[初始化] 清除配置中的一次性标志")
+            config["onlyonce"] = False
+            config["supplement"] = False
+            self.update_config(config)
         
-        # 启动定时服务
-        self._start_scheduler()
+        logger.info("[初始化] ========== 短剧处理器初始化完成 ==========")
+
+    def stop_service(self):
+        logger.info("[服务] 停止短剧处理器服务")
+        self._enabled = False
+        self._cancel_pending_tasks()
+        self._stop_monitors()
+        self._save_cache()
+        logger.info("[服务] 服务已停止")
+
+    def get_service(self) -> List[Dict[str, Any]]:
+        if not self._enabled:
+            logger.debug("[服务] 插件未启用，无服务注册")
+            return []
         
-        # 全量同步 - 使用线程直接执行，避免调度器问题
-        if self._onlyonce:
-            self._schedule_once_scan()
-            self._onlyonce = False
-            self._update_config()
+        services = []
+        if self._scan_enabled and self._scan_interval > 0:
+            logger.info(f"[服务] 注册定时扫描服务，间隔: {self._scan_interval}秒")
+            services.append({
+                "id": "ShortPlayProcessor.Scan",
+                "name": "短剧处理器定时扫描",
+                "trigger": IntervalTrigger(seconds=self._scan_interval),
+                "func": self.scan_all_dirs,
+            })
+        if self._notify:
+            logger.info(f"[服务] 注册通知聚合服务，间隔: {self._interval}秒")
+            services.append({
+                "id": "ShortPlayProcessor.Notify",
+                "name": "短剧处理器通知聚合",
+                "trigger": IntervalTrigger(seconds=self._interval),
+                "func": self._send_notifications,
+            })
         
-        # 封面裁剪
-        if self._image:
-            self._image = False
-            self._update_config()
-            self._schedule_image_crop()
+        logger.info("[服务] 注册缓存清理服务，间隔: 1小时")
+        services.append({
+            "id": "ShortPlayProcessor.CleanCache",
+            "name": "短剧处理器缓存清理",
+            "trigger": IntervalTrigger(hours=1),
+            "func": self._clean_expired_cache,
+        })
         
-    
+        logger.debug(f"[服务] 共注册 {len(services)} 个服务")
+        return services
+
+    def get_state(self) -> bool:
+        return self._enabled
+
+    # ========== 配置 ==========
+
     def _load_config(self, config: dict):
-        """加载配置"""
+        logger.debug("[配置] 加载配置参数")
+        
         self._enabled = config.get("enabled", False)
         self._onlyonce = config.get("onlyonce", False)
+        self._supplement = config.get("supplement", False)
         self._monitor_confs = config.get("monitor_confs", "")
-        
-        transfer_type = config.get("transfer_type", "link")
-        self._transfer_type = TransferType(transfer_type) if transfer_type in [t.value for t in TransferType] else TransferType.LINK
-        
+        self._transfer_type = config.get("transfer_type", "link")
         self._exclude_keywords = config.get("exclude_keywords", "")
         self._notify = config.get("notify", False)
-        self._interval = int(config.get("interval", 10))
-        self._scan_interval = int(config.get("scan_interval", 60))
+        self._interval = max(1, config.get("interval", 10))
+        self._scan_interval = max(10, config.get("scan_interval", 60))
         self._scan_enabled = config.get("scan_enabled", True)
-        self._image = config.get("image", False)
-        
-        # ========== 加载三个数据源开关配置 ==========
         self._enable_local_nfo = config.get("enable_local_nfo", True)
         self._enable_mp_recognition = config.get("enable_mp_recognition", True)
         self._enable_pt_search = config.get("enable_pt_search", True)
+        self._pt_priority = config.get("pt_priority", "")
+        self._media_root = config.get("media_root", "")
+        self._polling_interval = max(1, config.get("polling_interval", 5))
+        self._debounce_max_wait = max(1.0, config.get("debounce_max_wait", 10.0))
+        self._enable_incremental_scan = config.get("enable_incremental_scan", True)
+
+        logger.info(f"[配置] 主配置 - 启用: {self._enabled}, 转移方式: {self._transfer_type}, 通知: {self._notify}")
+        logger.info(f"[配置] 扫描配置 - 定时扫描: {self._scan_enabled}, 间隔: {self._scan_interval}s, 增量: {self._enable_incremental_scan}")
+        logger.info(f"[配置] 搜索配置 - PT: {self._enable_pt_search}, MP: {self._enable_mp_recognition}, NFO: {self._enable_local_nfo}")
         
-        # 预编译排除关键词
+        if self._pt_priority:
+            logger.info(f"[配置] PT优先级: {self._pt_priority}")
+        
+        if self._media_root:
+            logger.info(f"[配置] 媒体库根目录: {self._media_root}")
+
         self._compiled_exclude_patterns = []
         if self._exclude_keywords:
+            kw_count = 0
             for kw in self._exclude_keywords.split("\n"):
                 kw = kw.strip()
                 if kw:
                     try:
                         self._compiled_exclude_patterns.append(re.compile(kw))
-                    except re.error:
-                        self._compiled_exclude_patterns.append(kw)
-    
-    def _parse_monitor_configs(self) -> bool:
-        """解析监控目录配置"""
-        if not self._monitor_confs:
-            logger.warning("未配置监控目录")
-            return False
+                        kw_count += 1
+                    except re.error as e:
+                        logger.warning(f"[配置] 无效的正则表达式: {kw}, 错误: {e}")
+            logger.info(f"[配置] 加载排除关键词: {kw_count} 个")
+
+    def _update_config(self):
+        logger.debug("[配置] 更新配置")
+        self.update_config({
+            "enabled": self._enabled, "onlyonce": False, "supplement": False,
+            "monitor_confs": self._monitor_confs, "transfer_type": self._transfer_type,
+            "exclude_keywords": self._exclude_keywords, "notify": self._notify,
+            "interval": self._interval, "scan_interval": self._scan_interval,
+            "scan_enabled": self._scan_enabled,
+            "enable_local_nfo": self._enable_local_nfo,
+            "enable_mp_recognition": self._enable_mp_recognition,
+            "enable_pt_search": self._enable_pt_search,
+            "pt_priority": self._pt_priority,
+            "polling_interval": self._polling_interval,
+            "debounce_max_wait": self._debounce_max_wait,
+            "enable_incremental_scan": self._enable_incremental_scan,
+            "media_root": self._media_root,
+        })
+
+    # ========== 缓存 ==========
+
+    def _save_cache(self):
+        with self._lock:
+            series_save = dict(list(self._series_cache.items())[-MAX_CACHE_SIZE:])
+            success_save = dict(list(self._success_cache.items())[-MAX_CACHE_SIZE:])
+            failed_save = self._failed_records[-500:]
+            mapping_save = dict(list(self._title_mapping.items())[-MAX_CACHE_SIZE:])  # 新增
+            
+            logger.debug(f"[缓存] 保存缓存 - 成功: {len(success_save)}条, 系列: {len(series_save)}条, 失败: {len(failed_save)}条, 映射: {len(mapping_save)}条")
+            
+            self.save_data("series_cache", series_save)
+            self.save_data("success_cache", success_save)
+            self.save_data("failed_records", failed_save)
+            self.save_data("title_mapping", mapping_save)  # 新增
+
+    def _load_cache(self):
+        logger.debug("[缓存] 加载缓存")
+        series_data = self.get_data("series_cache") or {}
+        success_data = self.get_data("success_cache") or {}
+        failed_data = self.get_data("failed_records") or []
+        mapping_data = self.get_data("title_mapping") or {}  # 新增
+
+        loaded_series = 0
+        for k, v in series_data.items():
+            if isinstance(v, dict) and time.time() - v.get('ts', 0) < CACHE_TTL_SECONDS:
+                self._series_cache[k] = v
+                loaded_series += 1
+
+        loaded_success = 0
+        for k, v in success_data.items():
+            if isinstance(v, dict):
+                self._success_cache[k] = v
+                loaded_success += 1
+
+        self._failed_records = [r for r in failed_data if isinstance(r, dict)]
+        self._title_mapping = {k: v for k, v in mapping_data.items() if isinstance(v, str)}  # 新增
         
-        success = False
+        logger.info(f"[缓存] 加载完成 - 成功记录: {loaded_success}条, 系列缓存: {loaded_series}条, 失败记录: {len(self._failed_records)}条, 映射: {len(self._title_mapping)}条")
+
+    def _clean_expired_cache(self):
+        with self._lock:
+            now = time.time()
+            expired_series = [k for k, v in self._series_cache.items() if now - v.get('ts', 0) > CACHE_TTL_SECONDS]
+            for k in expired_series:
+                del self._series_cache[k]
+            if expired_series:
+                logger.info(f"[缓存] 清理过期缓存: {len(expired_series)}条")
+
+    # ========== 站点初始化 ==========
+
+    def _init_sites(self):
+        logger.debug("[站点] 初始化站点配置")
+        for site_conf in DEFAULT_SITES:
+            domain = site_conf["domain"]
+            try:
+                site = SiteOper().get_by_domain(domain)
+                self._site_cache[domain] = site
+                self._indexer_cache[domain] = SitesHelper().get_indexer(domain) if site else None
+                status = "已配置" if site else "未配置"
+                logger.debug(f"[站点] {site_conf['name']}({domain}): {status}")
+            except Exception as e:
+                self._site_cache[domain] = None
+                self._indexer_cache[domain] = None
+                logger.error(f"[站点] 初始化失败 {domain}: {e}")
+
+    def _apply_pt_priority(self):
+        if not self._pt_priority:
+            logger.debug("[PT优先级] 未设置优先级，使用默认顺序")
+            return
+        
+        priority_list = [p.strip().lower() for p in self._pt_priority.split(",") if p.strip()]
+        if not priority_list:
+            return
+
+        logger.info(f"[PT优先级] 应用优先级顺序: {priority_list}")
+
+        def get_order(domain):
+            for idx, p in enumerate(priority_list):
+                if p in domain or domain.startswith(p):
+                    return idx
+            return 999
+
+        old_order = [s["name"] for s in self._sites_config]
+        self._sites_config.sort(key=lambda s: get_order(s["domain"]))
+        new_order = [s["name"] for s in self._sites_config]
+        logger.debug(f"[PT优先级] 站点顺序变更: {old_order} -> {new_order}")
+
+    # ========== 监控 ==========
+
+    def _parse_monitor_configs(self):
+        if not self._monitor_confs:
+            logger.warning("[监控] 监控配置为空")
+            return
+
+        logger.info("[监控] 解析监控配置")
+        
         for line in self._monitor_confs.split("\n"):
             line = line.strip()
             if not line:
                 continue
-            
-            parts = line.split("#")
+
+            parts = line.rsplit("#", 3)
             if len(parts) < 3:
-                logger.error(f"配置格式错误: {line}，应为: 监控方式#源目录#目的目录#是否重命名#封面比例")
+                logger.error(f"[监控] 配置格式错误: {line}")
                 continue
-            
+
             mode = parts[0].strip()
             source_dir = os.path.normpath(parts[1].strip())
             target_dir = os.path.normpath(parts[2].strip())
             rename = parts[3].strip() if len(parts) > 3 else "smart"
-            cover = parts[4].strip() if len(parts) > 4 else "16:9"
-            
-            # 验证目录
+
+            logger.info(f"[监控] 解析配置 - 模式: {mode}, 源目录: {source_dir}, 目标目录: {target_dir}, 重命名: {rename}")
+
+            if self._media_root:
+                try:
+                    Path(target_dir).resolve().relative_to(Path(self._media_root).resolve())
+                    logger.debug(f"[监控] 目标目录在媒体库根目录下: {target_dir}")
+                except ValueError:
+                    logger.error(f"[监控] 目标目录不在媒体库根目录下: {target_dir}")
+                    continue
+
             if not os.path.exists(source_dir):
-                logger.warning(f"源目录不存在，跳过: {source_dir}")
+                logger.warning(f"[监控] 源目录不存在: {source_dir}")
                 continue
-            
+
             self._dirconf[source_dir] = target_dir
             self._renameconf[source_dir] = rename
-            self._coverconf[source_dir] = cover
-            
-            if self._enabled:
-                self._start_monitor(mode, source_dir)
-            
-            success = True
-        
-        return success
-    
-    def _start_monitor(self, mode: str, source_dir: str):
-        """启动目录监控"""
-        try:
-            if mode == "compatibility":
-                observer = PollingObserver(timeout=10)
-                logger.info(f"{source_dir} 使用兼容模式")
-            else:
-                observer = Observer(timeout=10)
-                logger.info(f"{source_dir} 使用实时监控")
-            
-            self._observer.append(observer)
-            observer.schedule(
-                FileMonitorHandler(source_dir, self, delay=0.5),
-                path=source_dir,
-                recursive=True
-            )
-            observer.daemon = True
-            observer.start()
-            logger.info(f"{source_dir} 监控已启动")
-        except Exception as e:
-            logger.error(f"{source_dir} 监控启动失败: {e}")
-    
-    def _start_scheduler(self):
-        """启动定时器"""
-        try:
-            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            logger.debug("调度器已创建")
-            
-            # 入库消息定时发送
-            if self._notify:
-                self._scheduler.add_job(
-                    func=self._send_notifications,
-                    trigger=IntervalTrigger(seconds=15),
-                    id="shortplayprocessor_notify",
-                    coalesce=True,
-                    max_instances=1
-                )
-                logger.debug("已添加通知任务")
-            
-            # 定时扫描任务
-            if self._enabled and self._scan_enabled and self._scan_interval > 0:
-                self._scheduler.add_job(
-                    func=self.scan_all_dirs,
-                    trigger=IntervalTrigger(seconds=self._scan_interval),
-                    id="shortplayprocessor_scan",
-                    coalesce=True,
-                    max_instances=1
-                )
-                logger.info(f"定时扫描已启动，间隔: {self._scan_interval} 秒")
-            
-            # 启动任务
-            if self._scheduler.get_jobs():
-                self._scheduler.start()
-                logger.debug("调度器已启动")
-        except Exception as e:
-            logger.error(f"启动调度器失败: {e}")
-            self._scheduler = None
-    
-    def _schedule_once_scan(self):
-        """安排一次性扫描 - 使用线程直接执行，避免调度器问题"""
-        def delayed_scan():
-            logger.info("等待3秒后开始扫描...")
-            time.sleep(3)
-            logger.info("开始执行一次性扫描")
-            self.scan_all_dirs()
-            logger.info("一次性扫描执行完成")
-        
-        thread = threading.Thread(target=delayed_scan, daemon=True)
-        thread.start()
-    
-    def _schedule_image_crop(self):
-        """安排封面裁剪 - 使用线程直接执行"""
-        def delayed_crop():
-            logger.info("等待5秒后开始裁剪封面...")
-            time.sleep(5)
-            self._crop_all_posters()
-        
-        thread = threading.Thread(target=delayed_crop, daemon=True)
-        thread.start()
-    
-    # ========== 文件处理核心方法 ==========
-    
-    def scan_all_dirs(self):
-        """扫描所有监控目录"""
-        if self._scanning:
-            logger.info("扫描任务正在进行中，跳过本次扫描")
+
+            try:
+                if mode == "compatibility":
+                    logger.info(f"[监控] 使用兼容模式(PollingObserver), 轮询间隔: {self._polling_interval}s")
+                    observer = PollingObserver(timeout=self._polling_interval)
+                else:
+                    logger.info(f"[监控] 使用普通模式(Observer)")
+                    observer = Observer(timeout=10)
+                
+                handler = FileMonitorHandler(self, source_dir, max_wait=self._debounce_max_wait)
+                observer.schedule(handler, path=source_dir, recursive=True)
+                observer.daemon = True
+                observer.start()
+                self._observer.append(observer)
+                logger.info(f"[监控] ✅ 监控已启动: {source_dir}")
+            except Exception as e:
+                logger.error(f"[监控] ❌ 启动监控失败 {source_dir}: {e}", exc_info=True)
+
+        logger.info(f"[监控] 监控配置完成 - 共 {len(self._observer)} 个监控任务")
+
+    def _stop_monitors(self):
+        if not self._observer:
+            logger.debug("[监控] 无运行中的监控任务")
             return
         
+        logger.info(f"[监控] 停止 {len(self._observer)} 个监控任务")
+        for idx, obs in enumerate(self._observer):
+            try:
+                obs.stop()
+                obs.join(timeout=5)
+                logger.debug(f"[监控] 监控任务 #{idx+1} 已停止")
+            except Exception as e:
+                logger.error(f"[监控] 停止监控任务失败: {e}")
+        self._observer.clear()
+        logger.info("[监控] 所有监控任务已停止")
+
+    # ========== 扫描 ==========
+
+    def scan_all_dirs(self):
+        logger.info(f"[扫描] scan_all_dirs 被调用，当前 _scanning={self._scanning}")
+        if self._scanning:
+            logger.warning("[扫描] 已有扫描任务正在执行，跳过")
+            return
+        
+        logger.info("[扫描] ========== 开始扫描所有监控目录 ==========")
         self._scanning = True
-        start_time = time.time()
         
         try:
-            logger.info("=" * 50)
-            logger.info("开始扫描监控目录...")
-            
-            for source_dir in self._dirconf.keys():
-                source_path = Path(source_dir)
-                if not source_path.exists():
-                    continue
+            logger.info(f"[扫描] 监控目录配置: {list(self._dirconf.keys())}")
+            for source_dir in self._dirconf:
+                logger.info(f"[扫描] 处理监控目录: {source_dir}")
+                if not self._enabled:
+                    logger.warning("[扫描] 插件已禁用，停止扫描")
+                    break
                 
-                for folder in source_path.iterdir():
-                    if not folder.is_dir():
-                        continue
-                    
-                    if not self._is_valid_folder(str(folder), source_dir):
-                        continue
-                    
-                    # 获取视频文件
-                    video_files = self._find_video_files(folder)
-                    if not video_files:
-                        continue
-                    
-                    for video_file in video_files:
-                        # 检查是否已处理
-                        if self._is_already_processed(str(video_file)):
-                            continue
-                        
-                        # 处理文件
-                        self._process_file_with_retry(str(video_file), source_dir)
-            
-            elapsed = time.time() - start_time
-            logger.info(f"扫描完成，耗时: {elapsed:.2f}秒")
-            logger.info("=" * 50)
-            
+                if self._enable_incremental_scan:
+                    logger.info(f"[扫描] 使用增量扫描模式: {source_dir}")
+                    self._incremental_scan(source_dir)
+                else:
+                    logger.info(f"[扫描] 使用全量扫描模式: {source_dir}")
+                    self._full_scan(source_dir)
+
         except Exception as e:
-            logger.error(f"扫描失败: {e}", exc_info=True)
+            logger.error(f"[扫描] 扫描过程异常: {e}", exc_info=True)
         finally:
             self._scanning = False
-    
-    def _find_video_files(self, folder: Path) -> List[Path]:
-        """查找视频文件"""
-        video_files = []
-        for ext in settings.RMT_MEDIAEXT:
-            video_files.extend(folder.glob(f"*{ext}"))
-            video_files.extend(folder.glob(f"*{ext.upper()}"))
-        return video_files
-    
-    def _is_already_processed(self, file_path: str) -> bool:
-        """检查文件是否已处理"""
-        with self._lock:
-            if file_path in self._success_cache:
-                return True
-            if file_path in self._processing_files:
-                return True
-        return False
-    
-    def _process_file_with_retry(self, file_path: str, source_dir: str) -> bool:
-        """带重试的文件处理"""
+            logger.info("[扫描] ========== 扫描结束 ==========")
+
+    @log_method(log_args=True)
+    def _full_scan(self, source_dir: str):
+        source_path = Path(source_dir)
+        if not source_path.exists():
+            logger.warning(f"[全量扫描] 源目录不存在: {source_dir}")
+            return
+
+        logger.info(f"[全量扫描] 扫描目录: {source_dir}")
+        # 全量扫描时清空缓存
+        self.clear_cache()
+        logger.info("[全量扫描] 已清空缓存，开始全新扫描")
+        
+        all_items = list(source_path.iterdir())
+        logger.info(f"[全量扫描] 目录下共有 {len(all_items)} 个项目")
+        
+        for item in all_items:
+            logger.debug(f"[全量扫描] 项目: {item.name}, is_dir={item.is_dir()}")
+        
+        folder_count = 0
+        for folder in source_path.iterdir():
+            if not self._enabled:
+                logger.warning("[全量扫描] 插件已禁用，停止扫描")
+                return  # 直接退出，不再处理后续文件夹
+            if not folder.is_dir():
+                logger.debug(f"[全量扫描] 跳过非目录: {folder.name}")
+                continue
+                
+            logger.info(f"[全量扫描] 检查目录: {folder.name}")
+            
+            if not self._is_valid_folder(str(folder), source_dir):
+                logger.warning(f"[全量扫描] 目录无效: {folder.name}")
+                continue
+                
+            folder_count += 1
+            logger.info(f"[全量扫描] 有效目录 #{folder_count}: {folder.name}")
+            
+            all_files = list(folder.iterdir())
+            logger.info(f"[全量扫描] 目录 {folder.name} 中有 {len(all_files)} 个文件")
+            
+            for ext in settings.RMT_MEDIAEXT:
+                video_files = list(folder.glob(f"*{ext}")) + list(folder.glob(f"*{ext.upper()}"))
+                if video_files:
+                    logger.info(f"[全量扫描] 找到 {len(video_files)} 个 {ext} 文件: {[f.name for f in video_files]}")
+                
+                for vf in video_files:
+                    logger.info(f"[全量扫描] 处理视频文件: {vf}")
+                    if not self._is_processed(str(vf)):
+                        logger.info(f"[全量扫描] 文件未处理，开始处理: {vf}")
+                        self._process_with_retry(str(vf), source_dir)
+                    else:
+                        logger.debug(f"[全量扫描] 文件已处理，跳过: {vf}")
+        
+        if folder_count == 0:
+            logger.warning(f"[全量扫描] 没有找到有效的剧集目录！请检查目录结构。")
+            logger.warning(f"[全量扫描] 要求: {source_dir}/剧名文件夹/视频文件")
+        else:
+            logger.info(f"[全量扫描] 扫描完成，共处理 {folder_count} 个目录")
+
+    @log_method(log_args=True)
+    def _incremental_scan(self, source_dir: str):
+        last_scan = self._last_scan_time.get(source_dir, 0)
+        now = time.time()
+        
+        if last_scan == 0:
+            logger.info(f"[增量扫描] 首次扫描 {source_dir}")
+        else:
+            logger.info(f"[增量扫描] 上次扫描时间: {datetime.datetime.fromtimestamp(last_scan).strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        source_path = Path(source_dir)
+        if not source_path.exists():
+            logger.warning(f"[增量扫描] 源目录不存在: {source_dir}")
+            return
+
+        processed_count = 0
+        for folder in source_path.iterdir():
+            if not folder.is_dir():
+                continue
+            
+            if not self._is_valid_folder(str(folder), source_dir):
+                continue
+            
+            for ext in settings.RMT_MEDIAEXT:
+                for vf in list(folder.glob(f"*{ext}")) + list(folder.glob(f"*{ext.upper()}")):
+                    if vf.is_file():
+                        mtime = max(vf.stat().st_mtime, vf.stat().st_ctime)
+                        if mtime > last_scan:
+                            logger.debug(f"[增量扫描] 检测到新文件: {vf.name}, 修改时间: {datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')}")
+                            if not self._is_processed(str(vf)):
+                                logger.info(f"[增量扫描] 处理新文件: {vf}")
+                                self._process_with_retry(str(vf), source_dir)
+                                processed_count += 1
+                            else:
+                                logger.debug(f"[增量扫描] 文件已处理，跳过: {vf}")
+                        else:
+                            logger.debug(f"[增量扫描] 文件未变更，跳过: {vf}")
+
+        self._last_scan_time[source_dir] = now
+        logger.info(f"[增量扫描] 扫描完成 {source_dir}，处理新文件: {processed_count} 个")
+
+    # ========== 文件处理 ==========
+
+    def process_file(self, file_path: str, source_dir: str):
+        logger.info(f"[文件处理] 收到文件: {file_path}, 源目录: {source_dir}")
+        if not self._should_exclude(file_path) and Path(file_path).suffix.lower() in settings.RMT_MEDIAEXT:
+            logger.debug(f"[文件处理] 文件通过检查，开始处理")
+            self._process_with_retry(file_path, source_dir)
+        else:
+            if self._should_exclude(file_path):
+                logger.debug(f"[文件处理] 文件被排除规则过滤: {file_path}")
+            else:
+                logger.debug(f"[文件处理] 非视频文件，跳过: {file_path}")
+
+    @log_method(log_args=True, log_result=False)
+    def _process_with_retry(self, file_path: str, source_dir: str):
+        if not self._enabled:
+            logger.debug("[处理] 插件已禁用，跳过处理")
+            return  # 直接返回，不记录成功或失败
+        normalized = self._normalize_path(file_path)
+        logger.info(f"[处理] 开始处理文件: {normalized}")
+        
         for attempt in range(MAX_RETRIES):
+            logger.debug(f"[处理] 第 {attempt + 1}/{MAX_RETRIES} 次尝试")
             try:
-                result = self._process_file(file_path, source_dir)
-                if result:
-                    return True
-            except Exception as e:
-                logger.error(f"处理失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY * (attempt + 1))
+                if self._do_process(file_path, source_dir):
+                    logger.info(f"[处理] ✅ 处理成功")
+                    return
                 else:
-                    self._record_failure(file_path, str(e))
-        return False
-    
-    def _process_file(self, file_path: str, source_dir: str) -> bool:
-        """处理单个文件"""
-        # 排除检查
-        if self._should_exclude(file_path):
-            return False
-        
-        # 扩展名检查
-        if Path(file_path).suffix.lower() not in settings.RMT_MEDIAEXT:
-            return False
-        
-        # 标记处理中
-        file_path_normalized = str(Path(file_path).resolve())
+                    logger.warning(f"[处理] 处理返回失败")
+                    return
+            except Exception as e:
+                logger.error(f"[处理] 第 {attempt + 1} 次尝试异常: {e}", exc_info=True)
+                if attempt == MAX_RETRIES - 1:
+                    self._record_failure(normalized, str(e))
+                    return
+                wait_time = RETRY_DELAY * (attempt + 1)
+                logger.debug(f"[处理] 等待 {wait_time}s 后重试")
+                time.sleep(wait_time)
+
+    @log_method(log_args=True, log_result=False)
+    def _do_process(self, file_path: str, source_dir: str) -> bool:
+        if not self._enabled:
+            logger.debug("[处理] 插件已禁用，跳过处理")
+            return True
+
+        normalized = self._normalize_path(file_path)
+        file_name = Path(file_path).name
+        logger.info(f"[处理] ========== 处理文件: {file_name} ==========")
+
         with self._lock:
-            if file_path_normalized in self._processing_files:
-                logger.debug(f"文件正在处理中，跳过: {Path(file_path).name}")
-                return False
-            self._processing_files.add(file_path_normalized)
-        
+            if normalized in self._processing_files:
+                logger.warning(f"[处理] 文件正在处理中，跳过: {file_name}")
+                return True
+            self._processing_files.add(normalized)
+            logger.debug(f"[处理] 已加入处理队列，当前队列: {len(self._processing_files)}")
+
         try:
             source_path = Path(file_path)
             folder_path = source_path.parent
-            folder_path_str = str(folder_path.resolve())
-            
-            # 验证文件夹
-            if not self._is_valid_folder(folder_path_str, source_dir):
-                return False
-            
-            # 获取配置
+            logger.debug(f"[处理] 源目录: {source_dir}, 父目录: {folder_path}")
+
+            if not self._is_valid_folder(str(folder_path), source_dir):
+                logger.warning(f"[处理] 目录结构无效: {folder_path}")
+                return True
+
             dest_dir = self._dirconf.get(source_dir)
             if not dest_dir:
-                logger.error(f"未找到目标目录: {source_dir}")
-                return False
-            
+                logger.error(f"[处理] 未找到目标目录: {source_dir}")
+                return True
+
             rename_conf = self._renameconf.get(source_dir, "smart")
-            cover_conf = self._coverconf.get(source_dir, "16:9")
+            logger.info(f"[处理] 目标目录: {dest_dir}, 重命名策略: {rename_conf}")
             
-            # 获取剧集信息（带缓存）
-            clean_title = self._extract_title_from_folder(folder_path.name)
-            cache_key = folder_path_str
+            clean_title = self._extract_title(folder_path.name)
+            logger.info(f"[处理] 提取剧名: '{folder_path.name}' -> '{clean_title}'")
+
+            # 检查是否有映射关系
+            with self._lock:
+                mapped_title = self._title_mapping.get(clean_title)
             
-            with self._cache_lock:
-                if cache_key in self._series_cache:
-                    cached = self._series_cache[cache_key]
-                    if not cached.is_expired():
-                        mediainfo = cached.mediainfo
-                        pt_tv_info = cached.pt_tv_info
-                        title = cached.title
-                        logger.debug(f"💾 使用缓存: {title}")
-                        cached.update_timestamp()
-                    else:
-                        logger.debug(f"⏰ 缓存过期，重新识别: {cache_key}")
-                        del self._series_cache[cache_key]
-                        mediainfo, pt_tv_info, title = self._fetch_series_info(
-                            folder_path, clean_title
-                        )
+            if mapped_title:
+                logger.info(f"[处理] 使用映射标题: {clean_title} -> {mapped_title}")
+                target_folder = Path(dest_dir) / self._safe_name(mapped_title)
+            else:
+                target_folder = Path(dest_dir) / self._safe_name(clean_title)
+            
+            # 检查目标文件夹是否已存在且有NFO文件
+            nfo_path = target_folder / "tvshow.nfo"
+            merged_data = None
+            
+            if nfo_path.exists():
+                logger.info(f"[处理] 目标文件夹已存在且包含NFO文件: {target_folder}")
+                # 从现有NFO读取信息
+                existing_mediainfo = self._read_local_nfo(target_folder)
+                if existing_mediainfo and existing_mediainfo.title:
+                    merged_data = {
+                        "title": existing_mediainfo.title,
+                        "originaltitle": getattr(existing_mediainfo, 'original_title', '') or existing_mediainfo.title,
+                        "year": existing_mediainfo.year or '',
+                        "plot": getattr(existing_mediainfo, 'overview', ''),
+                        "country": existing_mediainfo.production_countries[0] if existing_mediainfo.production_countries else '',
+                        "genre": existing_mediainfo.genres[0] if existing_mediainfo.genres else '',
+                        "genres": existing_mediainfo.genres or [],
+                        "actors": existing_mediainfo.actors or [],
+                        "poster_url": getattr(existing_mediainfo, 'poster_path', ''),
+                        "source": existing_mediainfo.source,
+                        "tmdb_id": getattr(existing_mediainfo, 'tmdb_id', ''),
+                        "douban_id": getattr(existing_mediainfo, 'douban_id', '')
+                    }
+                    logger.info(f"[处理] ✅ 使用已有剧集信息: {merged_data['title']} (来源: {merged_data['source']})")
                 else:
-                    logger.debug(f"🆕 首次识别: {clean_title}")
-                    mediainfo, pt_tv_info, title = self._fetch_series_info(
-                        folder_path, clean_title
-                    )
-                    self._series_cache[cache_key] = CacheEntry(
-                        mediainfo=mediainfo,
-                        pt_tv_info=pt_tv_info,
-                        title=title
-                    )
+                    logger.warning(f"[处理] NFO文件存在但解析失败，将重新识别")
             
-            if not title:
-                logger.warning(f"无法获取片名: {folder_path.name}")
-                return False
+            # 如果没有现有信息，则进行搜索
+            if not merged_data:
+                logger.debug(f"[处理] 未找到现有剧集信息，开始搜索...")
+                merged_data = self.merge_search_results(
+                    title=clean_title,
+                    source_dir=source_dir,
+                    video_path=source_path
+                )
+                title = merged_data.get("title", clean_title)
+                self._last_source = merged_data.get("source", "文件夹名")
+                logger.info(f"[处理] 最终标题: {title}, 来源: {self._last_source}")
+                
+                # 创建目标文件夹
+                target_folder = Path(dest_dir) / self._safe_name(title)
+                target_folder.mkdir(parents=True, exist_ok=True)
+                logger.info(f"[处理] 目标文件夹: {target_folder}")
+                
+                # 保存映射关系
+                with self._lock:
+                    self._title_mapping[clean_title] = title
+                    logger.debug(f"[处理] 保存映射: {clean_title} -> {title}")
+                
+                # 写入NFO文件
+                logger.info(f"[处理] 创建 NFO 文件: {nfo_path}")
+                self._write_nfo(nfo_path, merged_data)
+                poster_url = merged_data.get("poster_url", "")
+                if poster_url:
+                    logger.debug(f"[处理] 下载海报: {poster_url}")
+                    self._download_image(poster_url, target_folder / "poster.jpg")
+                else:
+                    logger.debug(f"[处理] 无海报URL")
+            else:
+                # 使用现有信息，确保目标文件夹存在
+                target_folder.mkdir(parents=True, exist_ok=True)
+                
+                # 可选：补充NFO中可能缺少的字段
+                self._merge_nfo(nfo_path, merged_data)
             
-            # 创建目标目录
-            target_folder = Path(dest_dir) / self._sanitize_filename(title)
-            target_folder.mkdir(parents=True, exist_ok=True)
-            
-            # 整理视频文件
+            # 组织视频文件
             target_path = self._organize_video(source_path, target_folder, rename_conf, folder_path)
             if not target_path:
-                return False
-            
-            # 处理元数据（仅首次）
-            nfo_path = target_folder / "tvshow.nfo"
-            if not nfo_path.exists():
-                self._process_metadata(folder_path, target_folder, mediainfo, title, cover_conf, pt_tv_info)
-            
-            # 记录成功
-            self._record_success(file_path_normalized, title, str(target_path))
-            
-            # 添加到通知队列
-            if self._notify:
-                self._add_to_notify(title, file_path_normalized)
-            
-            # 更新统计
+                logger.error(f"[处理] 文件转移失败")
+                return True
+
+            self._record_success(
+                normalized, 
+                merged_data.get("title", clean_title), 
+                str(target_path),
+                merged_data.get("source", "文件夹名")
+            )
+
             with self._lock:
                 self._stats['total_processed'] += 1
                 self._stats['success_count'] += 1
                 self._stats['last_process_time'] = datetime.datetime.now()
-            
+
+            if self._notify:
+                logger.debug(f"[处理] 添加通知: {merged_data.get('title', clean_title)}")
+                self._add_notify(merged_data.get('title', clean_title), normalized)
+
+            logger.info(f"[处理] ✅ 处理完成: {file_name} -> {merged_data.get('title', clean_title)} ({target_path.name})")
             return True
-            
+
         except Exception as e:
-            logger.error(f"处理文件异常: {e}", exc_info=True)
-            self._record_failure(file_path_normalized, str(e))
-            return False
+            logger.error(f"[处理] ❌ 处理异常: {file_name}, {e}", exc_info=True)
+            raise
         finally:
             with self._lock:
-                self._processing_files.discard(file_path_normalized)
+                self._processing_files.discard(normalized)
+                logger.debug(f"[处理] 移出处理队列，当前队列: {len(self._processing_files)}")
 
-    def _is_title_match(self, recognized_title: str, search_title: str) -> bool:
-        """检查识别的标题是否与搜索标题匹配"""
-        if not recognized_title or not search_title:
-            return False
-        
-        if recognized_title in search_title or search_title in recognized_title:
-            logger.debug(f"标题匹配: '{recognized_title}' ↔ '{search_title}'")
-            return True
-
-        return False
-    
-    def _fetch_series_info(self, folder_path: Path, clean_title: str) -> Tuple[Optional[MediaInfo], Optional[Dict], str]:
-        """获取剧集信息（根据开关控制数据源）"""
-        
-        # ========== 1. 本地 NFO（根据开关） ==========
-        if self._enable_local_nfo:
-            local_nfo_info = self._get_info_from_local_nfo(folder_path)
-            if local_nfo_info:
-                logger.info(f"✅ 使用本地 NFO: {local_nfo_info['title']}")
-                mediainfo = self._create_mediainfo_from_local(local_nfo_info, clean_title)
-                return mediainfo, None, local_nfo_info['title']
-            else:
-                logger.debug("📁 未找到本地 NFO")
-        
-        # ========== 2. MP 识别（豆瓣/TMDB，根据开关） ==========
-        if self._enable_mp_recognition:
-            try:
-                file_meta = MetaInfoPath(Path(f"{clean_title}"))
-                mediainfo = self.chain.recognize_media(meta=file_meta)
-                
-                if mediainfo and getattr(mediainfo, 'source', None) in ['douban', 'themoviedb']:
-                    recognized_title = mediainfo.title
-                    if self._is_title_match(recognized_title, clean_title):
-                        logger.info(f"✅ MP识别成功: {recognized_title} ({mediainfo.source})")
-                        title = recognized_title
-                        
-                        if hasattr(mediainfo, 'poster_path') and mediainfo.poster_path:
-                            if 'm_ratio_poster' in mediainfo.poster_path:
-                                mediainfo.poster_path = mediainfo.poster_path.replace('m_ratio_poster', 'm')
-                        
-                        if hasattr(mediainfo, 'actors') and mediainfo.actors:
-                            logger.debug(f"🎭 获取到 {len(mediainfo.actors)} 个演员")
-                        elif hasattr(mediainfo, 'douban_info') and mediainfo.douban_info:
-                            self._extract_actors_from_douban(mediainfo)
-                        
-                        return mediainfo, None, title
-                    else:
-                        logger.debug(f"⚠️ 标题不匹配: '{recognized_title}' ≠ '{clean_title}'")
-                else:
-                    logger.debug(f"🔍 MP识别无结果: {clean_title}")
-            except Exception as e:
-                logger.debug(f"❌ MP识别异常: {e}")
-        
-        # ========== 3. PT 站搜索（根据开关） ==========
-        if self._enable_pt_search:
-            logger.debug(f"🔍 开始 PT 站搜索: {clean_title}")
-            pt_tv_info = self._search_pt_site(clean_title)
-            if pt_tv_info and pt_tv_info.get("title"):
-                logger.info(f"✅ PT站搜索成功: {pt_tv_info['title']} ({pt_tv_info.get('source', 'PT站')})")
-                return None, pt_tv_info, pt_tv_info['title']
-            else:
-                logger.debug(f"🔍 PT站搜索无结果: {clean_title}")
-        
-        # ========== 4. 使用文件夹名 ==========
-        logger.info(f"📁 使用文件夹名: {clean_title}")
-        return None, None, clean_title
-    
-    def _fix_douban_poster_url(self, url: str) -> str:
-        """修复豆瓣海报URL"""
-        if 'm_ratio_poster' in url:
-            return url.replace('m_ratio_poster', 'm')
-        return url
-    
-    def _extract_actors_from_douban(self, mediainfo: MediaInfo):
-        """从豆瓣信息提取演员"""
-        if hasattr(mediainfo, 'douban_info') and mediainfo.douban_info:
-            douban_info = mediainfo.douban_info
-            if isinstance(douban_info, dict) and 'actors' in douban_info:
-                actors = []
-                for actor in douban_info['actors']:
-                    if isinstance(actor, dict) and 'name' in actor:
-                        actors.append(actor['name'])
-                    elif isinstance(actor, str):
-                        actors.append(actor)
-                if actors:
-                    mediainfo.actors = actors
-    
-    def _organize_video(self, source_path: Path, target_folder: Path, rename_conf: str, source_folder: Path) -> Optional[Path]:
-        """整理视频文件"""
-        episode = self._extract_episode(source_path.name)
-        
-        season_num = self._extract_season_from_nfo(source_folder)
-        if season_num is None:
-            season_num = self._extract_season(source_path.name)
-        
-        if rename_conf == "smart":
-            if episode is None and season_num is not None:
-                episode = 1
-                logger.debug(f"📺 无集数信息，使用默认第1集")
-        
-        if rename_conf == "smart" and episode is not None and season_num is not None:
-            season_str = f"S{season_num:02d}"
-            episode_str = f"E{episode:02d}"
-            new_name = f"{season_str}{episode_str}{source_path.suffix}"
-            target_path = target_folder / new_name
-            logger.debug(f"✏️ 重命名: {source_path.name} -> {new_name}")
-        else:
-            target_path = target_folder / source_path.name
-            if episode is None:
-                logger.debug(f"📄 保持原名: {source_path.name}")
-        
-        target_path = self._resolve_conflict(target_path, source_path)
-        if not target_path:
-            return None
-        
-        if self._transfer_file(source_path, target_path):
-            logger.info(f"✅ {source_path.name} -> {target_path.name}")
-            return target_path
-        
-        logger.error(f"❌ 转移失败: {source_path.name}")
-        return None
-    
-    def _resolve_conflict(self, target_path: Path, source_path: Path) -> Optional[Path]:
-        """解决文件冲突"""
-        if not target_path.exists():
-            return target_path
-        
-        try:
-            if target_path.samefile(source_path):
-                logger.debug(f"⏭️ 文件已处理过，跳过: {target_path.name}")
-                return target_path
-            
-            if target_path.stat().st_size == source_path.stat().st_size:
-                logger.warning(f"⚠️ 同名同大小文件已存在，跳过: {target_path.name}")
-                return None
-            
-            tmp_path = target_path.with_suffix(target_path.suffix + '.tmp')
-            if self._transfer_file(source_path, tmp_path):
-                target_path.unlink(missing_ok=True)
-                tmp_path.rename(target_path)
-                logger.debug(f"🔄 文件冲突，替换: {source_path.name} -> {target_path.name}")
-                return target_path
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ 检查文件冲突失败: {e}")
-            return None
-    
-    def _transfer_file(self, source: Path, target: Path, is_metadata: bool = False) -> bool:
-        """执行文件转移"""
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            
-            if target.exists():
-                return True
-            
-            if is_metadata or target.suffix in ['.nfo', '.jpg', '.png']:
-                result = SystemUtils.copy(source, target)
-            else:
-                if self._transfer_type == TransferType.MOVE:
-                    result = SystemUtils.move(source, target)
-                elif self._transfer_type == TransferType.COPY:
-                    result = SystemUtils.copy(source, target)
-                elif self._transfer_type == TransferType.SOFTLINK:
-                    result = SystemUtils.softlink(source, target)
-                else:
-                    result = SystemUtils.link(source, target)
-            
-            if result:
-                action = "复制" if is_metadata else "转移"
-                logger.debug(f"{action}成功: {source.name} -> {target.name}")
-            else:
-                action = "复制" if is_metadata else "转移"
-                logger.error(f"{action}失败: {source} -> {target}")
-            
-            return bool(result)
-        except Exception as e:
-            logger.error(f"文件转移异常: {e}")
-            return False
-    
-    def _process_metadata(self, source_folder: Path, target_folder: Path, 
-                          mediainfo: Optional[MediaInfo], title: str, 
-                          cover_conf: str, pt_tv_info: Optional[Dict] = None):
-        """处理元数据"""
-        nfo_path = target_folder / "tvshow.nfo"
-        
-        if not nfo_path.exists():
-            source_nfo = source_folder / "tvshow.nfo"
-            if source_nfo.exists():
-                self._transfer_file(source_nfo, nfo_path, is_metadata=True)
-                logger.debug(f"📄 复制本地NFO: {nfo_path.name}")
-            else:
-                self._generate_nfo(target_folder, mediainfo, title, pt_tv_info)
-        
-        if nfo_path.exists():
-            self._sync_actors_to_tags(nfo_path)
-        
-        self._process_poster(source_folder, target_folder, mediainfo, cover_conf, pt_tv_info)
-    
-    def _generate_nfo(self, target_folder: Path, mediainfo: Optional[MediaInfo], 
-                    title: str, pt_tv_info: Optional[Dict]):
-        """生成 NFO 文件"""
-        if mediainfo and getattr(mediainfo, 'source', None) in ['douban', 'themoviedb']:
-            self._gen_tv_nfo_with_douban(target_folder, mediainfo)
-        elif pt_tv_info and pt_tv_info.get("title"):
-            self._gen_tv_nfo_with_pt(target_folder, pt_tv_info)
-            if pt_tv_info.get("actors"):
-                self._add_actors_to_nfo(target_folder / "tvshow.nfo", pt_tv_info["actors"])
-        else:
-            self._gen_tv_nfo_file(target_folder, title)
-    
-    def _process_poster(self, source_folder: Path, target_folder: Path, 
-                        mediainfo: Optional[MediaInfo], cover_conf: str, 
-                        pt_tv_info: Optional[Dict]):
-        """处理海报 - 根据 _image 开关决定是否裁剪"""
-        poster_path = target_folder / "poster.jpg"
-        
-        if poster_path.exists():
-            logger.debug(f"📷 海报已存在，跳过: {poster_path.name}")
-            if self._image and cover_conf and cover_conf != "None":
-                self._crop_poster(poster_path, cover_conf)
-            return
-        
-        source_poster = source_folder / "poster.jpg"
-        if source_poster.exists():
-            self._transfer_file(source_poster, poster_path, is_metadata=True)
-            logger.info(f"📷 复制本地海报: {poster_path.name}")
-            if self._image and cover_conf and cover_conf != "None":
-                self._crop_poster(poster_path, cover_conf)
-            return
-        
-        poster_url = None
-        if mediainfo and getattr(mediainfo, 'source', None) in ['douban', 'themoviedb']:
-            poster_url = getattr(mediainfo, 'poster_path', None)
-            logger.debug(f"📷 从 {mediainfo.source} 获取海报" + (f": {poster_url[:80]}..." if poster_url else " - 无URL"))
-        elif pt_tv_info and pt_tv_info.get("poster_url"):
-            poster_url = pt_tv_info.get("poster_url")
-            logger.debug(f"📷 从 PT站 获取海报: {poster_url[:80]}...")
-        
-        if poster_url:
-            if self._download_image(poster_url, poster_path):
-                logger.info(f"📷 海报下载成功: {poster_path.name}")
-                if self._image and cover_conf and cover_conf != "None":
-                    self._crop_poster(poster_path, cover_conf)
-    
     # ========== 辅助方法 ==========
-    
-    def _extract_title_from_folder(self, folder_name: str) -> str:
-        """从文件夹名提取剧名"""
-        if not folder_name:
-            return ""
-        
-        original_name = folder_name.strip()
-        
-        title = original_name
-        for pattern, repl in self._title_clean_patterns:
-            title = re.sub(pattern, repl, title)
-        
-        title = title.strip()
-        return title if title else original_name
-    
-    def _extract_episode(self, filename: str) -> Optional[int]:
-        """提取集数 - 优先匹配明确格式"""
-        match = re.search(r'[eE][pP]?(\d{1,3})', filename)
-        if match:
-            episode = int(match.group(1))
-            logger.debug(f"匹配到 E01 格式，集数: {episode}")
-            return episode
-        
-        match = re.search(r'第(\d+)集', filename)
-        if match:
-            episode = int(match.group(1))
-            logger.debug(f"匹配到 第X集 格式，集数: {episode}")
-            return episode
-        
-        for part in filename.split('.'):
-            if part.isdigit():
-                num = int(part)
-                if 1 <= num <= 999:
-                    logger.debug(f"按点分隔提取纯数字: {num}")
-                    return num
-        
-        logger.debug(f"未提取到集数")
-        return None
-    
-    def _extract_season(self, filename: str) -> int:
-        """提取季数，默认返回1"""
-        match = re.search(r'[sS](\d+)[eE](\d+)', filename)
-        if match:
-            return int(match.group(1))
-        
-        for part in filename.split('.'):
-            match = re.match(r'^[sS](\d+)$', part)
-            if match:
-                return int(match.group(1))
-        
-        return 1
-    
-    def _extract_season_from_nfo(self, folder_path: Path) -> Optional[int]:
-        """从NFO文件提取季数"""
+
+    @log_method(log_args=True)
+    def _read_local_nfo(self, folder_path: Path) -> Optional[MediaInfo]:
         nfo_path = folder_path / "tvshow.nfo"
-        if not nfo_path.exists():
+        if not nfo_path.is_file():
+            logger.debug(f"[本地NFO] NFO文件不存在: {nfo_path}")
             return None
-        
+
+        logger.debug(f"[本地NFO] 读取NFO: {nfo_path}")
+        content = self._read_file(nfo_path)
+        if not content:
+            logger.warning(f"[本地NFO] 文件内容为空: {nfo_path}")
+            return None
+
         try:
-            tree = ET.parse(nfo_path)
-            root = tree.getroot()
-            season_elem = root.find("season")
-            if season_elem is not None and season_elem.text:
-                season = int(season_elem.text.strip())
-                if season > 0:
-                    return season
-        except Exception:
-            pass
-        return None
-    
-    def _get_info_from_local_nfo(self, folder_path: Path) -> Optional[Dict]:
-        """从本地 tvshow.nfo 读取剧集信息"""
-        nfo_path = folder_path / "tvshow.nfo"
-        if not nfo_path.exists():
-            return None        
-        try:
-            tree = ET.parse(nfo_path)
-            root = tree.getroot()
-            
-            info = {
-                "title": None,
-                "original_title": None,
-                "year": None,
-                "overview": None,
-                "country": None,
-                "genre": None,
-                "rating": None,
-                "douban_id": None,
-                "poster_path": None,
-                "season": None
-            }
-            
-            title_elem = root.find("title")
-            if title_elem is not None and title_elem.text:
-                info["title"] = title_elem.text.strip()
-            
-            original_elem = root.find("originaltitle")
-            if original_elem is not None and original_elem.text:
-                info["original_title"] = original_elem.text.strip()
-            
-            year_elem = root.find("year")
-            if year_elem is not None and year_elem.text:
-                info["year"] = year_elem.text.strip()
-            
-            plot_elem = root.find("plot")
-            if plot_elem is not None and plot_elem.text:
-                info["overview"] = plot_elem.text.strip()
-            
-            country_elem = root.find("country")
-            if country_elem is not None and country_elem.text:
-                info["country"] = country_elem.text.strip()
-            
-            genre_elems = root.findall("genre")
-            if genre_elems:
-                info["genre"] = ", ".join([g.text.strip() for g in genre_elems if g.text])
-            
-            rating_elem = root.find("rating")
-            if rating_elem is not None and rating_elem.text:
+            root = ET.fromstring(content)
+            mediainfo = MediaInfo()
+            mediainfo.title = root.findtext("title", "").strip()
+            mediainfo.year = root.findtext("year")
+            mediainfo.overview = root.findtext("plot") or root.findtext("outline")
+            mediainfo.genres = [g.text.strip() for g in root.findall("genre") if g.text]
+            mediainfo.production_countries = [c.text.strip() for c in root.findall("country") if c.text]
+
+            rating = root.findtext("rating")
+            if rating:
                 try:
-                    info["rating"] = float(rating_elem.text.strip())
-                except ValueError:
+                    mediainfo.vote_average = float(rating)
+                except (ValueError, TypeError):
                     pass
-            
+
             for uid in root.findall("uniqueid"):
                 if uid.get("type") == "douban" and uid.text:
-                    info["douban_id"] = uid.text.strip()
-                    break
-            
-            season_elem = root.find("season")
-            if season_elem is not None and season_elem.text:
-                info["season"] = season_elem.text.strip()
-            
-            poster_path = folder_path / "poster.jpg"
-            if poster_path.exists():
-                info["poster_path"] = str(poster_path)
-            
-            if info["title"]:
-                logger.info(f"从本地 NFO 读取到剧集信息: {info['title']}")
-                return info
-            
+                    mediainfo.douban_id = uid.text.strip()
+                elif uid.get("type") == "tmdb" and uid.text:
+                    mediainfo.tmdb_id = uid.text.strip()
+
+            mediainfo.source = "local"
+            logger.debug(f"[本地NFO] 解析成功: title={mediainfo.title}, year={mediainfo.year}")
+            return mediainfo
         except Exception as e:
-            logger.error(f"解析本地 NFO 失败: {e}")
-        
-        return None
-    
-    def _create_mediainfo_from_local(self, info: Dict, title: str) -> MediaInfo:
-        """从本地 NFO 信息创建 MediaInfo 对象"""
-        mediainfo = MediaInfo()
-        mediainfo.title = info.get("title") or title
-        mediainfo.original_title = info.get("original_title") or info.get("title") or title
-        mediainfo.year = info.get("year")
-        mediainfo.overview = info.get("overview")
-        mediainfo.production_countries = [info.get("country")] if info.get("country") else []
-        mediainfo.genres = [info.get("genre")] if info.get("genre") else []
-        mediainfo.vote_average = info.get("rating")
-        mediainfo.douban_id = info.get("douban_id")
-        mediainfo.poster_path = info.get("poster_path")
-        mediainfo.source = "local"
-        return mediainfo
-    
-    def _search_pt_site(self, title: str) -> Optional[Dict]:
-        """搜索PT站点获取剧集信息"""
-        for site_config in self._sites_config:
-            try:
-                site = SiteOper().get_by_domain(site_config["domain"])
-                if not site:
-                    logger.debug(f"⚠️ 站点 {site_config['domain']} 未配置，跳过")
-                    continue
-                
-                req_url = site_config["search_url"].format(title=title)
-                logger.debug(f"🔍 搜索 {site_config['name']}: {title}")
-                
-                page_source = self._get_page_source(req_url, site)
-                if not page_source:
-                    logger.debug(f"⚠️ 请求失败: {site_config['name']}")
-                    continue
-                
-                indexer = SitesHelper().get_indexer(site_config["domain"])
-                if not indexer:
-                    continue
-                
-                spider = SiteSpider(indexer=indexer, page=1)
-                torrents = spider.parse(page_source)
-                if not torrents:
-                    logger.debug(f"🔍 未找到种子: {site_config['name']}")
-                    continue
-                
-                detail_url = torrents[0].get("page_url")
-                if not detail_url:
-                    continue
-                    
-                detail_source = self._get_page_source(detail_url, site)
-                if not detail_source:
-                    continue
-                
-                html = etree.HTML(detail_source)
-                if html is None:
-                    continue
-                
-                image_elem = html.xpath(site_config["img_xpath"])
-                poster_url = str(image_elem[0]) if image_elem else None
-                if poster_url:
-                    logger.debug(f"📷 获取到封面: {poster_url[:80]}...")
-                
-                tv_info = self._parse_pt_nfo(html, title, site_config["name"])
-                if poster_url:
-                    tv_info["poster_url"] = poster_url
-                
-                if tv_info.get("title"):
-                    logger.debug(f"✅ 解析成功: {tv_info['title']}")
-                    return tv_info
-                    
-            except Exception as e:
-                logger.debug(f"❌ 搜索站点 {site_config.get('name', 'unknown')} 异常: {e}")
-                continue
-        
-        return None
-    
-    def _parse_pt_nfo(self, html, title: str, source: str) -> Dict:
-        """解析 PT 站 NFO 信息"""
-        tv_info = {
-            "source": source,
-            "title": title,
-            "year": "",
-            "country": "",
-            "genre": "",
-            "overview": "",
-            "actors": []
-        }
-        
-        desc_elem = html.xpath("//*[@id='kdescr']")
-        if not desc_elem:
-            return tv_info
-        
-        text = desc_elem[0].xpath("string()").strip()
-        if not text:
-            return tv_info
-        
-        patterns = [
-            (r'[◎]?片\s*名\s*[:：]?\s*([^\n]+)', 'title'),
-            (r'[◎]?年\s*代\s*[:：]?\s*(\d{4})', 'year'),
-            (r'[◎]?产\s*地\s*[:：]?\s*([^\n]+)', 'country'),
-            (r'[◎]?类\s*别\s*[:：]?\s*([^\n]+)', 'genre'),
-            (r'[◎]?简\s*介\s*[:：]?\s*([^\n]+)', 'overview'),
-        ]
-        
-        for pattern, field in patterns:
-            match = re.search(pattern, text)
-            if match:
-                tv_info[field] = match.group(1).strip()
-        
-        actors_match = re.search(r'[◎]?主\s*演\s*[:：]?\s*([^\n]+)', text)
-        if actors_match:
-            actors_str = actors_match.group(1).strip()
-            tv_info["actors"] = [a.strip() for a in re.split(r'[,，、/;；]', actors_str) if a.strip()]
-        
-        if not tv_info.get("title"):
-            tv_info["title"] = title
-        
-        return tv_info
-    
-    def _get_page_source(self, url: str, site) -> Optional[str]:
-        """获取页面源码"""
-        try:
-            ret = RequestUtils(
-                cookies=site.cookie,
-                timeout=30,
-            ).get_res(url, allow_redirects=True)
-            
-            if ret is None:
-                return None
-            
-            raw_data = ret.content
-            if not raw_data:
-                return ret.text
-            
-            result = chardet.detect(raw_data)
-            encoding = result['encoding'] or 'utf-8'
-            return raw_data.decode(encoding, errors='ignore')
-            
-        except Exception as e:
-            logger.error(f"获取页面失败 {url}: {e}")
+            logger.error(f"[本地NFO] 解析失败: {e}", exc_info=True)
             return None
-    
-    def _crop_poster(self, poster_path: Path, cover_conf: str):
-        """裁剪海报"""
-        if not poster_path.exists():
-            return
+
+    @log_method(log_args=True, log_result=False)
+    def _organize_video(self, source_path: Path, target_folder: Path, rename_conf: str, source_folder: Path) -> Optional[Path]:
+        episode = self._extract_episode(source_path.name)
+        season_num = self._extract_season(source_folder, source_path.name)
         
-        try:
-            image = Image.open(poster_path)
-            
-            if cover_conf and cover_conf != "None":
-                try:
-                    parts = cover_conf.split(":")
-                    if len(parts) == 2:
-                        target_ratio = int(parts[0]) / int(parts[1])
-                    else:
-                        target_ratio = 2 / 3
-                except (ValueError, ZeroDivisionError):
-                    target_ratio = 2 / 3
+        logger.debug(f"[整理] 文件名: {source_path.name}, 集数: {episode}, 季数: {season_num}")
+
+        if rename_conf == "smart" and episode is not None and season_num is not None:
+            new_name = f"S{season_num:02d}E{max(episode, 1):02d}{source_path.suffix}"
+            logger.info(f"[整理] 智能重命名: {source_path.name} -> {new_name}")
+        else:
+            new_name = source_path.name
+            if rename_conf == "off":
+                logger.debug(f"[整理] 重命名已禁用，保留原文件名: {new_name}")
             else:
-                target_ratio = 2 / 3
-            
-            original_ratio = image.width / image.height
-            
-            if original_ratio > target_ratio:
-                new_width = int(image.height * target_ratio)
-                left = (image.width - new_width) // 2
-                right = left + new_width
-                cropped = image.crop((left, 0, right, image.height))
-            else:
-                new_height = int(image.width / target_ratio)
-                top = (image.height - new_height) // 2
-                bottom = top + new_height
-                cropped = image.crop((0, top, image.width, bottom))
-            
-            cropped.save(poster_path)
-            logger.info(f"📷 海报已裁剪: {poster_path.name}")
-            
-        except Exception as e:
-            logger.error(f"裁剪海报失败: {e}")
-    
-    def _download_image(self, url: str, file_path: Path) -> bool:
-        """下载图片"""
-        try:
-            if 'doubanio.com' in url:
-                return self._download_douban_image(url, file_path)
-            
-            r = RequestUtils().get_res(url=url, raise_exception=True)
-            if r and r.status_code == 200:
-                file_path.write_bytes(r.content)
-                return True
-            else:
-                logger.warning(f"图片下载失败: {getattr(r, 'status_code', 'N/A')}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"图片下载异常: {e}")
-            return False
-    
-    def _download_douban_image(self, url: str, file_path: Path) -> bool:
-        """下载豆瓣图片"""
-        match = re.search(r'/public/(p\d+\.webp)', url)
-        if not match:
-            return False
-        photo_id = match.group(1)
-        
-        for size in ['l', 'm', 's']:
-            try_url = f"https://img1.doubanio.com/view/photo/{size}/public/{photo_id}"
+                logger.debug(f"[整理] 使用原文件名: {new_name}")
+
+        target_path = target_folder / new_name
+
+        # 检查目标文件是否已存在
+        if target_path.exists():
+            # 如果是同一个文件，跳过
             try:
-                r = RequestUtils().get_res(url=try_url, raise_exception=True)
-                if r and r.status_code == 200:
-                    file_path.write_bytes(r.content)
-                    return True
-            except Exception:
-                continue
-        
-        logger.warning(f"豆瓣图片所有尺寸均下载失败: {url}")
-        return False
-    
-    def _gen_tv_nfo_file(self, dir_path: Path, title: str):
-        """生成基础NFO"""
-        doc = minidom.Document()
-        root = DomUtils.add_node(doc, doc, "tvshow")
-        DomUtils.add_node(doc, root, "title", title)
-        DomUtils.add_node(doc, root, "originaltitle", title)
-        DomUtils.add_node(doc, root, "season", "-1")
-        DomUtils.add_node(doc, root, "episode", "-1")
-        self._save_nfo(doc, dir_path / "tvshow.nfo")
-    
-    def _gen_tv_nfo_with_douban(self, dir_path: Path, mediainfo: MediaInfo):
-        """使用豆瓣/TMDB信息生成NFO"""
-        logger.info(f"正在使用 {mediainfo.source} 信息生成NFO：{dir_path.name}")
-        doc = minidom.Document()
-        root = DomUtils.add_node(doc, doc, "tvshow")
-        
-        DomUtils.add_node(doc, root, "title", mediainfo.title or "")
-        DomUtils.add_node(doc, root, "originaltitle", mediainfo.original_title or mediainfo.title or "")
-        
-        if mediainfo.year:
-            DomUtils.add_node(doc, root, "year", str(mediainfo.year))
-        if mediainfo.overview:
-            DomUtils.add_node(doc, root, "plot", mediainfo.overview)
-        
-        if mediainfo.production_countries:
-            for country in mediainfo.production_countries:
-                if isinstance(country, dict):
-                    DomUtils.add_node(doc, root, "country", country.get("name", ""))
-                else:
-                    DomUtils.add_node(doc, root, "country", str(country))
-        
-        if mediainfo.genres:
-            for genre in mediainfo.genres:
-                if isinstance(genre, dict):
-                    DomUtils.add_node(doc, root, "genre", genre.get("name", ""))
-                else:
-                    DomUtils.add_node(doc, root, "genre", str(genre))
-        
-        if mediainfo.vote_average:
-            DomUtils.add_node(doc, root, "rating", str(mediainfo.vote_average))
-        
-        has_default = False
-        
-        if hasattr(mediainfo, 'tmdb_id') and mediainfo.tmdb_id:
-            node = DomUtils.add_node(doc, root, "uniqueid", str(mediainfo.tmdb_id))
-            node.setAttribute("type", "tmdb")
-            if not has_default:
-                node.setAttribute("default", "true")
-                has_default = True
-        
-        if hasattr(mediainfo, 'douban_id') and mediainfo.douban_id:
-            node = DomUtils.add_node(doc, root, "uniqueid", mediainfo.douban_id)
-            node.setAttribute("type", "douban")
-            if not has_default:
-                node.setAttribute("default", "true")
-                has_default = True
-        
-        if hasattr(mediainfo, 'actors') and mediainfo.actors:
-            for actor in mediainfo.actors:
-                if isinstance(actor, dict):
-                    actor_name = actor.get("name", "")
-                else:
-                    actor_name = str(actor)
-                if actor_name:
-                    DomUtils.add_node(doc, root, "actor", actor_name)
-        
-        DomUtils.add_node(doc, root, "season", "1")
-        DomUtils.add_node(doc, root, "episode", "-1")
-        
-        self._save_nfo(doc, dir_path / "tvshow.nfo")
-    
-    def _gen_tv_nfo_with_pt(self, dir_path: Path, tv_info: Dict):
-        """使用PT站信息生成NFO"""
-        doc = minidom.Document()
-        root = DomUtils.add_node(doc, doc, "tvshow")
-        
-        title = tv_info.get("title", dir_path.name)
-        DomUtils.add_node(doc, root, "title", title)
-        DomUtils.add_node(doc, root, "originaltitle", title)
-        
-        if tv_info.get("year"):
-            DomUtils.add_node(doc, root, "year", tv_info["year"])
-        if tv_info.get("overview"):
-            DomUtils.add_node(doc, root, "plot", tv_info["overview"])
-        if tv_info.get("country"):
-            DomUtils.add_node(doc, root, "country", tv_info["country"])
-        if tv_info.get("genre"):
-            DomUtils.add_node(doc, root, "genre", tv_info["genre"])
-        if tv_info.get("source"):
-            DomUtils.add_node(doc, root, "source", tv_info["source"])
-        
-        DomUtils.add_node(doc, root, "season", "1")
-        DomUtils.add_node(doc, root, "episode", "-1")
-        
-        self._save_nfo(doc, dir_path / "tvshow.nfo")
-    
-    def _save_nfo(self, doc, file_path: Path):
-        """保存NFO"""
-        xml_str = doc.toprettyxml(indent="  ", encoding="utf-8")
-        file_path.write_bytes(xml_str)
-        logger.info(f"NFO文件已保存: {file_path.name}")
-    
-    def _add_actors_to_nfo(self, nfo_path: Path, actors: List[str]):
-        """添加演员到NFO"""
-        if not nfo_path.exists() or not actors:
-            return
-        
+                if target_path.samefile(source_path):
+                    logger.debug(f"[整理] 目标文件与源文件相同，跳过转移")
+                    return target_path
+                # 如果文件大小相同，可能是重复处理，跳过
+                if target_path.stat().st_size == source_path.stat().st_size:
+                    logger.debug(f"[整理] 目标文件已存在且大小相同，跳过转移")
+                    return target_path
+            except OSError as e:
+                logger.debug(f"[整理] 文件比较异常: {e}")
+            
+        # 如果目标文件已存在，直接覆盖
+        if target_path.exists():
+            try:
+                # 如果是同一个文件，跳过转移
+                if target_path.samefile(source_path):
+                    logger.debug(f"[整理] 目标文件与源文件相同，跳过转移")
+                    return target_path
+                # 否则删除已存在的文件
+                logger.warning(f"[整理] 目标文件已存在，将覆盖: {target_path}")
+                target_path.unlink()
+            except OSError as e:
+                logger.debug(f"[整理] 文件检查异常: {e}")
+
+        return self._transfer_file(source_path, target_path)
+
+    @log_method(log_args=True, log_result=False)
+    def _transfer_file(self, source: Path, target: Path) -> Optional[Path]:
+        logger.info(f"[转移] {self._transfer_type}: {source} -> {target}")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"[转移] 目标目录已创建: {target.parent}")
+
+            if self._transfer_type == "move":
+                ok = SystemUtils.move(source, target)
+            elif self._transfer_type == "copy":
+                ok = SystemUtils.copy(source, target)
+            elif self._transfer_type == "softlink":
+                ok = SystemUtils.softlink(source, target)
+            else:
+                ok = SystemUtils.link(source, target)
+
+            if ok:
+                logger.info(f"[转移] ✅ {self._transfer_type} 成功: {target.name}")
+                return target
+            else:
+                logger.error(f"[转移] ❌ {self._transfer_type} 失败")
+                return None
+        except Exception as e:
+            logger.error(f"[转移] 异常: {e}", exc_info=True)
+            return None
+
+    @log_method(log_args=True)
+    def _write_nfo(self, nfo_path: Path, data: dict):
+        """写入新NFO文件"""
+        logger.info(f"[NFO] 写入NFO文件: {nfo_path}")
+        try:
+            nfo_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            doc = minidom.Document()
+            root = doc.createElement("tvshow")
+            doc.appendChild(root)
+            
+            self._add_text_node(doc, root, "title", data.get("title", ""))
+            self._add_text_node(doc, root, "originaltitle", data.get("originaltitle", data.get("title", "")))
+            
+            if data.get("year"):
+                self._add_text_node(doc, root, "year", str(data["year"]))
+                logger.debug(f"[NFO] 添加年份: {data['year']}")
+            if data.get("plot"):
+                self._add_text_node(doc, root, "plot", data["plot"])
+                logger.debug(f"[NFO] 添加简介 (长度: {len(data['plot'])})")
+            
+            country = data.get("country", "")
+            if isinstance(country, dict):
+                country = country.get("name", "")
+            if country and not isinstance(country, dict):
+                self._add_text_node(doc, root, "country", country)
+                logger.debug(f"[NFO] 添加国家: {country}")
+            
+            genres = data.get("genres", [])
+            if genres:
+                for genre in genres:
+                    if genre and not isinstance(genre, dict):
+                        self._add_text_node(doc, root, "genre", genre)
+                        logger.debug(f"[NFO] 添加类型: {genre}")
+            
+            
+            # 添加演员
+            actor_names = []
+            actor_count = 0
+            for actor in data.get("actors", []):
+                name = actor if isinstance(actor, str) else actor.get("name", "")
+                if name:
+                    actor_names.append(name)
+                    existing = None
+                    for existing_actor in root.getElementsByTagName("actor"):
+                        name_nodes = existing_actor.getElementsByTagName("name")
+                        if name_nodes:
+                            name_node = name_nodes[0]
+                            if name_node.firstChild and name_node.firstChild.nodeValue == name:
+                                existing = existing_actor
+                                break
+                    if not existing:
+                        actor_elem = doc.createElement("actor")
+                        self._add_text_node(doc, actor_elem, "name", name)
+                        root.appendChild(actor_elem)
+                        actor_count += 1
+
+            for actor_name in actor_names:
+                self._add_text_node(doc, root, "tag", actor_name)
+                logger.debug(f"[NFO] 添加 tag 标签: {actor_name}")
+            
+            if actor_count > 0:
+                logger.debug(f"[NFO] 添加演员: {actor_count}人")
+            
+            # 添加唯一ID
+            if data.get("tmdb_id"):
+                node = doc.createElement("uniqueid")
+                node.setAttribute("type", "tmdb")
+                node.appendChild(doc.createTextNode(str(data["tmdb_id"])))
+                root.appendChild(node)
+                logger.debug(f"[NFO] 添加TMDB ID: {data['tmdb_id']}")
+            if data.get("douban_id"):
+                node = doc.createElement("uniqueid")
+                node.setAttribute("type", "douban")
+                node.appendChild(doc.createTextNode(str(data["douban_id"])))
+                root.appendChild(node)
+                logger.debug(f"[NFO] 添加豆瓣ID: {data['douban_id']}")
+            if data.get("source"):
+                self._add_text_node(doc, root, "source", data["source"])
+                logger.debug(f"[NFO] 添加来源: {data['source']}")
+            
+            xml_str = doc.toprettyxml(indent="  ", encoding="utf-8")
+            nfo_path.write_bytes(xml_str)
+            logger.info(f"[NFO] ✅ NFO文件写入成功: {nfo_path.name}")
+            
+        except Exception as e:
+            logger.error(f"[NFO] ❌ 写入失败: {e}", exc_info=True)
+
+    def _add_text_node(self, doc: minidom.Document, parent: minidom.Element, tag: str, value: str):
+        """添加文本节点"""
+        if value:
+            node = doc.createElement(tag)
+            node.appendChild(doc.createTextNode(str(value)))
+            parent.appendChild(node)
+
+    @log_method(log_args=True)
+    def _merge_nfo(self, nfo_path: Path, new_data: dict) -> bool:
+        """合并NFO文件（只补充不存在的字段）"""
+        logger.info(f"[NFO合并] 合并NFO: {nfo_path}")
         try:
             tree = ET.parse(nfo_path)
             root = tree.getroot()
             
-            existing_actors = set()
-            for actor_elem in root.findall("actor"):
-                name_elem = actor_elem.find("name")
-                if name_elem is not None and name_elem.text:
-                    existing_actors.add(name_elem.text.strip())
+            if root.findtext("user_protected") == "true":
+                logger.debug(f"[NFO合并] NFO受用户保护，跳过合并")
+                return False
             
-            added = 0
-            for actor in actors:
-                if actor and actor not in existing_actors:
-                    actor_elem = ET.SubElement(root, "actor")
-                    name_elem = ET.SubElement(actor_elem, "name")
-                    name_elem.text = actor
-                    added += 1
+            updated = False
             
-            if added:
-                tree.write(nfo_path, encoding="utf-8", xml_declaration=True)
-                logger.debug(f"已将 {added} 个演员添加到 NFO")
+            field_map = [
+                ('title', 'title'), ('originaltitle', 'originaltitle'),
+                ('year', 'year'), ('plot', 'plot'),
+                ('country', 'country'), ('genre', 'genre'),
+                ('source', 'source')
+            ]
+            
+            for tag, key in field_map:
+                if root.find(tag) is None and new_data.get(key):
+                    elem = ET.SubElement(root, tag)
+                    elem.text = str(new_data[key])
+                    updated = True
+                    logger.debug(f"[NFO合并] 补充字段: {tag}={new_data[key]}")
+            
+            # 处理演员和tag
+            if new_data.get('actors'):
+                existing_actors = set()
+                existing_tags = set()  # 新增：收集现有tag
                 
-        except Exception as e:
-            logger.error(f"添加演员失败: {e}")
-    
-    def _sync_actors_to_tags(self, nfo_path: Path):
-        """同步演员到tag"""
-        if not nfo_path.exists():
-            return
-        
-        try:
-            tree = ET.parse(nfo_path)
-            root = tree.getroot()
-            
-            actors = []
-            for actor_elem in root.findall("actor"):
-                name_elem = actor_elem.find("name")
-                if name_elem is not None and name_elem.text:
-                    actors.append(name_elem.text.strip())
-            
-            if not actors:
-                return
-            
-            existing_tags = set()
-            for tag in root.findall("tag"):
-                if tag.text:
-                    existing_tags.add(tag.text.strip())
-            
-            added = 0
-            for actor in actors:
-                if actor not in existing_tags:
-                    tag = ET.SubElement(root, "tag")
-                    tag.text = actor
-                    added += 1
-            
-            if added:
-                tree.write(nfo_path, encoding="utf-8", xml_declaration=True)
-                logger.debug(f"已将 {added} 个演员同步到 tag")
+                # 收集现有演员
+                for actor_elem in root.findall('actor'):
+                    name_elem = actor_elem.find('name')
+                    if name_elem is not None and name_elem.text:
+                        existing_actors.add(name_elem.text.strip())
                 
-        except Exception as e:
-            logger.error(f"同步演员到 tag 失败: {e}")
-    
-    def _crop_all_posters(self):
-        """批量裁剪所有海报 - 只有开启裁剪开关时才执行"""
-        if not self._image:
-            return
-        
-        if not self._dirconf:
-            return
-        
-        logger.info("开始批量裁剪封面...")
-        for source_dir, cover_conf in self._coverconf.items():
-            target_dir = self._dirconf.get(source_dir)
-            if not target_dir:
-                continue
-            
-            target_path = Path(target_dir)
-            if not target_path.exists():
-                continue
-            
-            for poster_path in target_path.rglob("poster.jpg"):
-                try:
-                    image = Image.open(poster_path)
-                    current_ratio = image.width / image.height
-                    
-                    if cover_conf and cover_conf != "None":
-                        parts = cover_conf.split(":")
-                        if len(parts) == 2:
-                            target_ratio = int(parts[0]) / int(parts[1])
-                        else:
-                            continue
-                    else:
+                # 新增：收集现有tag
+                for tag_elem in root.findall('tag'):
+                    if tag_elem.text:
+                        existing_tags.add(tag_elem.text.strip())
+                
+                added_actors = 0
+                added_tags = 0  # 新增：记录添加的tag数量
+                
+                for actor in new_data['actors']:
+                    name = actor if isinstance(actor, str) else actor.get("name", "")
+                    if not name:
                         continue
                     
-                    if abs(current_ratio - target_ratio) > 0.01:
-                        self._crop_poster(poster_path, cover_conf)
-                        
-                except Exception as e:
-                    logger.debug(f"裁剪失败 {poster_path}: {e}")
-        
-        logger.info("批量裁剪封面完成！")
-    
-    def _is_valid_folder(self, folder_path: str, source_dir: str) -> bool:
-        """检查是否为有效的剧集文件夹"""
-        try:
-            source_path = Path(source_dir).resolve()
-            folder_path_obj = Path(folder_path).resolve()
+                    # 补充演员节点
+                    if name not in existing_actors:
+                        actor_elem = ET.SubElement(root, 'actor')
+                        name_elem = ET.SubElement(actor_elem, 'name')
+                        name_elem.text = name
+                        added_actors += 1
+                        updated = True
+                    
+                    # 新增：补充tag节点（为每个演员单独创建tag）
+                    if name not in existing_tags:
+                        tag_elem = ET.SubElement(root, 'tag')
+                        tag_elem.text = name
+                        added_tags += 1
+                        updated = True
+                
+                if added_actors > 0:
+                    logger.debug(f"[NFO合并] 补充演员: {added_actors}人")
+                if added_tags > 0:  # 新增：记录tag补充日志
+                    logger.debug(f"[NFO合并] 补充 tag 标签: {added_tags}个")
+
+            if new_data.get('tmdb_id') and not root.find(".//uniqueid[@type='tmdb']"):
+                uid = ET.SubElement(root, 'uniqueid')
+                uid.set('type', 'tmdb')
+                uid.text = str(new_data['tmdb_id'])
+                updated = True
+                logger.debug(f"[NFO合并] 补充TMDB ID: {new_data['tmdb_id']}")
             
-            try:
-                relative = folder_path_obj.relative_to(source_path)
-            except ValueError:
-                return False
+            if new_data.get('douban_id') and not root.find(".//uniqueid[@type='douban']"):
+                uid = ET.SubElement(root, 'uniqueid')
+                uid.set('type', 'douban')
+                uid.text = new_data['douban_id']
+                updated = True
+                logger.debug(f"[NFO合并] 补充豆瓣ID: {new_data['douban_id']}")
             
-            parts = relative.parts
-            if len(parts) != 1:
-                return False
+            if updated:
+                tree.write(nfo_path, encoding='utf-8', xml_declaration=True)
+                logger.info(f"[NFO合并] ✅ 合并完成: {nfo_path.name}")
+            else:
+                logger.debug(f"[NFO合并] 无需更新: {nfo_path.name}")
             
-            folder_name = parts[0]
-            if folder_name.startswith('.'):
-                return False
-            if folder_name in SYSTEM_FOLDERS:
-                return False
+            return updated
             
-            return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"[NFO合并] ❌ 合并失败: {e}", exc_info=True)
             return False
-    
+
+    @log_method(log_args=True)
+    def _download_image(self, url: str, file_path: Path) -> bool:
+        """下载图片，豆瓣使用专用方法"""
+        if not url:
+            logger.debug(f"[下载] URL为空，跳过下载")
+            return False
+        
+        logger.debug(f"[下载] 下载图片: {url} -> {file_path}")
+        
+        # 豆瓣图片使用专用方法
+        if 'doubanio.com' in url or 'douban.com' in url:
+            logger.debug(f"[下载] 检测到豆瓣图片，使用专用下载器")
+            return self._download_douban_image(url, file_path)
+        
+        # 其他图片直接下载
+        try:
+            r = RequestUtils(timeout=30).get_res(url=url, raise_exception=True)
+            if r and r.status_code == 200:
+                file_path.write_bytes(r.content)
+                logger.info(f"[下载] ✅ 图片下载成功: {file_path.name} ({len(r.content)} bytes)")
+                return True
+            else:
+                logger.warning(f"[下载] 下载失败: HTTP {r.status_code if r else 'None'}")
+                return False
+        except Exception as e:
+            logger.error(f"[下载] 下载异常: {e}")
+            return False
+
+
+    def _download_douban_image(self, url: str, file_path: Path) -> bool:
+        """下载豆瓣图片，支持不同尺寸"""
+        try:
+            # 提取图片ID，支持多种格式
+            match = re.search(r'/public/(p\d+\.(?:webp|jpg|png))', url)
+            if not match:
+                logger.warning(f"[豆瓣下载] 无法提取图片ID: {url}")
+                return False
+            
+            photo_id = match.group(1)
+            logger.debug(f"[豆瓣下载] 提取图片ID: {photo_id}")
+            
+            # 尝试不同尺寸，优先大图
+            for size, size_name in [('l', '大图'), ('m', '中图'), ('s', '小图')]:
+                try_url = f"https://img1.doubanio.com/view/photo/{size}/public/{photo_id}"
+                logger.debug(f"[豆瓣下载] 尝试 {size_name}: {try_url}")
+                
+                try:
+                    r = RequestUtils(timeout=30).get_res(url=try_url, raise_exception=True)
+                    if r and r.status_code == 200:
+                        content = r.content
+                        if len(content) > 100:  # 确保不是错误页面
+                            file_path.write_bytes(content)
+                            logger.info(f"[豆瓣下载] ✅ 下载成功 ({size_name}): {file_path.name} ({len(content)} bytes)")
+                            return True
+                        else:
+                            logger.debug(f"[豆瓣下载] {size_name} 返回内容过小，可能是404")
+                except Exception as e:
+                    logger.debug(f"[豆瓣下载] {size_name} 异常: {e}")
+                    continue
+            
+            logger.warning(f"[豆瓣下载] ❌ 所有尺寸都下载失败: {url}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"[豆瓣下载] 下载异常: {e}", exc_info=True)
+            return False
+
+    @log_method(log_args=True)
+    def _extract_episode(self, filename: str) -> Optional[int]:
+        for pattern in EPISODE_PATTERNS:
+            match = pattern.search(filename)
+            if match:
+                episode = int(match.group(1))
+                logger.debug(f"[提取] 从文件名提取集数: {filename} -> {episode}")
+                return episode
+        for part in filename.split('.'):
+            if part.isdigit() and 1 <= int(part) <= 999:
+                episode = int(part)
+                logger.debug(f"[提取] 从文件名数字提取集数: {filename} -> {episode}")
+                return episode
+        logger.debug(f"[提取] 未提取到集数: {filename}")
+        return None
+
+    @log_method(log_args=True)
+    def _extract_season(self, source_folder: Path, filename: str) -> int:
+        nfo_path = source_folder / "tvshow.nfo"
+        if nfo_path.exists():
+            try:
+                tree = ET.parse(nfo_path)
+                season = tree.findtext("season")
+                if season:
+                    season_num = int(season.strip())
+                    logger.debug(f"[提取] 从NFO提取季数: {season_num}")
+                    return season_num
+            except Exception as e:
+                logger.debug(f"[提取] NFO解析失败: {e}")
+
+        match = re.search(r'[sS](\d+)', filename)
+        if match:
+            season_num = int(match.group(1))
+            logger.debug(f"[提取] 从文件名提取季数: {filename} -> {season_num}")
+            return season_num
+        
+        logger.debug(f"[提取] 使用默认季数: 1")
+        return 1
+
+    @log_method(log_args=True)
+    def _extract_title(self, folder_name: str) -> str:
+        original = folder_name.strip()
+        title = original
+        for pattern, repl in TITLE_CLEAN_PATTERNS:
+            title = pattern.sub(repl, title)
+        result = title.strip() or original
+        if result != original:
+            logger.debug(f"[提取] 清理标题: '{original}' -> '{result}'")
+        return result
+
+    def _safe_name(self, name: str) -> str:
+        safe = FILENAME_CLEAN.sub('', name).strip('. ')
+        if safe != name:
+            logger.debug(f"[安全名称] '{name}' -> '{safe}'")
+        return safe
+
+    def _is_valid_folder(self, folder_path: str, source_dir: str) -> bool:
+        try:
+            parts = Path(folder_path).resolve().relative_to(Path(source_dir).resolve()).parts
+            if len(parts) != 1:
+                logger.debug(f"[验证] 目录结构无效: {folder_path} (深度: {len(parts)})")
+                return False
+            if parts[0].startswith('.') or parts[0] in SYSTEM_FOLDERS:
+                logger.debug(f"[验证] 目录被排除: {parts[0]}")
+                return False
+            logger.debug(f"[验证] 目录有效: {folder_path}")
+            return True
+        except (ValueError, OSError) as e:
+            logger.debug(f"[验证] 目录验证异常: {folder_path}, {e}")
+            return False
+
     def _should_exclude(self, path: str) -> bool:
-        """检查路径是否应该被排除"""
         for folder in SYSTEM_FOLDERS:
             if f"/{folder}/" in path or f"\\{folder}\\" in path:
+                logger.debug(f"[排除] 系统文件夹匹配: {folder}")
                 return True
-        
-        if self._compiled_exclude_patterns:
-            for pattern in self._compiled_exclude_patterns:
-                if isinstance(pattern, re.Pattern):
-                    if pattern.search(path):
-                        return True
-                elif isinstance(pattern, str):
-                    if pattern in path:
-                        return True
+        for p in self._compiled_exclude_patterns:
+            if p.search(path):
+                logger.debug(f"[排除] 关键词匹配: {p.pattern}")
+                return True
         return False
-    
-    def _sanitize_filename(self, filename: str) -> str:
-        """清理非法字符"""
-        return re.sub(r'[\\/*?:"<>|]', '', filename).strip('. ')
-    
-    # ========== 记录和统计 ==========
-    
-    def _record_success(self, file_path: str, title: str, target_path: str):
-        """记录成功"""
-        with self._lock:
-            record = ProcessRecord(
-                file_path=file_path,
-                title=title,
-                target_path=target_path,
-                status=ProcessStatus.SUCCESS,
-                timestamp=datetime.datetime.now()
-            )
-            self._success_cache[file_path] = record
-            
-            while len(self._success_cache) > MAX_CACHE_SIZE:
-                self._success_cache.popitem(last=False)
-    
-    def _record_failure(self, file_path: str, error_msg: str):
-        """记录失败"""
-        with self._lock:
-            record = ProcessRecord(
-                file_path=file_path,
-                title="",
-                target_path="",
-                status=ProcessStatus.FAILED,
-                timestamp=datetime.datetime.now(),
-                error_msg=error_msg
-            )
-            self._failed_records.append(record)
-            
-            if len(self._failed_records) > MAX_CACHE_SIZE:
-                self._failed_records.pop(0)
-            
-            self._stats['total_processed'] += 1
-            self._stats['failed_count'] += 1
-    
-    def _add_to_notify(self, title: str, file_path: str):
-        """添加到通知队列"""
-        with self._lock:
-            data = self._medias.get(title, {})
-            files = data.get("files", [])
-            if file_path not in files:
-                files.append(file_path)
-            self._medias[title] = {"files": files, "time": datetime.datetime.now()}
-    
-    def _send_notifications(self):
-        """发送通知"""
-        if not self._notify:
+
+    def _normalize_path(self, path: str) -> str:
+        try:
+            return str(Path(path).resolve())
+        except Exception:
+            return path
+
+    def _is_processed(self, file_path: str) -> bool:
+        return self._normalize_path(file_path) in self._success_cache
+
+    # ========== 补充元数据 ==========
+
+    def _supplement_all_metadata(self):
+        """补充元数据"""
+        logger.info("[补充元数据] ========== 开始补充元数据 ==========")
+        if not self._dirconf:
+            logger.warning("[补充元数据] 无监控配置，跳过")
             return
-        
+
+        try:
+            total_processed = 0
+            for source_dir, target_dir in self._dirconf.items():
+                if not self._enabled:
+                    logger.warning("[补充元数据] 插件已禁用，停止")
+                    break
+
+                target_path = Path(target_dir)
+                if not target_path.exists():
+                    logger.warning(f"[补充元数据] 目标目录不存在: {target_dir}")
+                    continue
+
+                logger.info(f"[补充元数据] 处理目标目录: {target_dir}")
+                
+                for tv_folder in target_path.iterdir():
+                    if not tv_folder.is_dir():
+                        continue
+
+                    has_video = any(f.suffix.lower() in settings.RMT_MEDIAEXT for f in tv_folder.iterdir() if f.is_file())
+                    if not has_video:
+                        logger.debug(f"[补充元数据] 跳过无视频目录: {tv_folder.name}")
+                        continue
+
+                    title = tv_folder.name
+                    logger.info(f"[补充元数据] 处理剧集: {title}")
+                    
+                    video_path = None
+                    for ext in settings.RMT_MEDIAEXT:
+                        video_files = list(tv_folder.glob(f"*{ext}")) + list(tv_folder.glob(f"*{ext.upper()}"))
+                        if video_files:
+                            video_path = video_files[0]
+                            break
+                    
+                    merged_data = self.merge_search_results(title, source_dir, video_path)
+                    nfo_path = tv_folder / "tvshow.nfo"
+                    self._write_nfo(nfo_path, merged_data)
+
+                    poster_url = merged_data.get("poster_url", "")
+                    if poster_url:
+                        self._download_image(poster_url, tv_folder / "poster.jpg")
+                    
+                    total_processed += 1
+
+            logger.info(f"[补充元数据] ✅ 完成，处理 {total_processed} 个剧集")
+        except Exception as e:
+            logger.error(f"[补充元数据] ❌ 异常: {e}", exc_info=True)
+
+    # ========== 通知 ==========
+
+    def _add_notify(self, title: str, file_path: str):
+        with self._lock:
+            if title not in self._medias:
+                self._medias[title] = {"files": [], "time": datetime.datetime.now()}
+                logger.debug(f"[通知] 创建通知组: {title}")
+            if file_path not in self._medias[title]["files"]:
+                self._medias[title]["files"].append(file_path)
+                logger.debug(f"[通知] 添加文件到通知组: {title}, 当前 {len(self._medias[title]['files'])} 个文件")
+
+    def _send_notifications(self):
         with self._lock:
             if not self._medias:
                 return
-            
+
+            logger.debug(f"[通知] 检查待发送通知，共 {len(self._medias)} 个组")
+            now = datetime.datetime.now()
             for title, data in list(self._medias.items()):
-                if (datetime.datetime.now() - data["time"]).total_seconds() > self._interval:
+                if (now - data["time"]).total_seconds() > self._interval:
+                    logger.info(f"[通知] 发送通知: {title}, 文件数: {len(data['files'])}")
                     self.post_message(
                         mtype=NotificationType.Organize,
                         title=f"{title} 已入库",
-                        text=f"共 {len(data['files'])} 个文件\n转移方式: {self._transfer_type.value}"
+                        text=f"共 {len(data['files'])} 个文件\n转移方式: {self._transfer_type}"
                     )
                     del self._medias[title]
-    
-    def _update_config(self):
-        """更新配置"""
-        self.update_config({
-            "enabled": self._enabled,
-            "onlyonce": False,
-            "monitor_confs": self._monitor_confs,
-            "transfer_type": self._transfer_type.value,
-            "exclude_keywords": self._exclude_keywords,
-            "notify": self._notify,
-            "interval": self._interval,
-            "scan_interval": self._scan_interval,
-            "scan_enabled": self._scan_enabled,
-            "image": self._image,
-            "enable_local_nfo": self._enable_local_nfo,
-            "enable_mp_recognition": self._enable_mp_recognition,
-            "enable_pt_search": self._enable_pt_search
-        })
-    
-    def _clear_cache(self):
-        """清空缓存"""
+
+    # ========== 记录管理 ==========
+
+    def _record_success(self, file_path: str, title: str, target_path: str, source: str = None):
         with self._lock:
-            self._success_cache.clear()
-            self._series_cache.clear()
-            self._processing_files.clear()
-            self._failed_records.clear()
-            logger.info("缓存已清空")
-    
-    def _get_stats(self) -> Dict:
-        """获取统计信息"""
+            actual_source = source if source is not None else self._last_source
+            self._success_cache[file_path] = {
+                'file_path': file_path, 
+                'title': title, 
+                'target_path': target_path,
+                'timestamp': datetime.datetime.now().isoformat(), 
+                'source': actual_source
+            }
+            while len(self._success_cache) > MAX_CACHE_SIZE:
+                removed_key = next(iter(self._success_cache))
+                del self._success_cache[removed_key]
+                logger.debug(f"[记录] 清理旧成功记录: {removed_key}")
+            logger.debug(f"[记录] 记录成功处理: {file_path} -> {title} (来源: {actual_source})")
+
+    def _record_failure(self, file_path: str, error_msg: str):
         with self._lock:
-            stats = self._stats.copy()
-            stats['cache_size'] = len(self._success_cache)
-            stats['series_cache_size'] = len(self._series_cache)
-            stats['processing_count'] = len(self._processing_files)
-            stats['failed_count'] = len(self._failed_records)
-            return stats
-    
-    # ========== 命令处理 ==========
-    
-    def show_stats(self, args: List[str] = None) -> str:
-        """显示统计信息"""
-        stats = self._get_stats()
-        return f"""
-📊 短剧处理器统计
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-总处理: {stats['total_processed']}
-成功: {stats['success_count']}
-失败: {stats['failed_count']}
-缓存大小: {stats['cache_size']}
-系列缓存: {stats['series_cache_size']}
-处理中: {stats['processing_count']}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        """
-    
-    def clear_cache(self, args: List[str] = None) -> str:
-        """清空缓存"""
-        self._clear_cache()
-        return "✅ 缓存已清空"
-    
-    def force_scan(self, args: List[str] = None) -> str:
-        """强制扫描"""
-        self.scan_all_dirs()
-        return "✅ 扫描已启动"
-    
-    # ========== 事件处理 ==========
-    
-    def event_handler(self, event, source_dir: str, event_path: str):
-        """处理文件变化事件"""
-        if self._should_exclude(event_path):
-            return
-        
-        if Path(event_path).suffix.lower() not in settings.RMT_MEDIAEXT:
-            return
-        
-        logger.info(f"📹 检测到文件: {Path(event_path).name}")
-        self._process_file_with_retry(event_path, source_dir)
-    
-    # ========== 插件接口 ==========
-    
-    def get_state(self) -> bool:
-        return self._enabled
-    
+            self._failed_records.append({
+                'file_path': file_path, 'error_msg': error_msg,
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+            if len(self._failed_records) > MAX_CACHE_SIZE:
+                removed = self._failed_records.pop(0)
+                logger.debug(f"[记录] 清理旧失败记录: {removed['file_path']}")
+            self._stats['total_processed'] += 1
+            self._stats['failed_count'] += 1
+            logger.warning(f"[记录] 记录失败处理: {file_path} - {error_msg[:100]}")
+
+    @staticmethod
+    def _title_match(a: str, b: str) -> bool:
+        if not a or not b:
+            return False
+
+        def norm(s):
+            return re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9]', '', s).lower()
+
+        result = norm(a) == norm(b) or SequenceMatcher(None, norm(a), norm(b)).ratio() >= 0.85
+        return result
+
+    @staticmethod
+    def _read_file(file_path: Path) -> Optional[str]:
+        try:
+            raw_data = file_path.read_bytes()
+            if not raw_data:
+                return None
+            detected = chardet.detect(raw_data)
+            encoding = detected.get('encoding', 'utf-8') if detected else 'utf-8'
+            return raw_data.decode(encoding, errors='replace')
+        except Exception as e:
+            logger.debug(f"[文件读取] 读取失败 {file_path}: {e}")
+            return None
+
+    # ========== 远程命令 ==========
+
     def get_command(self) -> List[Dict[str, Any]]:
         return [
-            {
-                "cmd": "/shortplay_stats",
-                "func": self.show_stats,
-                "desc": "查看统计信息"
-            },
-            {
-                "cmd": "/shortplay_clear",
-                "func": self.clear_cache,
-                "desc": "清空缓存"
-            },
-            {
-                "cmd": "/shortplay_scan",
-                "func": self.force_scan,
-                "desc": "立即扫描"
-            }
+            {"cmd": "/shortplay_stats", "event": EventType.PluginAction, "desc": "查看统计",
+             "category": "短剧处理", "data": {"action": "shortplay_stats"}},
+            {"cmd": "/shortplay_clear", "event": EventType.PluginAction, "desc": "清空缓存",
+             "category": "短剧处理", "data": {"action": "shortplay_clear"}},
+            {"cmd": "/shortplay_scan", "event": EventType.PluginAction, "desc": "立即扫描",
+             "category": "短剧处理", "data": {"action": "shortplay_scan"}},
+            {"cmd": "/shortplay_supplement", "event": EventType.PluginAction, "desc": "补充元数据",
+             "category": "短剧处理", "data": {"action": "shortplay_supplement"}},
         ]
-    
+
     def get_api(self) -> List[Dict[str, Any]]:
         return []
-    
+
+    @eventmanager.register(EventType.PluginAction)
+    def handle_command(self, event: Event):
+        action = (event.event_data or {}).get("action")
+        logger.info(f"[命令] 收到命令: {action}")
+        
+        if action == "shortplay_stats":
+            result = self.show_stats()
+        elif action == "shortplay_clear":
+            result = self.clear_cache()
+        elif action == "shortplay_scan":
+            result = self.force_scan()
+        elif action == "shortplay_supplement":
+            result = self.force_supplement()
+        else:
+            logger.warning(f"[命令] 未知命令: {action}")
+            return
+        
+        logger.info(f"[命令] 命令执行结果: {result[:50]}...")
+        self.post_message(title="短剧处理器", text=result, mtype=NotificationType.Organize)
+
+    def show_stats(self) -> str:
+        with self._lock:
+            s = self._stats
+        
+        result = (
+            f"📊 短剧处理器统计\n"
+            f"总处理: {s['total_processed']} | 成功: {s['success_count']} | 失败: {s['failed_count']}\n"
+            f"缓存: 成功{len(self._success_cache)} | 系列{len(self._series_cache)} | 失败{len(self._failed_records)}\n"
+            f"处理中: {len(self._processing_files)}\n"
+            f"API: MP识别{s.get('mp_calls',0)}/{s.get('mp_hits',0)} | PT搜索{s.get('pt_calls',0)}/{s.get('pt_hits',0)} | NFO{s.get('nfo_calls',0)}/{s.get('nfo_hits',0)}"
+        )
+        logger.debug(f"[统计] {result}")
+        return result
+
+    def clear_cache(self) -> str:
+        logger.info("[清理] 清空所有缓存")
+        with self._lock:
+            cache_sizes = {
+                'success': len(self._success_cache),
+                'series': len(self._series_cache),
+                'failed': len(self._failed_records),
+                'processing': len(self._processing_files),
+                'medias': len(self._medias),
+                'mapping': len(self._title_mapping)
+            }
+            logger.debug(f"[清理] 清空前缓存大小: {cache_sizes}")
+            
+            self._success_cache.clear()
+            self._series_cache.clear()
+            self._failed_records.clear()
+            self._processing_files.clear()
+            self._medias.clear()
+            self._title_mapping.clear()  # 清空映射
+        
+        self._save_cache()
+        logger.info("[清理] 缓存已清空")
+        return "✅ 缓存已清空"
+
+    def force_scan(self) -> str:
+        logger.info("[命令] 手动触发扫描任务")
+        threading.Thread(target=self.scan_all_dirs, daemon=True).start()
+        return "✅ 扫描任务已启动"
+
+    def force_supplement(self) -> str:
+        logger.info("[命令] 手动触发补充元数据任务")
+        threading.Thread(target=self._supplement_all_metadata, daemon=True).start()
+        return "✅ 补充元数据任务已启动"
+
+    # ========== 配置页面 ==========
+
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         return [
             {
                 "component": "VForm",
-                "content": [
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "onlyonce", "label": "立即运行一次"}}]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "notify", "label": "发送通知"}}]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "image", "label": "封面裁剪"}}]
-                            }
-                        ]
-                    },
-                    # ========== 数据源配置行 ==========
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {"component": "VCard", "props": {"variant": "tonal", "color": "primary", "class": "mt-2"}, "content": [
-                                        {"component": "VCardTitle", "text": "🔍 数据源配置"},
-                                        {"component": "VCardText", "content": [
-                                            {"component": "VRow", "content": [
-                                                {
-                                                    "component": "VCol",
-                                                    "props": {"cols": 12, "md": 4},
-                                                    "content": [{"component": "VSwitch", "props": {"model": "enable_local_nfo", "label": "📁 本地NFO识别", "hint": "优先读取源目录中的 tvshow.nfo"}}]
-                                                },
-                                                {
-                                                    "component": "VCol",
-                                                    "props": {"cols": 12, "md": 4},
-                                                    "content": [{"component": "VSwitch", "props": {"model": "enable_mp_recognition", "label": "🎬 MP识别（豆瓣/TMDB）", "hint": "使用MoviePilot识别接口"}}]
-                                                },
-                                                {
-                                                    "component": "VCol",
-                                                    "props": {"cols": 12, "md": 4},
-                                                    "content": [{"component": "VSwitch", "props": {"model": "enable_pt_search", "label": "🌐 PT站点搜索", "hint": "从AGSV/萝莉站/PTSKit搜索"}}]
-                                                }
-                                            ]}
-                                        ]}
-                                    ]}
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSelect", "props": {"model": "transfer_type", "label": "转移方式", "items": [
-                                    {"title": "移动", "value": "move"}, {"title": "复制", "value": "copy"},
-                                    {"title": "硬链接", "value": "link"}, {"title": "软链接", "value": "softlink"}
-                                ]}}]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VTextField", "props": {"model": "interval", "label": "通知延迟（秒）", "placeholder": "10"}}]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VTextField", "props": {"model": "scan_interval", "label": "扫描间隔（秒）", "placeholder": "60"}}]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "scan_enabled", "label": "启用定时扫描"}}]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{"component": "VTextarea", "props": {"model": "monitor_confs", "label": "监控目录", "rows": 4, 
-                                    "placeholder": "auto#/源目录#/目的目录#smart#16:9\n格式: 监控方式#源目录#目的目录#重命名#封面比例\n重命名: false/smart"}}]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{"component": "VTextarea", "props": {"model": "exclude_keywords", "label": "排除关键词", "rows": 2, 
-                                    "placeholder": "每行一个关键词（支持正则表达式）"}}]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{"component": "VAlert", "props": {"type": "info", "variant": "tonal", 
-                                    "text": "数据优先级：本地NFO > MP识别 > PT站搜索 > 基础信息。可关闭任意数据源。"}}]
-                            }
-                        ]
-                    }
-                ]
+                "content": [{
+                    "component": "VRow",
+                    "content": [
+                        {"component": "VCol", "props": {"cols": 12}, "content": [
+                            {"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}},
+                            {"component": "VSwitch", "props": {"model": "onlyonce", "label": "立即运行一次"}},
+                            {"component": "VSwitch", "props": {"model": "supplement", "label": "补充元数据"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 12}, "content": [
+                            {"component": "VTextarea", "props": {"model": "monitor_confs", "label": "监控配置",
+                                "rows": 5, "placeholder": "模式#源目录#目标目录#重命名\n模式: normal/compatibility\n重命名: smart/off"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 6}, "content": [
+                            {"component": "VSelect", "props": {"model": "transfer_type", "label": "转移方式",
+                                "items": [{"title": "移动", "value": "move"}, {"title": "复制", "value": "copy"},
+                                          {"title": "硬链接", "value": "link"}, {"title": "软链接", "value": "softlink"}]}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 6}, "content": [
+                            {"component": "VSwitch", "props": {"model": "notify", "label": "发送通知"}},
+                            {"component": "VTextField", "props": {"model": "interval", "label": "通知间隔(秒)", "type": "number"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 12}, "content": [
+                            {"component": "VTextarea", "props": {"model": "exclude_keywords", "label": "排除关键词",
+                                "rows": 2, "placeholder": "每行一个正则"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 6}, "content": [
+                            {"component": "VSwitch", "props": {"model": "scan_enabled", "label": "定时扫描"}},
+                            {"component": "VTextField", "props": {"model": "scan_interval", "label": "扫描间隔(秒)", "type": "number"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 6}, "content": [
+                            {"component": "VSwitch", "props": {"model": "enable_incremental_scan", "label": "增量扫描"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 12}, "content": [
+                            {"component": "VDivider"},
+                            {"component": "VSwitch", "props": {"model": "enable_local_nfo", "label": "本地NFO"}},
+                            {"component": "VSwitch", "props": {"model": "enable_mp_recognition", "label": "MP识别"}},
+                            {"component": "VSwitch", "props": {"model": "enable_pt_search", "label": "PT站搜索"}},
+                            {"component": "VTextField", "props": {"model": "pt_priority", "label": "PT优先级", "placeholder": "agsv,ilolicon"}},
+                            {"component": "VTextField", "props": {"model": "media_root", "label": "媒体库根目录", "placeholder": "/path/to/media"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 6}, "content": [
+                            {"component": "VTextField", "props": {"model": "polling_interval", "label": "轮询间隔(秒)", "type": "number"}},
+                        ]},
+                        {"component": "VCol", "props": {"cols": 6}, "content": [
+                            {"component": "VTextField", "props": {"model": "debounce_max_wait", "label": "防抖等待(秒)", "type": "number"}},
+                        ]},
+                    ]
+                }]
             }
         ], {
-            "enabled": False, "onlyonce": False, "monitor_confs": "", "transfer_type": "link",
-            "exclude_keywords": "", "notify": False, "interval": 10, "scan_interval": 60,
-            "scan_enabled": True, "image": False,
-            "enable_local_nfo": True,
-            "enable_mp_recognition": True,
-            "enable_pt_search": True
+            "enabled": False, "onlyonce": False, "supplement": False,
+            "monitor_confs": "", "transfer_type": "link",
+            "exclude_keywords": "", "notify": False, "interval": 10,
+            "scan_interval": 60, "scan_enabled": True,
+            "enable_local_nfo": True, "enable_mp_recognition": True,
+            "enable_pt_search": True, "pt_priority": "",
+            "polling_interval": 5, "debounce_max_wait": 10.0,
+            "enable_incremental_scan": True, "media_root": ""
         }
-    
+
     def get_page(self) -> List[dict]:
-        """获取页面数据"""
-        stats = self._get_stats()
-        
+        """数据面板"""
         with self._lock:
-            # 按时间排序（最新在前），只取最近 MAX_DISPLAY_CACHE 条
-            sorted_cache = sorted(
-                self._series_cache.items(),
-                key=lambda x: x[1].timestamp,
-                reverse=True
-            )[:MAX_DISPLAY_CACHE]
-            
-            # 按来源分类系列缓存
-            cache_by_type = {
-                "system": [],   # 系统识别（豆瓣/TMDB）
-                "pt": [],       # PT识别
-                "local": []     # 本地识别（本地NFO/文件夹名）
-            }
-            
-            for cache_key, cache_entry in sorted_cache:
-                # 处理后的剧集名（目标文件夹名）
-                recognized_name = cache_entry.title if cache_entry.title else "未知"
-                # 原始文件夹名
-                original_folder = Path(cache_key).name if cache_key else "未知"
-                
-                # 获取处理文件列表（目标文件名）
-                processed_files = []
-                for record in self._success_cache.values():
-                    if record.title == recognized_name or original_folder in record.file_path:
-                        target_name = Path(record.target_path).name if record.target_path else ""
-                        if target_name:
-                            processed_files.append(target_name)
-                
-                file_count = len(processed_files)
-                
-                # 显示处理文件：超过5个显示 "S01E01等66个文件"
-                if file_count == 0:
-                    file_display = "待处理"
-                elif file_count <= 5:
-                    file_display = "\n".join(processed_files)
-                else:
-                    first_file = processed_files[0] if processed_files else ""
-                    file_display = f"{first_file}等{file_count}个文件"
-                
-                # 判断来源类型
-                if cache_entry.mediainfo:
-                    source = getattr(cache_entry.mediainfo, 'source', '')
-                    if source == 'douban':
-                        cache_by_type["system"].append({
-                            "name": recognized_name[:30],
-                            "folder": original_folder[:30],
-                            "source": "豆瓣",
-                            "files": file_display,
-                            "count": file_count
-                        })
-                    elif source == 'themoviedb':
-                        cache_by_type["system"].append({
-                            "name": recognized_name[:30],
-                            "folder": original_folder[:30],
-                            "source": "TMDB",
-                            "files": file_display,
-                            "count": file_count
-                        })
-                    elif source == 'local':
-                        cache_by_type["local"].append({
-                            "name": recognized_name[:30],
-                            "folder": original_folder[:30],
-                            "source": "本地NFO",
-                            "files": file_display,
-                            "count": file_count
-                        })
-                    else:
-                        cache_by_type["local"].append({
-                            "name": recognized_name[:30],
-                            "folder": original_folder[:30],
-                            "source": "其他",
-                            "files": file_display,
-                            "count": file_count
-                        })
-                elif cache_entry.pt_tv_info:
-                    pt_source = cache_entry.pt_tv_info.get('source', 'PT站')
-                    cache_by_type["pt"].append({
-                        "name": recognized_name[:30],
-                        "folder": original_folder[:30],
-                        "source": pt_source,
-                        "files": file_display,
-                        "count": file_count
-                    })
-                else:
-                    cache_by_type["local"].append({
-                        "name": recognized_name[:30],
-                        "folder": original_folder[:30],
-                        "source": "文件夹名",
-                        "files": file_display,
-                        "count": file_count
-                    })
-            
-            # 按文件数量排序（处理文件多的排在前面）
-            for key in cache_by_type:
-                cache_by_type[key].sort(key=lambda x: x.get("count", 0), reverse=True)
-            
-            # 构建三大类缓存表格
-            cache_cards = []
-            
-            # 系统识别卡片
-            if cache_by_type["system"]:
-                rows = []
-                for item in cache_by_type["system"][:20]:
-                    rows.append({"component": "tr", "content": [
-                        {"component": "td", "text": item["name"]},
-                        {"component": "td", "text": item["folder"]},
-                        {"component": "td", "text": item["source"]},
-                        {"component": "td", "props": {"style": "white-space: pre-line;"}, "text": item["files"]}
-                    ]})
-                cache_cards.append({
-                    "component": "VCard",
-                    "props": {"class": "mt-4", "variant": "tonal", "color": "info"},
-                    "content": [
-                        {"component": "VCardTitle", "text": f"🤖 系统识别（豆瓣/TMDB） - {len(cache_by_type['system'])} 个"},
-                        {"component": "VCardText", "props": {"class": "pa-0"}, "content": [
-                            {"component": "VTable", "props": {"hover": True, "dense": True}, "content": [
-                                {"component": "thead", "content": [
-                                    {"component": "tr", "content": [
-                                        {"component": "th", "text": "剧集名"},
-                                        {"component": "th", "text": "原始文件夹"},
-                                        {"component": "th", "text": "来源"},
-                                        {"component": "th", "text": "处理文件"}
-                                    ]}
-                                ]},
-                                {"component": "tbody", "content": rows}
-                            ]}
-                        ]}
-                    ]
-                })
-            
-            # PT识别卡片
-            if cache_by_type["pt"]:
-                rows = []
-                for item in cache_by_type["pt"][:20]:
-                    rows.append({"component": "tr", "content": [
-                        {"component": "td", "text": item["name"]},
-                        {"component": "td", "text": item["folder"]},
-                        {"component": "td", "text": item["source"]},
-                        {"component": "td", "props": {"style": "white-space: pre-line;"}, "text": item["files"]}
-                    ]})
-                cache_cards.append({
-                    "component": "VCard",
-                    "props": {"class": "mt-4", "variant": "tonal", "color": "warning"},
-                    "content": [
-                        {"component": "VCardTitle", "text": f"🌐 PT识别（AGSV/萝莉站/PTSKit） - {len(cache_by_type['pt'])} 个"},
-                        {"component": "VCardText", "props": {"class": "pa-0"}, "content": [
-                            {"component": "VTable", "props": {"hover": True, "dense": True}, "content": [
-                                {"component": "thead", "content": [
-                                    {"component": "tr", "content": [
-                                        {"component": "th", "text": "剧集名"},
-                                        {"component": "th", "text": "原始文件夹"},
-                                        {"component": "th", "text": "来源"},
-                                        {"component": "th", "text": "处理文件"}
-                                    ]}
-                                ]},
-                                {"component": "tbody", "content": rows}
-                            ]}
-                        ]}
-                    ]
-                })
-            
-            # 本地识别卡片
-            if cache_by_type["local"]:
-                rows = []
-                for item in cache_by_type["local"][:20]:
-                    rows.append({"component": "tr", "content": [
-                        {"component": "td", "text": item["name"]},
-                        {"component": "td", "text": item["folder"]},
-                        {"component": "td", "text": item["source"]},
-                        {"component": "td", "props": {"style": "white-space: pre-line;"}, "text": item["files"]}
-                    ]})
-                cache_cards.append({
-                    "component": "VCard",
-                    "props": {"class": "mt-4", "variant": "tonal", "color": "success"},
-                    "content": [
-                        {"component": "VCardTitle", "text": f"💾 本地识别（本地NFO/文件夹名） - {len(cache_by_type['local'])} 个"},
-                        {"component": "VCardText", "props": {"class": "pa-0"}, "content": [
-                            {"component": "VTable", "props": {"hover": True, "dense": True}, "content": [
-                                {"component": "thead", "content": [
-                                    {"component": "tr", "content": [
-                                        {"component": "th", "text": "剧集名"},
-                                        {"component": "th", "text": "原始文件夹"},
-                                        {"component": "th", "text": "来源"},
-                                        {"component": "th", "text": "处理文件"}
-                                    ]}
-                                ]},
-                                {"component": "tbody", "content": rows}
-                            ]}
-                        ]}
-                    ]
-                })
-            
-            # 失败记录
-            failed_rows = []
-            
-            # 处理失败记录
-            for record in self._failed_records[-20:]:
-                name = Path(record.file_path).name if record.file_path else "未知"
-                error_msg = record.error_msg[:50] if record.error_msg else "未知错误"
-                failed_rows.append({"component": "tr", "content": [
-                    {"component": "td", "text": name[:50]},
-                    {"component": "td", "text": error_msg},
-                    {"component": "td", "text": record.timestamp.strftime("%Y-%m-%d %H:%M:%S")}
-                ]})
-            
-            # 识别失败记录
-            for cache_key, cache_entry in self._series_cache.items():
-                if not cache_entry.mediainfo and not cache_entry.pt_tv_info:
-                    folder_name = Path(cache_key).name if cache_key else "未知"
-                    cache_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cache_entry.timestamp))
-                    failed_rows.append({"component": "tr", "content": [
-                        {"component": "td", "text": folder_name[:50]},
-                        {"component": "td", "text": "未匹配到任何来源"},
-                        {"component": "td", "text": cache_time}
-                    ]})
-            
-            # 去重
-            seen = set()
-            unique_failed_rows = []
-            for row in failed_rows:
-                key = f"{row['content'][0]['text']}_{row['content'][2]['text']}"
-                if key not in seen:
-                    seen.add(key)
-                    unique_failed_rows.append(row)
-            
-            failed_card = {
-                "component": "VCard",
-                "props": {"class": "mt-4", "variant": "tonal", "color": "error"},
-                "content": [
-                    {"component": "VCardTitle", "text": f"❌ 失败记录 - 共 {len(unique_failed_rows)} 条"},
-                    {"component": "VCardText", "props": {"class": "pa-0"}, "content": [
-                        {"component": "VTable", "props": {"hover": True, "dense": True}, "content": [
-                            {"component": "thead", "content": [
-                                {"component": "tr", "content": [
-                                    {"component": "th", "text": "文件/文件夹名"},
-                                    {"component": "th", "text": "错误信息"},
-                                    {"component": "th", "text": "时间"}
-                                ]}
-                            ]},
-                            {"component": "tbody", "content": unique_failed_rows[:20] if unique_failed_rows else [
-                                {"component": "tr", "content": [
-                                    {"component": "td", "props": {"colspan": 3, "class": "text-center"}, "text": "暂无失败记录"}
-                                ]}
-                            ]}
-                        ]}
-                    ]}
-                ]
-            }
-        
+            s = dict(self._stats)
+            cache_size = len(self._success_cache)
+            series_size = len(self._series_cache)
+            failed_size = len(self._failed_records)
+            processing = len(self._processing_files)
+            recent_success = [v for v in list(self._success_cache.values())[-8:] if isinstance(v, dict)]
+            recent_failed = [v for v in self._failed_records[-8:] if isinstance(v, dict)]
+
+        logger.debug(f"[面板] 渲染数据面板 - 成功: {cache_size}, 系列: {series_size}, 失败: {failed_size}")
+
+        def fmt_time(ts):
+            try:
+                dt = datetime.datetime.fromisoformat(ts) if isinstance(ts, str) else ts
+                return dt.strftime("%m-%d %H:%M") if dt else "-"
+            except Exception:
+                return "-"
+
+        mp_rate = round(s.get('mp_hits', 0) / max(1, s.get('mp_calls', 1)) * 100)
+        pt_rate = round(s.get('pt_hits', 0) / max(1, s.get('pt_calls', 1)) * 100)
+        nfo_rate = round(s.get('nfo_hits', 0) / max(1, s.get('nfo_calls', 1)) * 100)
+
         return [
-            # 统计卡片（5个）
             {
                 "component": "VRow",
                 "content": [
                     {
                         "component": "VCol",
-                        "props": {"cols": 12, "md": 2, "sm": 4},
-                        "content": [
-                            {"component": "VCard", "props": {"variant": "tonal", "color": "primary"}, "content": [
-                                {"component": "VCardText", "props": {"class": "text-center"}, "content": [
-                                    {"component": "div", "props": {"class": "text-h4"}, "text": str(stats['total_processed'])},
-                                    {"component": "div", "text": "总处理"}
-                                ]}
+                        "props": {"cols": 6, "md": 3},
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "primary"}, "content": [
+                            {"component": "VCardText", "props": {"class": "text-center"}, "content": [
+                                {"component": "div", "props": {"class": "text-h4"}, "text": str(s['total_processed'])},
+                                {"component": "div", "props": {"class": "text-caption"}, "text": "总处理"},
                             ]}
-                        ]
+                        ]}]
                     },
                     {
                         "component": "VCol",
-                        "props": {"cols": 12, "md": 2, "sm": 4},
-                        "content": [
-                            {"component": "VCard", "props": {"variant": "tonal", "color": "success"}, "content": [
-                                {"component": "VCardText", "props": {"class": "text-center"}, "content": [
-                                    {"component": "div", "props": {"class": "text-h4"}, "text": str(stats['success_count'])},
-                                    {"component": "div", "text": "成功"}
-                                ]}
+                        "props": {"cols": 6, "md": 3},
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "success"}, "content": [
+                            {"component": "VCardText", "props": {"class": "text-center"}, "content": [
+                                {"component": "div", "props": {"class": "text-h4"}, "text": str(s['success_count'])},
+                                {"component": "div", "props": {"class": "text-caption"}, "text": "成功"},
                             ]}
-                        ]
+                        ]}]
                     },
                     {
                         "component": "VCol",
-                        "props": {"cols": 12, "md": 2, "sm": 4},
-                        "content": [
-                            {"component": "VCard", "props": {"variant": "tonal", "color": "error"}, "content": [
-                                {"component": "VCardText", "props": {"class": "text-center"}, "content": [
-                                    {"component": "div", "props": {"class": "text-h4"}, "text": str(stats['failed_count'])},
-                                    {"component": "div", "text": "失败"}
-                                ]}
+                        "props": {"cols": 6, "md": 3},
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "error"}, "content": [
+                            {"component": "VCardText", "props": {"class": "text-center"}, "content": [
+                                {"component": "div", "props": {"class": "text-h4"}, "text": str(s['failed_count'])},
+                                {"component": "div", "props": {"class": "text-caption"}, "text": "失败"},
                             ]}
-                        ]
+                        ]}]
                     },
                     {
                         "component": "VCol",
-                        "props": {"cols": 12, "md": 3, "sm": 6},
-                        "content": [
-                            {"component": "VCard", "props": {"variant": "tonal", "color": "info"}, "content": [
-                                {"component": "VCardText", "props": {"class": "text-center"}, "content": [
-                                    {"component": "div", "props": {"class": "text-h4"}, "text": str(stats['series_cache_size'])},
-                                    {"component": "div", "text": "系列缓存"}
-                                ]}
+                        "props": {"cols": 6, "md": 3},
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "warning"}, "content": [
+                            {"component": "VCardText", "props": {"class": "text-center"}, "content": [
+                                {"component": "div", "props": {"class": "text-h4"}, "text": str(processing)},
+                                {"component": "div", "props": {"class": "text-caption"}, "text": "处理中"},
                             ]}
-                        ]
+                        ]}]
                     },
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 3, "sm": 6},
-                        "content": [
-                            {"component": "VCard", "props": {"variant": "tonal", "color": "warning"}, "content": [
-                                {"component": "VCardText", "props": {"class": "text-center"}, "content": [
-                                    {"component": "div", "props": {"class": "text-h4"}, "text": str(len(self._failed_records))},
-                                    {"component": "div", "text": "失败记录"}
-                                ]}
-                            ]}
-                        ]
-                    }
                 ]
             },
-            # 三大类缓存卡片
             {
                 "component": "VRow",
+                "props": {"class": "mt-2"},
                 "content": [
                     {
                         "component": "VCol",
                         "props": {"cols": 12},
-                        "content": cache_cards if cache_cards else [
-                            {"component": "VCard", "props": {"class": "mt-4"}, "content": [
-                                {"component": "VCardText", "props": {"class": "text-center"}, "content": [
-                                    {"component": "div", "text": "暂无系列缓存"}
-                                ]}
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "info"}, "content": [
+                            {"component": "VCardTitle", "text": "💾 缓存状态"},
+                            {"component": "VCardText", "content": [
+                                {"component": "VRow", "content": [
+                                    {"component": "VCol", "props": {"cols": 4}, "content": [
+                                        {"component": "div", "props": {"class": "text-center"}, "content": [
+                                            {"component": "div", "props": {"class": "text-h5 text-success"}, "text": str(cache_size)},
+                                            {"component": "div", "props": {"class": "text-caption"}, "text": "成功记录"},
+                                        ]}
+                                    ]},
+                                    {"component": "VCol", "props": {"cols": 4}, "content": [
+                                        {"component": "div", "props": {"class": "text-center"}, "content": [
+                                            {"component": "div", "props": {"class": "text-h5 text-primary"}, "text": str(series_size)},
+                                            {"component": "div", "props": {"class": "text-caption"}, "text": "系列信息"},
+                                        ]}
+                                    ]},
+                                    {"component": "VCol", "props": {"cols": 4}, "content": [
+                                        {"component": "div", "props": {"class": "text-center"}, "content": [
+                                            {"component": "div", "props": {"class": "text-h5 text-error"}, "text": str(failed_size)},
+                                            {"component": "div", "props": {"class": "text-caption"}, "text": "失败记录"},
+                                        ]}
+                                    ]},
+                                ]},
+                                {"component": "div", "props": {"class": "text-caption text-center mt-2"}, "text": f"启动: {fmt_time(s.get('start_time'))} | 上次处理: {fmt_time(s.get('last_process_time'))} | 模式: {'增量' if self._enable_incremental_scan else '全量'}"},
                             ]}
-                        ]
-                    }
+                        ]}]
+                    },
                 ]
             },
-            # 失败记录卡片
             {
                 "component": "VRow",
+                "props": {"class": "mt-2"},
                 "content": [
                     {
                         "component": "VCol",
                         "props": {"cols": 12},
-                        "content": [failed_card]
-                    }
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "success"}, "content": [
+                            {"component": "VCardTitle", "text": "🎯 数据源命中率"},
+                            {"component": "VCardText", "content": [
+                                {"component": "div", "props": {"class": "mb-2"}, "content": [
+                                    {"component": "div", "props": {"class": "text-caption mb-1"}, "text": f"MP识别: {s.get('mp_hits',0)}/{s.get('mp_calls',0)} ({mp_rate}%)"},
+                                    {"component": "VProgressLinear", "props": {"modelValue": mp_rate, "color": "primary", "height": 8, "rounded": True}},
+                                ]},
+                                {"component": "div", "props": {"class": "mb-2"}, "content": [
+                                    {"component": "div", "props": {"class": "text-caption mb-1"}, "text": f"PT搜索: {s.get('pt_hits',0)}/{s.get('pt_calls',0)} ({pt_rate}%)"},
+                                    {"component": "VProgressLinear", "props": {"modelValue": pt_rate, "color": "success", "height": 8, "rounded": True}},
+                                ]},
+                                {"component": "div", "content": [
+                                    {"component": "div", "props": {"class": "text-caption mb-1"}, "text": f"本地NFO: {s.get('nfo_hits',0)}/{s.get('nfo_calls',0)} ({nfo_rate}%)"},
+                                    {"component": "VProgressLinear", "props": {"modelValue": nfo_rate, "color": "warning", "height": 8, "rounded": True}},
+                                ]},
+                            ]}
+                        ]}]
+                    },
                 ]
-            }
+            },
+            {
+                "component": "VRow",
+                "props": {"class": "mt-2"},
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "success"}, "content": [
+                            {"component": "VCardTitle", "text": "✅ 最近成功"},
+                            {"component": "VCardText", "props": {"class": "pa-0"}, "content": [
+                                {"component": "VTable", "props": {"hover": True, "dense": True}, "content": [
+                                    {"component": "thead", "content": [
+                                        {"component": "tr", "content": [
+                                            {"component": "th", "text": "时间"},
+                                            {"component": "th", "text": "剧名"},
+                                            {"component": "th", "text": "剧集名"},
+                                            {"component": "th", "text": "原始路径"},
+                                            {"component": "th", "text": "识别来源"},
+                                        ]}
+                                    ]},
+                                    {"component": "tbody", "content": [
+                                        {"component": "tr", "content": [
+                                            {"component": "td", "text": fmt_time(r.get('timestamp'))},
+                                            {"component": "td", "text": r.get('title', '-')},
+                                            {"component": "td", "text": Path(r.get('target_path', '-')).name},
+                                            {"component": "td", "props": {"style": "max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"}, "text": f"{Path(r.get('file_path', '-')).parent.name}/{Path(r.get('file_path', '-')).name}"},
+                                            {"component": "td", "text": r.get('source', '-')},
+                                        ]} for r in reversed(recent_success)
+                                    ] if recent_success else [
+                                        {"component": "tr", "content": [
+                                            {"component": "td", "props": {"colspan": 5, "class": "text-center text-caption"}, "text": "暂无记录"}
+                                        ]}
+                                    ]}
+                                ]}
+                            ]}
+                        ]}]
+                    },
+                ]
+            },
+            {
+                "component": "VRow",
+                "props": {"class": "mt-2"},
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [{"component": "VCard", "props": {"variant": "tonal", "color": "error"}, "content": [
+                            {"component": "VCardTitle", "text": "❌ 最近失败"},
+                            {"component": "VCardText", "props": {"class": "pa-0"}, "content": [
+                                {"component": "VTable", "props": {"hover": True, "dense": True}, "content": [
+                                    {"component": "thead", "content": [
+                                        {"component": "tr", "content": [
+                                            {"component": "th", "text": "时间"},
+                                            {"component": "th", "text": "文件"},
+                                            {"component": "th", "text": "错误"},
+                                        ]}
+                                    ]},
+                                    {"component": "tbody", "content": [
+                                        {"component": "tr", "content": [
+                                            {"component": "td", "text": fmt_time(r.get('timestamp'))},
+                                            {"component": "td", "props": {"style": "max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"}, "text": Path(r.get('file_path', '-')).name},
+                                            {"component": "td", "props": {"style": "max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"}, "text": r.get('error_msg', '-')},
+                                        ]} for r in reversed(recent_failed)
+                                    ] if recent_failed else [
+                                        {"component": "tr", "content": [
+                                            {"component": "td", "props": {"colspan": 3, "class": "text-center text-caption"}, "text": "暂无记录"}
+                                        ]}
+                                    ]}
+                                ]}
+                            ]}
+                        ]}]
+                    },
+                ]
+            },
         ]
-    
-    def stop_service(self):
-        """停止服务"""
-        if self._scheduler:
-            try:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._scheduler.shutdown(wait=False)
-            except Exception as e:
-                logger.debug(f"停止调度器失败: {e}")
-            self._scheduler = None
-        
-        with self._lock:
-            self._series_cache.clear()
-            self._success_cache.clear()
-            self._processing_files.clear()
-            self._medias.clear()
-            self._failed_records.clear()
-        
-        for observer in self._observer:
-            try:
-                observer.stop()
-                observer.join(timeout=5)
-            except Exception as e:
-                logger.debug(f"停止监控器失败: {e}")
-        self._observer = []
-        
-        logger.info("短剧处理器已停止")
