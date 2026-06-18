@@ -3820,50 +3820,56 @@ class brushflowmod(_PluginBase):
             tags = torrent.get("tags")
             # tracker
             tracker = torrent.get("tracker")
-        # TR
+        # TR 分支 - 使用 getattr 简化
         else:
-            # ID
             torrent_id = torrent.hashString
-            # 标题
             torrent_title = torrent.name
-            # 做种时间
-            if (not torrent.date_done
-                    or torrent.date_done.timestamp() < 1):
+            
+            # 使用 getattr 安全获取属性
+            date_done = getattr(torrent, 'date_done', None)
+            if date_done:
+                try:
+                    seeding_time = date_now - int(date_done.timestamp())
+                except:
+                    seeding_time = 0
+            else:
                 seeding_time = 0
+            
+            date_added = getattr(torrent, 'date_added', None)
+            if date_added:
+                try:
+                    dltime = date_now - int(date_added.timestamp())
+                    add_on = int(date_added.timestamp())
+                    add_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(add_on))
+                except:
+                    dltime = 0
+                    add_on = 0
+                    add_time = 'N/A'
             else:
-                seeding_time = date_now - int(torrent.date_done.timestamp())
-            # 下载耗时
-            if (not torrent.date_added
-                    or torrent.date_added.timestamp() < 1):
                 dltime = 0
+                add_on = 0
+                add_time = 'N/A'
+            
+            progress = getattr(torrent, 'progress', 0)
+            total_size = getattr(torrent, 'total_size', 0)
+            downloaded = int(total_size * progress / 100) if total_size else 0
+            
+            ratio = getattr(torrent, 'ratio', 0)
+            uploaded = int(downloaded * ratio) if ratio else 0
+            
+            avg_upspeed = int(uploaded / dltime) if dltime and dltime > 0 else uploaded
+            
+            date_active = getattr(torrent, 'date_active', None)
+            if date_active:
+                try:
+                    iatime = date_now - int(date_active.timestamp())
+                except:
+                    iatime = 0
             else:
-                dltime = date_now - int(torrent.date_added.timestamp())
-            # 下载量
-            downloaded = int(torrent.total_size * torrent.progress / 100)
-            # 分享率
-            ratio = torrent.ratio or 0
-            # 上传量
-            uploaded = int(downloaded * torrent.ratio)
-            # 平均上传速度
-            if dltime:
-                avg_upspeed = int(uploaded / dltime)
-            else:
-                avg_upspeed = uploaded
-            # 未活动时间
-            if (not torrent.date_active
-                    or torrent.date_active.timestamp() < 1):
                 iatime = 0
-            else:
-                iatime = date_now - int(torrent.date_active.timestamp())
-            # 种子大小
-            total_size = torrent.total_size
-            # 添加时间
-            add_on = (torrent.date_added.timestamp() if torrent.date_added else 0)
-            add_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(add_on))
-            # 种子标签
-            tags = torrent.get("tags")
-            # tracker
-            tracker = torrent.get("tracker")
+            
+            tags = getattr(torrent, 'tags', None) or getattr(torrent, 'labels', None)
+            tracker = getattr(torrent, 'tracker', None)
 
         return {
             "hash": torrent_id,

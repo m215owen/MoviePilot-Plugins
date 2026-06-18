@@ -40,6 +40,7 @@ class MediaSyncProtection(_PluginBase):
         self._last_cache_cleanup = time.time()
         self._cache_cleanup_interval = 60
         self._config = {}
+        self._shutdown = False
 
     def _get_config_safe(self) -> dict:
         """安全获取配置"""
@@ -102,7 +103,17 @@ class MediaSyncProtection(_PluginBase):
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 6},
                                 "content": [
-                                    {"component": "VSelect", "props": {"model": "downloader", "label": "下载器", "items": options}}
+                                    {
+                                        "component": "VSelect", 
+                                        "props": {
+                                            "model": "downloaders", 
+                                            "label": "下载器（支持多选）", 
+                                            "items": options,
+                                            "multiple": True,
+                                            "chips": True,
+                                            "hint": "可选择多个下载器，将同时操作所有选中的下载器"
+                                        }
+                                    }
                                 ]
                             },
                             {
@@ -171,7 +182,7 @@ class MediaSyncProtection(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "Webhook URL: /api/v1/plugin/MediaSyncProtection/mediasync\n\n注意：qBittorrent使用标签(Tag)，Transmission使用分类(Label)，功能类似"
+                                            "text": "Webhook URL: /api/v1/plugin/MediaSyncProtection/mediasync\n\n注意：qBittorrent使用标签(Tag)，Transmission使用分类(Label)，功能类似。选择多个下载器时，将同时对所有选中的下载器执行相同操作。"
                                         }
                                     }
                                 ]
@@ -182,7 +193,7 @@ class MediaSyncProtection(_PluginBase):
             }
         ], {
             "enabled": False,
-            "downloader": None,
+            "downloaders": [],  # 改为列表，支持多选
             "seed_tag": "保种",
             "delete_action": "remove_tag",
             "fuzzy_match": True,
@@ -310,8 +321,15 @@ class MediaSyncProtection(_PluginBase):
         if not config:
             return
         
+        # 确保 downloaders 是列表
+        if config.get("downloaders") is None:
+            config["downloaders"] = []
+        elif isinstance(config.get("downloaders"), str):
+            # 兼容旧配置：如果是字符串，转为列表
+            config["downloaders"] = [config["downloaders"]] if config["downloaders"] else []
+        
         # 验证必要配置
-        if config.get("enabled") and not config.get("downloader"):
+        if config.get("enabled") and not config.get("downloaders"):
             logger.warning("启用插件但未配置下载器")
             self._send_notification("配置错误", "启用插件但未配置下载器")
         
@@ -319,11 +337,22 @@ class MediaSyncProtection(_PluginBase):
         config = copy.deepcopy(config)
         
         # 验证下载器是否存在
-        if config.get("downloader"):
-            downloader, dl_type = self._get_downloader(config["downloader"])
-            if not downloader:
-                logger.warning(f"下载器 {config['downloader']} 不可用")
-                self._send_notification("配置警告", f"下载器 {config['downloader']} 不可用，请检查配置")
+        if config.get("downloaders"):
+            available_downloaders = []
+            unavailable_downloaders = []
+            for downloader_name in config["downloaders"]:
+                downloader, dl_type = self._get_downloader(downloader_name)
+                if downloader:
+                    available_downloaders.append(downloader_name)
+                else:
+                    unavailable_downloaders.append(downloader_name)
+            
+            if unavailable_downloaders:
+                logger.warning(f"以下下载器不可用: {', '.join(unavailable_downloaders)}")
+                self._send_notification("配置警告", f"下载器不可用: {', '.join(unavailable_downloaders)}")
+            
+            # 只保存可用的下载器
+            config["downloaders"] = available_downloaders
         
         # 清空下载器缓存
         self._downloader_cache.clear()
@@ -371,7 +400,8 @@ class MediaSyncProtection(_PluginBase):
             logger.info(f"收到事件: {event_type}")
             
             # 生成事件ID用于去重
-            event_id = f"{event_type}_{data.get('Item', {}).get('Id', '')}_{datetime.now().timestamp()}"
+            item_id = data.get('Item', {}).get('Id', '')
+            event_id = f"{event_type}_{item_id}_{datetime.now().timestamp()}"
             if self._is_duplicate_event(event_id):
                 logger.info(f"忽略重复事件: {event_type}")
                 return {"code": 200, "message": "忽略重复事件"}
@@ -404,8 +434,8 @@ class MediaSyncProtection(_PluginBase):
                 return {"code": 200, "message": "非收藏操作，已忽略"}
             
             cfg = self._get_config_safe()
-            downloader_name = cfg.get("downloader")
-            if not downloader_name:
+            downloader_names = cfg.get("downloaders", [])
+            if not downloader_names:
                 logger.warning("未配置下载器")
                 return {"code": 400, "message": "未配置下载器"}
             
@@ -413,26 +443,39 @@ class MediaSyncProtection(_PluginBase):
             seed_tag = cfg.get("seed_tag", "保种")
             send_notify = cfg.get("send_notify", True)
             
-            logger.info(f"收藏事件: 剧名={item_name}, 用户={user_name}, 收藏={is_favorite}, 模糊匹配={fuzzy}")
+            logger.info(f"收藏事件: 剧名={item_name}, 用户={user_name}, 收藏={is_favorite}, 模糊匹配={fuzzy}, 下载器={downloader_names}")
+            
+            total_matched = 0
+            all_matched_names = []
+            downloader_results = []
             
             if is_favorite:
                 action = "收藏"
-                matched, names = self._manage_tag(downloader_name, item_name, seed_tag, "add", fuzzy)
-                msg = f"已为 {matched} 个种子添加保种标签"
+                # 遍历所有下载器
+                for downloader_name in downloader_names:
+                    matched, names = self._manage_tag(downloader_name, item_name, seed_tag, "add", fuzzy)
+                    total_matched += matched
+                    all_matched_names.extend(names)
+                    downloader_results.append(f"{downloader_name}: {matched}个")
+                msg = f"已为 {total_matched} 个种子添加保种标签\n{', '.join(downloader_results)}"
             else:
                 action = "取消收藏"
-                matched, names = self._manage_tag(downloader_name, item_name, seed_tag, "remove", fuzzy)
-                msg = f"已为 {matched} 个种子移除保种标签"
+                for downloader_name in downloader_names:
+                    matched, names = self._manage_tag(downloader_name, item_name, seed_tag, "remove", fuzzy)
+                    total_matched += matched
+                    all_matched_names.extend(names)
+                    downloader_results.append(f"{downloader_name}: {matched}个")
+                msg = f"已为 {total_matched} 个种子移除保种标签\n{', '.join(downloader_results)}"
             
-            if send_notify and matched > 0:
-                self._send_notification(f"{action}: {item_name}", msg, names)
+            if send_notify and total_matched > 0:
+                self._send_notification(f"{action}: {item_name}", msg, all_matched_names)
             
             self._record_event({
                 "event_id": f"{datetime.now().timestamp()}_{action}",
                 "event_type": action,
                 "item_name": item_name,
                 "user_name": user_name,
-                "matched_count": matched,
+                "matched_count": total_matched,
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": msg
             })
@@ -454,8 +497,8 @@ class MediaSyncProtection(_PluginBase):
             item_name = item.get("SeriesName") or item.get("ParentName") or item.get("Name", "未知")
             
             cfg = self._get_config_safe()
-            downloader_name = cfg.get("downloader")
-            if not downloader_name:
+            downloader_names = cfg.get("downloaders", [])
+            if not downloader_names:
                 logger.warning("未配置下载器")
                 return {"code": 400, "message": "未配置下载器"}
             
@@ -465,7 +508,7 @@ class MediaSyncProtection(_PluginBase):
             async_delete = cfg.get("async_delete", True)
             seed_tag = cfg.get("seed_tag", "保种")
             
-            logger.info(f"删除事件: 剧名={item_name}, 操作={delete_action}, 模糊匹配={fuzzy}")
+            logger.info(f"删除事件: 剧名={item_name}, 操作={delete_action}, 模糊匹配={fuzzy}, 下载器={downloader_names}")
             
             event_id = f"{datetime.now().timestamp()}_delete"
             self._record_event({
@@ -480,85 +523,114 @@ class MediaSyncProtection(_PluginBase):
             
             if async_delete:
                 # 检查线程池是否关闭
-                if not getattr(self._executor, '_shutdown', False):
-                    self._executor.submit(self._execute_delete, event_id, downloader_name, item_name, 
+                if not self._shutdown:
+                    self._executor.submit(self._execute_delete, event_id, downloader_names, item_name, 
                                          fuzzy, send_notify, delete_action, seed_tag)
                     return {"code": 200, "message": "删除任务已提交"}
                 else:
                     logger.warning("线程池已关闭，同步执行删除")
                     # 降级为同步执行
-                    matched, names, success = self._execute_delete_sync(
-                        downloader_name, item_name, fuzzy, delete_action, seed_tag
+                    total_matched, total_success, all_names = self._execute_delete_sync(
+                        downloader_names, item_name, fuzzy, delete_action, seed_tag
                     )
-                    self._update_event_status(event_id, matched, f"完成: 匹配{matched}个, 成功{success}个")
-                    if send_notify and matched > 0:
-                        self._send_notification(f"删除: {item_name}", f"已处理 {success}/{matched} 个种子", names)
-                    return {"code": 200, "message": f"处理完成: {success}/{matched}"}
+                    self._update_event_status(event_id, total_matched, f"完成: 匹配{total_matched}个, 成功{total_success}个")
+                    if send_notify and total_matched > 0:
+                        self._send_notification(f"删除: {item_name}", f"已处理 {total_success}/{total_matched} 个种子", all_names)
+                    return {"code": 200, "message": f"处理完成: {total_success}/{total_matched}"}
             else:
-                matched, names, success = self._execute_delete_sync(
-                    downloader_name, item_name, fuzzy, delete_action, seed_tag
+                total_matched, total_success, all_names = self._execute_delete_sync(
+                    downloader_names, item_name, fuzzy, delete_action, seed_tag
                 )
-                self._update_event_status(event_id, matched, f"完成: 匹配{matched}个, 成功{success}个")
-                if send_notify and matched > 0:
-                    self._send_notification(f"删除: {item_name}", f"已处理 {success}/{matched} 个种子", names)
-                return {"code": 200, "message": f"处理完成: {success}/{matched}"}
+                self._update_event_status(event_id, total_matched, f"完成: 匹配{total_matched}个, 成功{total_success}个")
+                if send_notify and total_matched > 0:
+                    self._send_notification(f"删除: {item_name}", f"已处理 {total_success}/{total_matched} 个种子", all_names)
+                return {"code": 200, "message": f"处理完成: {total_success}/{total_matched}"}
         except Exception as e:
             logger.error(f"处理删除失败: {e}")
             return {"code": 500, "message": str(e)}
 
-    def _execute_delete(self, event_id: str, downloader_name: str, item_name: str, 
+    def _execute_delete(self, event_id: str, downloader_names: list, item_name: str, 
                         fuzzy: bool, send_notify: bool, action: str, tag: str):
-        """异步执行删除操作"""
+        """异步执行删除操作（支持多下载器）"""
+        if self._shutdown:
+            logger.warning("插件正在关闭，跳过异步任务")
+            return
+        
         try:
-            matched, names, hashes = self._find_torrents(downloader_name, item_name, fuzzy)
-            if matched == 0:
-                self._update_event_status(event_id, 0, "未找到匹配的种子")
-                return
+            total_matched = 0
+            total_success = 0
+            all_names = []
+            downloader_results = []
             
-            if action == "remove_tag":
-                success = self._batch_remove_tag(hashes, tag, downloader_name)
-                msg = f"已移除 {success}/{matched} 个种子的保种标签"
-            elif action == "pause":
-                success = self._pause_torrents(hashes, downloader_name)
-                msg = f"已暂停 {success}/{matched} 个种子"
-            elif action == "delete":
-                success = self._delete_torrents(hashes, downloader_name, False)
-                msg = f"已删除 {success}/{matched} 个种子（保留文件）"
-            elif action == "delete_with_file":
-                success = self._delete_torrents(hashes, downloader_name, True)
-                msg = f"已删除 {success}/{matched} 个种子（删除文件）"
-            else:
-                msg = f"未知操作: {action}"
-                success = 0
+            for downloader_name in downloader_names:
+                matched, names, hashes = self._find_torrents(downloader_name, item_name, fuzzy)
+                if matched == 0:
+                    downloader_results.append(f"{downloader_name}: 未找到匹配")
+                    continue
+                
+                all_names.extend(names)
+                total_matched += matched
+                
+                if action == "remove_tag":
+                    success = self._batch_remove_tag(hashes, tag, downloader_name)
+                    downloader_results.append(f"{downloader_name}: 移除标签 {success}/{matched}")
+                elif action == "pause":
+                    success = self._pause_torrents(hashes, downloader_name)
+                    downloader_results.append(f"{downloader_name}: 暂停 {success}/{matched}")
+                elif action == "delete":
+                    success = self._delete_torrents(hashes, downloader_name, False)
+                    downloader_results.append(f"{downloader_name}: 删除 {success}/{matched}")
+                elif action == "delete_with_file":
+                    success = self._delete_torrents(hashes, downloader_name, True)
+                    downloader_results.append(f"{downloader_name}: 删除并删文件 {success}/{matched}")
+                else:
+                    success = 0
+                    downloader_results.append(f"{downloader_name}: 未知操作")
+                
+                total_success += success
             
-            self._update_event_status(event_id, matched, msg)
-            if send_notify and matched > 0:
-                display_names = names[:5] if names else []
+            msg = f"总计: {total_success}/{total_matched}\n" + "\n".join(downloader_results)
+            self._update_event_status(event_id, total_matched, msg)
+            
+            if send_notify and total_matched > 0:
+                display_names = all_names[:5] if all_names else []
                 self._send_notification(f"删除: {item_name}", msg, display_names)
+                
         except Exception as e:
             logger.error(f"后台删除失败: {e}")
             self._update_event_status(event_id, 0, f"失败: {str(e)}")
 
-    def _execute_delete_sync(self, downloader_name: str, item_name: str, fuzzy: bool, action: str, tag: str) -> tuple:
-        """同步执行删除操作"""
-        matched, names, hashes = self._find_torrents(downloader_name, item_name, fuzzy)
-        if matched == 0:
-            return 0, [], 0
+    def _execute_delete_sync(self, downloader_names: list, item_name: str, fuzzy: bool, action: str, tag: str) -> tuple:
+        """同步执行删除操作（支持多下载器）"""
+        total_matched = 0
+        total_success = 0
+        all_names = []
         
-        if action == "remove_tag":
-            success = self._batch_remove_tag(hashes, tag, downloader_name)
-        elif action == "pause":
-            success = self._pause_torrents(hashes, downloader_name)
-        elif action == "delete":
-            success = self._delete_torrents(hashes, downloader_name, False)
-        elif action == "delete_with_file":
-            success = self._delete_torrents(hashes, downloader_name, True)
-        else:
-            success = 0
-        return matched, names, success
+        for downloader_name in downloader_names:
+            matched, names, hashes = self._find_torrents(downloader_name, item_name, fuzzy)
+            if matched == 0:
+                continue
+            
+            all_names.extend(names)
+            total_matched += matched
+            
+            if action == "remove_tag":
+                success = self._batch_remove_tag(hashes, tag, downloader_name)
+            elif action == "pause":
+                success = self._pause_torrents(hashes, downloader_name)
+            elif action == "delete":
+                success = self._delete_torrents(hashes, downloader_name, False)
+            elif action == "delete_with_file":
+                success = self._delete_torrents(hashes, downloader_name, True)
+            else:
+                success = 0
+            
+            total_success += success
+        
+        return total_matched, total_success, all_names
 
     def _manage_tag(self, downloader_name: str, media_name: str, tag: str, op: str, fuzzy: bool) -> tuple:
-        """管理种子标签"""
+        """管理种子标签（单个下载器）"""
         matched, names, hashes = self._find_torrents(downloader_name, media_name, fuzzy)
         if matched == 0:
             return 0, []
@@ -576,7 +648,8 @@ class MediaSyncProtection(_PluginBase):
                 ok = self._remove_tag(h, tag, downloader, dl_type)
             if ok:
                 success += 1
-        logger.info(f"标签操作完成: {op}, 成功 {success}/{matched}")
+        
+        logger.info(f"下载器 {downloader_name} 标签操作完成: {op}, 成功 {success}/{matched}")
         return success, names
 
     def _find_torrents(self, downloader_name: str, media_name: str, fuzzy: bool) -> tuple:
@@ -904,6 +977,7 @@ class MediaSyncProtection(_PluginBase):
     def stop_service(self):
         """停止服务"""
         self._enabled = False
+        self._shutdown = True
         try:
             self._executor.shutdown(wait=True, timeout=30)
         except Exception as e:
