@@ -56,7 +56,7 @@ TITLE_CLEAN_PATTERNS = [
 ]
 
 EPISODE_PATTERNS = [
-    re.compile(r'[eE][pP]?(\d{1,3})'),
+    re.compile(r'[eE][pP]?(?:0?[1-9]\d{0,1}|0?[1-4]\d{2}|500)'),
     re.compile(r'第(\d+)集'),
 ]
 
@@ -248,7 +248,7 @@ class ShortPlayProcessor(_PluginBase):
     plugin_name = "短剧处理器"
     plugin_desc = "监控短剧目录，自动刮削元数据并整理到媒体库"
     plugin_icon = "Amule_B.png"
-    plugin_version = "3.0.0"
+    plugin_version = "3.1.0"
     plugin_author = "thsrite,AI"
     author_url = "https://github.com/m216owen/MoviePilot-Plugins"
     plugin_config_prefix = "shortplayprocessor_"
@@ -1478,7 +1478,7 @@ class ShortPlayProcessor(_PluginBase):
         logger.debug(f"[整理] 文件名: {source_path.name}, 集数: {episode}, 季数: {season_num}")
 
         if rename_conf == "smart" and episode is not None and season_num is not None:
-            new_name = f"S{season_num:02d}E{max(episode, 1):02d}{source_path.suffix}"
+            new_name = f"S{season_num:02d}E{episode:02d}{source_path.suffix}"
             logger.info(f"[整理] 智能重命名: {source_path.name} -> {new_name}")
         else:
             new_name = source_path.name
@@ -1805,20 +1805,27 @@ class ShortPlayProcessor(_PluginBase):
             return False
 
     @log_method(log_args=True)
-    def _extract_episode(self, filename: str) -> Optional[int]:
+    def _extract_episode(self, filename: str) -> int:  # 返回类型改为 int
+        """从文件名提取集数，提取不到返回默认值1"""
+        
+        # 1. 正则模式匹配
         for pattern in EPISODE_PATTERNS:
             match = pattern.search(filename)
             if match:
                 episode = int(match.group(1))
-                logger.debug(f"[提取] 从文件名提取集数: {filename} -> {episode}")
+                logger.debug(f"[提取] 从文件名提取集数: {filename} -> {episode:02d}")
                 return episode
+        
+        # 2. 数字段回退匹配
         for part in filename.split('.'):
-            if part.isdigit() and 1 <= int(part) <= 999:
+            if part.isdigit() and 1 <= int(part) <= 500:
                 episode = int(part)
-                logger.debug(f"[提取] 从文件名数字提取集数: {filename} -> {episode}")
+                logger.debug(f"[提取] 从文件名数字提取集数: {filename} -> {episode:02d}")
                 return episode
-        logger.debug(f"[提取] 未提取到集数: {filename}")
-        return None
+        
+        # 3. 默认返回1（而不是None）
+        logger.debug(f"[提取] 未提取到集数，使用默认值01")
+        return 1
 
     @log_method(log_args=True)
     def _extract_season(self, source_folder: Path, filename: str) -> int:
