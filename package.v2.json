@@ -3,7 +3,7 @@
     "name": "短剧处理器",
     "description": "监控短剧目录，自动刮削元数据并整理到媒体库（优先本地NFO，支持豆瓣/PT站）",
     "labels": "刮削",
-    "version": "3.0.0",
+    "version": "3.1.0",
     "icon": "Amule_B.png",
     "author": "AI",
     "level": 1,
