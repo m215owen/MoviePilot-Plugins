@@ -56,7 +56,7 @@ TITLE_CLEAN_PATTERNS = [
 ]
 
 EPISODE_PATTERNS = [
-    re.compile(r'[eE][pP]?(?:0?[1-9]\d{0,1}|0?[1-4]\d{2}|500)'),
+    re.compile(r'[eE][pP]?(\d{1,3})'),
     re.compile(r'第(\d+)集'),
 ]
 
@@ -1805,25 +1805,27 @@ class ShortPlayProcessor(_PluginBase):
             return False
 
     @log_method(log_args=True)
-    def _extract_episode(self, filename: str) -> int:  # 返回类型改为 int
-        """从文件名提取集数，提取不到返回默认值1"""
-        
-        # 1. 正则模式匹配
+    def _extract_episode(self, filename: str) -> int:
         for pattern in EPISODE_PATTERNS:
             match = pattern.search(filename)
             if match:
                 episode = int(match.group(1))
-                logger.debug(f"[提取] 从文件名提取集数: {filename} -> {episode:02d}")
-                return episode
+                if 1 <= episode <= 500:  # 范围验证
+                    logger.debug(f"[提取] 从文件名提取集数: {filename} -> {episode:02d}")
+                    return episode
+                else:
+                    logger.debug(f"[提取] 集数超出范围(1-500): {episode}")
+                    continue  # 继续尝试其他模式
         
-        # 2. 数字段回退匹配
+        # 数字段回退
         for part in filename.split('.'):
-            if part.isdigit() and 1 <= int(part) <= 500:
+            if part.isdigit():
                 episode = int(part)
-                logger.debug(f"[提取] 从文件名数字提取集数: {filename} -> {episode:02d}")
-                return episode
+                if 1 <= episode <= 500:
+                    logger.debug(f"[提取] 从文件名数字提取集数: {filename} -> {episode:02d}")
+                    return episode
         
-        # 3. 默认返回1（而不是None）
+        # 默认返回1
         logger.debug(f"[提取] 未提取到集数，使用默认值01")
         return 1
 
