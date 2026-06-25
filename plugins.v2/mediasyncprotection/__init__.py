@@ -474,10 +474,18 @@ class MediaSyncProtection(_PluginBase):
             logger.info(f"删除事件完整数据: {json.dumps(data, ensure_ascii=False)}")
             
             item = data.get("Item", {})
+            item_type = item.get("Type", "")
             
-            if item.get("Type") == "Episode":
-                logger.info("跳过单集删除")
-                return {"code": 200, "message": "跳过单集删除"}
+            # 只处理 Series 和 Movie 类型
+            if item_type not in ["Series", "Movie"]:
+                logger.info(f"跳过 {item_type} 类型删除事件（只处理 Series/Movie）")
+                return {"code": 200, "message": f"跳过 {item_type} 类型"}
+            
+            # 检查是否有有效路径
+            path = item.get("Path", "")
+            if not path:
+                logger.info(f"跳过无路径的删除事件: {item.get('Name', '未知')}")
+                return {"code": 200, "message": "跳过无路径事件"}
             
             item_name = item.get("SeriesName") or item.get("ParentName") or item.get("Name", "未知")
             
@@ -509,7 +517,7 @@ class MediaSyncProtection(_PluginBase):
             if async_delete:
                 if not self._shutdown:
                     self._executor.submit(self._execute_delete, event_id, downloader_names, item_name, 
-                                         fuzzy, send_notify, delete_action, seed_tag)
+                                        fuzzy, send_notify, delete_action, seed_tag)
                     return {"code": 200, "message": "删除任务已提交"}
                 else:
                     logger.warning("线程池已关闭，同步执行删除")
