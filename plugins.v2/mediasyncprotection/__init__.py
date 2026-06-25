@@ -193,7 +193,7 @@ class MediaSyncProtection(_PluginBase):
             }
         ], {
             "enabled": False,
-            "downloaders": [],  # 改为列表，支持多选
+            "downloaders": [],
             "seed_tag": "保种",
             "delete_action": "remove_tag",
             "fuzzy_match": True,
@@ -321,22 +321,17 @@ class MediaSyncProtection(_PluginBase):
         if not config:
             return
         
-        # 确保 downloaders 是列表
         if config.get("downloaders") is None:
             config["downloaders"] = []
         elif isinstance(config.get("downloaders"), str):
-            # 兼容旧配置：如果是字符串，转为列表
             config["downloaders"] = [config["downloaders"]] if config["downloaders"] else []
         
-        # 验证必要配置
         if config.get("enabled") and not config.get("downloaders"):
             logger.warning("启用插件但未配置下载器")
             self._send_notification("配置错误", "启用插件但未配置下载器")
         
-        # 保存配置的深拷贝
         config = copy.deepcopy(config)
         
-        # 验证下载器是否存在
         if config.get("downloaders"):
             available_downloaders = []
             unavailable_downloaders = []
@@ -351,34 +346,26 @@ class MediaSyncProtection(_PluginBase):
                 logger.warning(f"以下下载器不可用: {', '.join(unavailable_downloaders)}")
                 self._send_notification("配置警告", f"下载器不可用: {', '.join(unavailable_downloaders)}")
             
-            # 只保存可用的下载器
             config["downloaders"] = available_downloaders
         
-        # 清空下载器缓存
         self._downloader_cache.clear()
-        
-        # 保存配置
         self._config = config
         
-        # 调用父类的 update_config
         try:
             super().update_config(config)
         except Exception as e:
             logger.error(f"调用父类 update_config 失败: {e}")
         
-        # 重新初始化插件
         self.init_plugin(config)
 
     def _is_duplicate_event(self, event_id: str) -> bool:
         """检查是否为重复事件"""
         with self._processed_lock:
             now = time.time()
-            # 清理过期缓存
             expired = [k for k, v in self._processed_events.items() if now - v > self._event_cache_ttl]
             for k in expired:
                 del self._processed_events[k]
             
-            # 检查重复
             if event_id in self._processed_events:
                 if now - self._processed_events[event_id] < self._event_cache_ttl:
                     return True
@@ -399,7 +386,6 @@ class MediaSyncProtection(_PluginBase):
             event_type = data.get("Event") or data.get("event", "")
             logger.info(f"收到事件: {event_type}")
             
-            # 生成事件ID用于去重
             item_id = data.get('Item', {}).get('Id', '')
             event_id = f"{event_type}_{item_id}_{datetime.now().timestamp()}"
             if self._is_duplicate_event(event_id):
@@ -451,7 +437,6 @@ class MediaSyncProtection(_PluginBase):
             
             if is_favorite:
                 action = "收藏"
-                # 遍历所有下载器
                 for downloader_name in downloader_names:
                     matched, names = self._manage_tag(downloader_name, item_name, seed_tag, "add", fuzzy)
                     total_matched += matched
@@ -522,14 +507,12 @@ class MediaSyncProtection(_PluginBase):
             })
             
             if async_delete:
-                # 检查线程池是否关闭
                 if not self._shutdown:
                     self._executor.submit(self._execute_delete, event_id, downloader_names, item_name, 
                                          fuzzy, send_notify, delete_action, seed_tag)
                     return {"code": 200, "message": "删除任务已提交"}
                 else:
                     logger.warning("线程池已关闭，同步执行删除")
-                    # 降级为同步执行
                     total_matched, total_success, all_names = self._execute_delete_sync(
                         downloader_names, item_name, fuzzy, delete_action, seed_tag
                     )
@@ -579,10 +562,10 @@ class MediaSyncProtection(_PluginBase):
                     downloader_results.append(f"{downloader_name}: 暂停 {success}/{matched}")
                 elif action == "delete":
                     success = self._delete_torrents(hashes, downloader_name, False)
-                    downloader_results.append(f"{downloader_name}: 删除 {success}/{matched}")
+                    downloader_results.append(f"{downloader_name}: 删除(保留文件) {success}/{matched}")
                 elif action == "delete_with_file":
                     success = self._delete_torrents(hashes, downloader_name, True)
-                    downloader_results.append(f"{downloader_name}: 删除并删文件 {success}/{matched}")
+                    downloader_results.append(f"{downloader_name}: 删除(删除文件) {success}/{matched}")
                 else:
                     success = 0
                     downloader_results.append(f"{downloader_name}: 未知操作")
@@ -719,14 +702,12 @@ class MediaSyncProtection(_PluginBase):
         """获取下载器实例和类型（带缓存）"""
         now = time.time()
         
-        # 定期清理缓存
         if now - self._last_cache_cleanup > self._cache_cleanup_interval:
             expired = [k for k, (_, _, t) in self._downloader_cache.items() if now - t > self._cache_ttl]
             for k in expired:
                 del self._downloader_cache[k]
             self._last_cache_cleanup = now
         
-        # 检查缓存
         if name in self._downloader_cache:
             instance, dl_type, cache_time = self._downloader_cache[name]
             if now - cache_time < self._cache_ttl:
@@ -764,7 +745,7 @@ class MediaSyncProtection(_PluginBase):
                 dl_type = "transmission"
             elif hasattr(instance, 'qbc'):
                 dl_type = "qbittorrent"
-            elif hasattr(instance, 'trpc'):
+            elif hasattr(instance, 'trc'):
                 dl_type = "transmission"
             
             if not dl_type:
@@ -779,6 +760,288 @@ class MediaSyncProtection(_PluginBase):
             logger.error(f"获取下载器失败: {e}")
             return None, None
 
+    def _get_hash_to_id_map(self, dl, dl_type: str) -> dict:
+        """
+        获取种子哈希到ID的映射
+        
+        Args:
+            dl: 下载器实例
+            dl_type: 下载器类型 (qbittorrent / transmission)
+        
+        Returns:
+            dict: {哈希: ID}
+        """
+        hash_to_id = {}
+        try:
+            torrents, error = dl.get_torrents()
+            if error:
+                logger.warning(f"获取种子列表失败: {error}")
+                return hash_to_id
+            
+            for t in torrents:
+                # 获取哈希
+                if hasattr(t, 'hashString'):
+                    h = t.hashString
+                else:
+                    h = t.get('hash', '')
+                
+                # 获取ID
+                if dl_type == "transmission":
+                    tid = t.id if hasattr(t, 'id') else t.get('id')
+                else:  # qbittorrent
+                    tid = h  # qBittorrent 使用哈希作为ID
+                
+                if h:
+                    hash_to_id[h] = tid
+                    
+            logger.debug(f"构建哈希映射完成: {len(hash_to_id)} 个种子")
+        except Exception as e:
+            logger.error(f"构建哈希映射失败: {e}")
+        
+        return hash_to_id
+
+    def _get_torrent_id(self, dl, dl_type: str, torrent_hash: str, hash_to_id: dict = None) -> Optional[any]:
+        """
+        根据哈希获取种子ID
+        
+        Args:
+            dl: 下载器实例
+            dl_type: 下载器类型
+            torrent_hash: 种子哈希
+            hash_to_id: 可选的哈希映射，如果不提供则自动获取
+        
+        Returns:
+            种子ID (Transmission返回数字ID，qBittorrent返回哈希)
+        """
+        # qBittorrent 直接使用哈希
+        if dl_type == "qbittorrent":
+            return torrent_hash
+        
+        # Transmission 需要查找ID
+        if dl_type == "transmission":
+            # 如果提供了映射，直接从映射中获取
+            if hash_to_id and torrent_hash in hash_to_id:
+                return hash_to_id[torrent_hash]
+            
+            # 否则重新获取
+            try:
+                torrents, _ = dl.get_torrents()
+                for t in torrents:
+                    th = t.hashString if hasattr(t, 'hashString') else t.get('hash', '')
+                    if th == torrent_hash:
+                        return t.id if hasattr(t, 'id') else t.get('id')
+            except Exception as e:
+                logger.error(f"获取种子ID失败: {e}")
+        
+        return None
+
+    def _verify_torrent_deleted(self, dl, hashes: list) -> dict:
+        """
+        验证种子是否已被删除
+        
+        Args:
+            dl: 下载器实例
+            hashes: 要验证的哈希列表
+        
+        Returns:
+            dict: {哈希: 是否存在}
+        """
+        result = {}
+        try:
+            torrents, _ = dl.get_torrents()
+            existing_hashes = set()
+            for t in torrents:
+                h = t.hashString if hasattr(t, 'hashString') else t.get('hash', '')
+                if h:
+                    existing_hashes.add(h)
+            
+            for h in hashes:
+                result[h] = h in existing_hashes
+                
+            logger.debug(f"验证完成: {len([h for h in result if result[h]])} 个种子仍存在")
+        except Exception as e:
+            logger.error(f"验证失败: {e}")
+            for h in hashes:
+                result[h] = True  # 未知状态默认为存在
+        
+        return result
+
+    def _execute_delete_by_type(self, dl, dl_type: str, torrent_id: any, delete_file: bool) -> bool:
+        """
+        根据下载器类型执行删除
+        
+        Args:
+            dl: 下载器实例
+            dl_type: 下载器类型
+            torrent_id: 种子ID
+            delete_file: 是否删除文件
+        
+        Returns:
+            bool: 是否删除成功
+        """
+        try:
+            if dl_type == "qbittorrent":
+                # qBittorrent 删除
+                if hasattr(dl, 'delete_torrents'):
+                    logger.info(f"调用 delete_torrents(ids=[{torrent_id[:8]}...], delete_file={delete_file})")
+                    try:
+                        result = dl.delete_torrents(ids=[torrent_id], delete_file=delete_file)
+                        return result is True or result is None
+                    except TypeError:
+                        try:
+                            result = dl.delete_torrents(ids=[torrent_id], delete_files=delete_file)
+                            return result is True or result is None
+                        except Exception as e:
+                            logger.error(f"delete_torrents 失败: {e}")
+                            return False
+                elif hasattr(dl, 'qbc'):
+                    logger.info(f"调用 qbc.torrents_delete")
+                    dl.qbc.torrents_delete(delete_files=delete_file, torrent_hashes=torrent_id)
+                    return True
+                else:
+                    logger.error(f"qBittorrent 没有可用的删除方法")
+                    return False
+                    
+            elif dl_type == "transmission":
+                # Transmission 删除 (使用 trc.remove_torrent)
+                if hasattr(dl, 'trc') and hasattr(dl.trc, 'remove_torrent'):
+                    logger.info(f"调用 trc.remove_torrent(ids={torrent_id}, delete_data={delete_file})")
+                    try:
+                        result = dl.trc.remove_torrent(ids=torrent_id, delete_data=delete_file)
+                        logger.debug(f"trc.remove_torrent 返回: {result}")
+                        return True  # 返回 None 表示成功
+                    except Exception as e:
+                        logger.error(f"trc.remove_torrent 失败: {e}")
+                        # 尝试不带 delete_data
+                        try:
+                            logger.info(f"尝试不带 delete_data 参数")
+                            result = dl.trc.remove_torrent(ids=torrent_id)
+                            logger.debug(f"trc.remove_torrent 返回: {result}")
+                            return True
+                        except Exception as e2:
+                            logger.error(f"trc.remove_torrent 无参数失败: {e2}")
+                            return False
+                else:
+                    # 回退到 delete_torrents
+                    logger.warning("trc.remove_torrent 不可用，尝试 delete_torrents")
+                    if hasattr(dl, 'delete_torrents'):
+                        try:
+                            result = dl.delete_torrents(ids=[torrent_id], delete_data=delete_file)
+                            return result is True or result is None
+                        except Exception as e:
+                            logger.error(f"delete_torrents 失败: {e}")
+                            return False
+                    else:
+                        logger.error(f"Transmission 没有可用的删除方法")
+                        return False
+            else:
+                logger.error(f"不支持的下载器类型: {dl_type}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"执行删除失败: {e}", exc_info=True)
+            return False
+
+    def _delete_torrents(self, hashes: list, dl_name: str, delete_file: bool) -> int:
+        """删除种子"""
+        logger.info(f"========== 开始删除种子 ==========")
+        logger.info(f"下载器: {dl_name}, 删除文件: {delete_file}")
+        logger.info(f"种子哈希列表: {hashes}")
+        
+        dl, dl_type = self._get_downloader(dl_name)
+        if not dl:
+            logger.warning(f"下载器 {dl_name} 不可用")
+            return 0
+        
+        logger.info(f"下载器类型: {dl_type}")
+        
+        # 构建哈希到ID的映射
+        hash_to_id = self._get_hash_to_id_map(dl, dl_type)
+        logger.info(f"删除前种子数量: {len(hash_to_id)}")
+        
+        success = 0
+        for h in hashes:
+            try:
+                logger.info(f"处理种子哈希: {h[:8]}...")
+                
+                # 获取种子ID
+                torrent_id = self._get_torrent_id(dl, dl_type, h, hash_to_id)
+                if not torrent_id:
+                    logger.error(f"❌ 无法获取种子ID: {h[:8]}...")
+                    continue
+                
+                logger.info(f"种子ID: {torrent_id}")
+                
+                # 执行删除
+                deleted = self._execute_delete_by_type(dl, dl_type, torrent_id, delete_file)
+                if deleted:
+                    success += 1
+                    logger.info(f"✅ 种子删除成功: {h[:8]}...")
+                else:
+                    logger.error(f"❌ 种子删除失败: {h[:8]}...")
+                    
+            except Exception as e:
+                logger.error(f"❌ 删除种子失败 {h[:8]}...: {e}", exc_info=True)
+        
+        # 验证删除结果
+        import time
+        time.sleep(2)
+        verify_result = self._verify_torrent_deleted(dl, hashes)
+        
+        for h in hashes:
+            if verify_result.get(h, True):
+                logger.warning(f"⚠️ 种子仍然存在: {h[:8]}...")
+            else:
+                logger.info(f"✅ 种子已成功移除: {h[:8]}...")
+        
+        logger.info(f"========== 删除完成: 成功 {success}/{len(hashes)} ==========")
+        return success
+
+    def _pause_torrents(self, hashes: list, dl_name: str) -> int:
+        """暂停种子"""
+        dl, dl_type = self._get_downloader(dl_name)
+        if not dl:
+            logger.warning(f"下载器 {dl_name} 不可用")
+            return 0
+        
+        # 构建哈希到ID的映射
+        hash_to_id = self._get_hash_to_id_map(dl, dl_type)
+        
+        success = 0
+        for h in hashes:
+            try:
+                torrent_id = self._get_torrent_id(dl, dl_type, h, hash_to_id)
+                if not torrent_id:
+                    logger.warning(f"未找到种子ID: {h[:8]}...")
+                    continue
+                
+                if dl_type == "qbittorrent":
+                    if hasattr(dl, 'pause_torrents'):
+                        if dl.pause_torrents([torrent_id]):
+                            success += 1
+                    elif hasattr(dl, 'qbc'):
+                        dl.qbc.torrents_pause([torrent_id])
+                        success += 1
+                        
+                elif dl_type == "transmission":
+                    if hasattr(dl, 'trc') and hasattr(dl.trc, 'stop_torrent'):
+                        try:
+                            dl.trc.stop_torrent(ids=torrent_id)
+                            success += 1
+                            logger.info(f"✅ 暂停成功: {h[:8]}...")
+                        except Exception as e:
+                            logger.error(f"trc.stop_torrent 失败: {e}")
+                    elif hasattr(dl, 'stop_torrents'):
+                        if dl.stop_torrents([torrent_id]):
+                            success += 1
+                    else:
+                        logger.warning(f"没有可用的暂停方法")
+                        
+            except Exception as e:
+                logger.error(f"暂停种子失败 {h[:8]}...: {e}")
+        
+        return success
+
     def _add_tag(self, h: str, tag: str, dl, dl_type: str) -> bool:
         """添加标签/分类到种子"""
         try:
@@ -791,7 +1054,7 @@ class MediaSyncProtection(_PluginBase):
             elif dl_type == "transmission":
                 if hasattr(dl, 'add_torrent_label'):
                     return dl.add_torrent_label(h, tag)
-                if hasattr(dl, 'set_torrent') and hasattr(dl, 'trpc'):
+                if hasattr(dl, 'set_torrent') and hasattr(dl, 'trc'):
                     try:
                         dl.set_torrent(h, labels=[tag])
                         return True
@@ -840,7 +1103,6 @@ class MediaSyncProtection(_PluginBase):
         """批量移除标签"""
         BATCH_SIZE = 100
         
-        # 分批处理
         if len(hashes) > BATCH_SIZE:
             logger.warning(f"批量操作数量过多 ({len(hashes)}), 将分批处理")
             total_success = 0
@@ -866,64 +1128,6 @@ class MediaSyncProtection(_PluginBase):
         for h in hashes:
             if self._remove_tag(h, tag, dl, dt):
                 success += 1
-        return success
-
-    def _pause_torrents(self, hashes: list, dl_name: str) -> int:
-        """暂停种子"""
-        dl, dl_type = self._get_downloader(dl_name)
-        if not dl:
-            logger.warning(f"下载器 {dl_name} 不可用")
-            return 0
-        
-        success = 0
-        for h in hashes:
-            try:
-                if dl_type == "qbittorrent":
-                    if hasattr(dl, 'pause_torrents'):
-                        if dl.pause_torrents([h]):
-                            success += 1
-                    elif hasattr(dl, 'qbc'):
-                        dl.qbc.torrents_pause([h])
-                        success += 1
-                elif dl_type == "transmission":
-                    if hasattr(dl, 'stop_torrent'):
-                        if dl.stop_torrent(h):
-                            success += 1
-                    elif hasattr(dl, 'trpc'):
-                        dl.trpc.stop_torrent(h)
-                        success += 1
-                logger.debug(f"暂停种子成功: {h[:8]}...")
-            except Exception as e:
-                logger.error(f"暂停种子失败 {h[:8]}...: {e}")
-        return success
-
-    def _delete_torrents(self, hashes: list, dl_name: str, delete_file: bool) -> int:
-        """删除种子"""
-        dl, dl_type = self._get_downloader(dl_name)
-        if not dl:
-            logger.warning(f"下载器 {dl_name} 不可用")
-            return 0
-        
-        success = 0
-        for h in hashes:
-            try:
-                if dl_type == "qbittorrent":
-                    if hasattr(dl, 'delete_torrents'):
-                        if dl.delete_torrents(ids=[h], delete_file=delete_file):
-                            success += 1
-                    elif hasattr(dl, 'qbc'):
-                        dl.qbc.torrents_delete(delete_files=delete_file, torrent_hashes=h)
-                        success += 1
-                elif dl_type == "transmission":
-                    if hasattr(dl, 'remove_torrent'):
-                        if dl.remove_torrent(h, delete_data=delete_file):
-                            success += 1
-                    elif hasattr(dl, 'trpc'):
-                        dl.trpc.remove_torrent(h, delete_data=delete_file)
-                        success += 1
-                logger.debug(f"删除种子成功: {h[:8]}...")
-            except Exception as e:
-                logger.error(f"删除种子失败 {h[:8]}...: {e}")
         return success
 
     def _update_event_status(self, event_id: str, matched: int, status: str):
@@ -979,7 +1183,9 @@ class MediaSyncProtection(_PluginBase):
         self._enabled = False
         self._shutdown = True
         try:
-            self._executor.shutdown(wait=True, timeout=30)
+            # 不传 timeout 参数，兼容低版本 Python
+            self._executor.shutdown()
+            logger.info("线程池已关闭")
         except Exception as e:
             logger.error(f"关闭线程池失败: {e}")
         logger.info("媒体同步保护插件已停止")
