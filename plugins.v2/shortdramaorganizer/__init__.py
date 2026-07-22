@@ -278,6 +278,9 @@ class ShortDramaRecognizer:
         # 移除括号内容
         title = re.split(r'[（(]', title)[0]
         
+        # 移除点号及后面的英文/数字后缀（如 .Tui.Hun.Zha.Nan.2024.S01.1080p...）
+        title = re.sub(r'\..*', '', title)
+        
         # 移除特殊字符
         title = re.sub(r'[\\/*?:"<>|]', '', title)
         
@@ -387,58 +390,9 @@ class PTInfoFetcher:
                 logger.error(f"[PT信息] 获取站点失败 {domain}: {e}")
                 self._site_cache[domain] = None
         return self._site_cache[domain]
-    
-    @staticmethod
-    def _parse_torrent_list(html_text: str, domain: str) -> List[dict]:
-        """直接用 lxml 解析 NexusPHP 种子列表页面"""
-        torrents = []
-        try:
-            tree = etree.HTML(html_text)
-            if tree is None:
-                return torrents
-            
-            # NexusPHP 标准种子表格
-            rows = tree.xpath('//table[@class="torrents"]//tr[td[@class="rowfollow"]]')
-            if not rows:
-                rows = tree.xpath('//table[contains(@class, "torrent")]//tr[td]')
-            
-            base_url = f"https://www.{domain}"
-            
-            for row in rows:
-                try:
-                    # 标题链接
-                    title_links = row.xpath('.//a[contains(@href, "details.php")]')
-                    if not title_links:
-                        continue
-                    
-                    title = title_links[0].xpath('string()').strip()
-                    if not title:
-                        title = title_links[0].get('title', '').strip()
-                    if not title:
-                        continue
-                    
-                    detail_href = title_links[0].get('href', '')
-                    page_url = detail_href if detail_href.startswith('http') else f"{base_url}/{detail_href.lstrip('/')}"
-                    
-                    torrents.append({
-                        "title": title,
-                        "page_url": page_url,
-                    })
-                except Exception:
-                    continue
-            
-            logger.debug(f"[PT信息] 直接解析 {domain} 种子列表: {len(torrents)} 条")
-        except Exception as e:
-            logger.debug(f"[PT信息] 直接解析种子列表失败: {e}")
-        
-        return torrents
-    
     def _extract_from_detail(self, html: etree._Element, config: dict) -> dict:
         """从详情页提取信息"""
         result = {}
-        title_elem = html.xpath("//title/text()")
-        if title_elem:
-            logger.debug(f"[PT信息] 详情页标题: {title_elem[0][:100]}")
         
         body = html.xpath("//body")
         if body:
@@ -449,7 +403,6 @@ class PTInfoFetcher:
             if elements:
                 result["poster_url"] = str(elements[0])
         
-        all_ids = html.xpath("//*[@id]/@id")
         
         # 提取海报
         elements = html.xpath("//*[@id='kdescr']/img[1]/@src")
@@ -498,13 +451,6 @@ class PTInfoFetcher:
                 else:
                     result[field] = value
         
-        # 没提取到标题就用页面 title
-        if not result.get("title"):
-            title_elem = html.xpath("//title/text()")
-            if title_elem:
-                match = re.search(r'^([^（(]+)', title_elem[0].strip())
-                if match:
-                    result["title"] = match.group(1).strip()
         
         logger.info(f"[PT信息] 提取结果: {json.dumps({k: str(v)[:80] for k, v in result.items()}, ensure_ascii=False)}")
         return result
@@ -550,11 +496,11 @@ class PTInfoFetcher:
             
             try:
                 indexer = SitesHelper().get_indexer(domain)
-                if indexer:
-                    spider = SiteSpider(indexer=indexer, page=1)
-                    torrents = spider.parse(page_source)
-                else:
-                    torrents = self._parse_torrent_list(page_source, domain)
+                if not indexer:
+                    logger.debug(f"[PT信息] 站点索引器不存在: {domain}")
+                    return None
+                spider = SiteSpider(indexer=indexer, page=1)
+                torrents = spider.parse(page_source)
             except Exception as e:
                 logger.debug(f"[PT信息] {site_config.get('name')} 解析失败: {e}")
                 return None
@@ -2306,6 +2252,10 @@ class shortdramaorganizer(_PluginBase):
                 drama_info["source_path"] = file_path
                 drama_info["file_name"] = Path(file_path).name
                 drama_info["episode"] = self._recognizer.extract_episode(Path(file_path).name) if self._recognizer else 1
+                # 确保 title 使用 extract_title 的干净结果，不被缓存中的脏数据污染
+                clean_title = self._recognizer.extract_title(folder_name) if self._recognizer else folder_name
+                if clean_title:
+                    drama_info["title"] = clean_title
                 logger.info(f"[短剧整理器] 使用缓存 -> title={drama_info.get('title')} season={drama_info.get('season')} episode={drama_info.get('episode')}")
             else:
                 logger.info(f"[短剧整理器] 缓存未命中，开始首次识别")
@@ -2321,22 +2271,31 @@ class shortdramaorganizer(_PluginBase):
                 season = 1
                 episode = 1
                 tmdb_info = None
+                # 搜索关键字使用 extract_title 的干净结果，不用 mapped_title（可能被污染）
+                search_title = self._recognizer.extract_title(folder_name) if self._recognizer else folder_name
+                if not search_title:
+                    search_title = title
                 
                 if HAS_FRAMEWORK:
-                    # 系统识别：路径解析季/集 + TMDB搜索元数据
+                    # 系统识别：路径解析季/集，优先使用识别得到的剧名作为搜索关键字
                     try:
                         ctx = MediaChain().recognize_by_path(file_path)
                         if ctx and ctx.meta_info:
                             m = ctx.meta_info
                             season = m.begin_season or 1
                             episode = m.begin_episode or 1
-                            logger.info(f"[短剧整理器] 路径识别 -> season={season} episode={episode} season_episode={m.season_episode}")
+                            # 使用系统识别得到的剧名（比 extract_title 更准确）
+                            if ctx.media_info and ctx.media_info.title:
+                                search_title = ctx.media_info.title
+                                logger.info(f"[短剧整理器] 路径识别 -> title={search_title} season={season} episode={episode}")
+                            else:
+                                logger.info(f"[短剧整理器] 路径识别 -> season={season} episode={episode} season_episode={m.season_episode}")
                     except Exception as e:
                         logger.warning(f"[短剧整理器] 路径识别异常: {e}")
                     
-                    # TMDB搜索
+                    # TMDB搜索（使用识别得到的剧名）
                     try:
-                        tmdb_info = self._search_tmdb(title)
+                        tmdb_info = self._search_tmdb(search_title)
                         if tmdb_info:
                             logger.info(f"[短剧整理器] TMDB补全: {json.dumps(tmdb_info, ensure_ascii=False, default=str)}")
                     except Exception as e:
@@ -2388,14 +2347,18 @@ class shortdramaorganizer(_PluginBase):
                             drama_info[k] = v
                     logger.info(f"[短剧整理器] 应用TMDB信息: {list(tmdb_info.keys())}")
 
-                # PT站点信息补全（补充TMDB未覆盖的字段）
+                # PT站点信息补全（使用识别得到的剧名搜索）
                 if self._pt_fetcher and self._config.pt_enabled:
                     try:
-                        pt_info = self._pt_fetcher.fetch(title, drama_info.get("year"))
+                        pt_info = self._pt_fetcher.fetch(search_title, drama_info.get("year"))
                         if pt_info:
                             for k, v in pt_info.items():
                                 if v and not drama_info.get(k):
                                     drama_info[k] = v
+                            # PT 的 title 是详情页的干净片名，优先使用
+                            if pt_info.get("title"):
+                                drama_info["title"] = pt_info["title"]
+                                search_title = pt_info["title"]
                             logger.info(f"[短剧整理器] 应用PT信息: {list(pt_info.keys())}")
                     except Exception as e:
                         logger.warning(f"[短剧整理器] PT信息补全异常: {e}")
@@ -2409,8 +2372,12 @@ class shortdramaorganizer(_PluginBase):
                     # 如果 nfo 有 title，优先使用
                     if nfo_info.get("title"):
                         drama_info["title"] = nfo_info["title"]
-                        title = nfo_info["title"]  # 更新标题变量
+                        search_title = nfo_info["title"]
                     logger.info(f"[短剧整理器] 应用NFO信息: {list(nfo_info.keys())}")
+                
+                # 确保 title 使用识别得到的干净剧名
+                if search_title:
+                    drama_info["title"] = search_title
                 
                 # 写入缓存（排除每集变化的字段）
                 cache_data = {
@@ -2420,11 +2387,11 @@ class shortdramaorganizer(_PluginBase):
                 self._drama_cache[source_dir] = cache_data
                 logger.info(f"[短剧整理器] 写入缓存 -> key={source_dir} fields={list(cache_data.keys())}")
                 
-                # 保存持久化映射：原始文件夹名 -> 最终标题
-                final_title = cache_data.get("title", title)
-                if folder_name != final_title:
-                    self._title_mapping[folder_name] = final_title
-                    logger.info(f"[短剧整理器] 保存映射: {folder_name} -> {final_title}")
+                # 保存持久化映射：原始文件夹名 -> extract_title 的原始结果（不被 PT 等后续合并污染）
+                clean_title = self._recognizer.extract_title(folder_name) if self._recognizer else folder_name
+                if folder_name != clean_title:
+                    self._title_mapping[folder_name] = clean_title
+                    logger.info(f"[短剧整理器] 保存映射: {folder_name} -> {clean_title}")
             
             title = drama_info.get("title", "未知短剧")
             season = drama_info.get("season", 1)
@@ -2586,7 +2553,6 @@ class shortdramaorganizer(_PluginBase):
     @eventmanager.register(EventType.PluginAction)
     def handle_command(self, event: Event):
         action = (event.event_data or {}).get("action")
-        logger.info(f"[短剧整理器] 收到命令: {action}")
         
         if action == "stats":
             result = self._show_stats()
@@ -2594,8 +2560,12 @@ class shortdramaorganizer(_PluginBase):
             result = self._clear_cache()
         elif action == "scan":
             result = self._force_scan()
+        elif action == "site_refresh":
+            logger.info("[短剧整理器] 收到站点刷新命令，开始刷流")
+            threading.Thread(target=self._fetch_and_download, daemon=True).start()
+            return
         else:
-            logger.warning(f"[短剧整理器] 未知命令: {action}")
+            logger.debug(f"[短剧整理器] 忽略未知命令: {action}")
             return
         
         self.post_message(mtype=NotificationType.Organize, title="【短剧整理器】", text=result)
