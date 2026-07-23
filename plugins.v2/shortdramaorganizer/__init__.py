@@ -218,6 +218,7 @@ class ShortDramaConfig:
         
         self.delete_enabled: bool = config.get("delete_enabled", False)
         self.clear_stats: bool = config.get("clear_stats", False)
+        self.clear_history: bool = config.get("clear_history", False)
         self.clear_cache: bool = config.get("clear_cache", False)
         
         self.polling_interval: int = config.get("polling_interval", 5)
@@ -266,6 +267,7 @@ class ShortDramaConfig:
             "pt_sites": self.pt_sites,
             "pt_enabled": self.pt_enabled,
             "delete_enabled": self.delete_enabled,
+            "clear_history": self.clear_history,
             "polling_interval": self.polling_interval,
             "retry_count": self.retry_count,
             "retry_interval": self.retry_interval,
@@ -1453,6 +1455,30 @@ class shortdramaorganizer(_PluginBase):
             config["clear_stats"] = False
             self.update_config(config)
         
+        # 清空整理历史记录（一次性操作，按设置的类别匹配）
+        if self._config.clear_history:
+            logger.info("[短剧整理器] 清空整理历史记录")
+            try:
+                from app.db import ScopedSession
+                db = ScopedSession()
+                try:
+                    category = self._config.category or "短剧"
+                    result = db.execute(
+                        text("DELETE FROM transferhistory WHERE category = :category"),
+                        {"category": category}
+                    )
+                    db.commit()
+                    logger.info(f"[短剧整理器] 已清空类别 [{category}] 的整理历史，共 {result.rowcount} 条")
+                except Exception:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"[短剧整理器] 清空整理历史失败: {e}")
+            config["clear_history"] = False
+            self.update_config(config)
+        
         # 清空缓存数据（一次性操作，保存后自动复位）
         if self._config.clear_cache:
             logger.info("[短剧整理器] 清空缓存数据")
@@ -1562,7 +1588,7 @@ class shortdramaorganizer(_PluginBase):
             "exclude_patterns": ["*.sample", "*.nfo", "临时/"], "recursive": True, "incremental_scan": True,
             "transfer_type": "link", "media_library": "", "subdir": "短剧",
             "media_type": "电视剧", "category": "短剧",
-            "pt_enabled": True, "delete_enabled": False, "clear_stats": False, "clear_cache": False,
+            "pt_enabled": True, "delete_enabled": False, "clear_stats": False, "clear_history": False, "clear_cache": False,
             "debounce_time": 3,
             "use_proxy": False, "polling_interval": 5,
             "retry_count": 3, "retry_interval": 5,
@@ -1786,11 +1812,14 @@ class shortdramaorganizer(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
-                            {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [
                                 {"component": "VSwitch", "props": {"model": "delete_enabled", "label": "启用同步删除"}}
                             ]},
                             {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [
                                 {"component": "VSwitch", "props": {"model": "clear_stats", "label": "清空数据面板", "color": "warning"}}
+                            ]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [
+                                {"component": "VSwitch", "props": {"model": "clear_history", "label": "清空整理历史", "color": "warning"}}
                             ]},
                             {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [
                                 {"component": "VSwitch", "props": {"model": "clear_cache", "label": "清空缓存数据", "color": "error"}}
