@@ -19,6 +19,7 @@ import chardet
 from lxml import etree
 from lxml.etree import Element, SubElement, tostring, parse
 from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy import text
 from app.core.config import settings
 from app.core.event import eventmanager, Event
 from app.log import logger
@@ -184,8 +185,8 @@ class ShortDramaConfig:
         
         self.sites: List[str] = config.get("sites", [])
         
-        self.whitelist_keywords: List[str] = config.get("whitelist_keywords", ["短剧", "微短剧", "竖屏剧"])
-        self.blacklist_keywords: List[str] = config.get("blacklist_keywords", ["欧美", "日剧", "韩剧", "电影", "动漫"])
+        self.whitelist_keywords: List[str] = self._parse_keywords(config.get("whitelist_keywords", ["短剧", "微短剧", "竖屏剧"]))
+        self.blacklist_keywords: List[str] = self._parse_keywords(config.get("blacklist_keywords", ["欧美", "日剧", "韩剧", "电影", "动漫"]))
         self.min_size: int = int(config.get("min_size", 200) or 200)
         self.max_size: int = int(config.get("max_size", 2048) or 2048)
         self.min_seeders: int = int(config.get("min_seeders", 1) or 1)
@@ -209,18 +210,30 @@ class ShortDramaConfig:
         self.transfer_type: str = config.get("transfer_type", "link")
         self.media_library: str = config.get("media_library", "")
         self.subdir: str = config.get("subdir", "短剧")
+        self.media_type: str = config.get("media_type", "电视剧")
+        self.category: str = config.get("category", "短剧")
         
         self.pt_sites: List[Dict] = config.get("pt_sites", DEFAULT_PT_SITES)
         self.pt_enabled: bool = config.get("pt_enabled", True)
         
         self.delete_enabled: bool = config.get("delete_enabled", False)
-        self.clear_data: bool = config.get("clear_data", False)
+        self.clear_stats: bool = config.get("clear_stats", False)
+        self.clear_cache: bool = config.get("clear_cache", False)
         
         self.polling_interval: int = config.get("polling_interval", 5)
         self.retry_count: int = config.get("retry_count", 3)
         self.retry_interval: int = config.get("retry_interval", 5)
         self.use_proxy: bool = config.get("use_proxy", False)
         self.debounce_time: int = config.get("debounce_time", 3)
+    
+    @staticmethod
+    def _parse_keywords(value) -> List[str]:
+        """解析关键词配置，支持列表和逗号/换行分隔的字符串"""
+        if isinstance(value, str):
+            return [k.strip() for k in value.replace("\n", ",").split(",") if k.strip()]
+        if isinstance(value, list):
+            return [k.strip() for k in value if k.strip()]
+        return []
     
     def to_dict(self) -> dict:
         return {
@@ -230,8 +243,8 @@ class ShortDramaConfig:
             "refresh_interval": self.refresh_interval,
             "notify_enabled": self.notify_enabled,
             "sites": self.sites,
-            "whitelist_keywords": self.whitelist_keywords,
-            "blacklist_keywords": self.blacklist_keywords,
+            "whitelist_keywords": ",".join(self.whitelist_keywords),
+            "blacklist_keywords": ",".join(self.blacklist_keywords),
             "min_size": self.min_size,
             "max_size": self.max_size,
             "min_seeders": self.min_seeders,
@@ -248,6 +261,8 @@ class ShortDramaConfig:
             "transfer_type": self.transfer_type,
             "media_library": self.media_library,
             "subdir": self.subdir,
+            "media_type": self.media_type,
+            "category": self.category,
             "pt_sites": self.pt_sites,
             "pt_enabled": self.pt_enabled,
             "delete_enabled": self.delete_enabled,
@@ -304,7 +319,7 @@ class ShortDramaRecognizer:
         digits = re.findall(r'\d+', name)
         if digits:
             episode = int(digits[-1])
-            if 1 <= episode <= 999:
+            if 1 <= episode <= 200:
                 return episode
         
         return 1
@@ -370,15 +385,15 @@ class PTInfoFetcher:
                         ret.encoding = "utf-8"
                     else:
                         ret.encoding = ret.apparent_encoding
-                    return ret.text
+                    return ret.text or ""
             
-            return ret.text
+            return ret.text or ""
         
         except Exception as e:
             logger.error(f"[PT信息] 获取页面失败: {e}")
             return None
     
-    def _get_site(self, domain: str):
+    def _get_site(self, domain: str) -> Optional[Any]:
         """获取站点"""
         if not HAS_FRAMEWORK:
             return None
@@ -394,17 +409,7 @@ class PTInfoFetcher:
         """从详情页提取信息"""
         result = {}
         
-        body = html.xpath("//body")
-        if body:
-            text = body[0].xpath("string()").strip()
-        poster_xpath = config.get("extract", {}).get("poster_xpath")
-        if poster_xpath:
-            elements = html.xpath(poster_xpath)
-            if elements:
-                result["poster_url"] = str(elements[0])
-        
-        
-        # 提取海报
+        # 提取海报（硬编码方式）
         elements = html.xpath("//*[@id='kdescr']/img[1]/@src")
         if elements:
             result["poster_url"] = str(elements[0])
@@ -723,8 +728,8 @@ class TorrentService:
         
         return True
     
-    def download(self, torrent) -> bool:
-        """使用下载器下载种子"""
+    def download(self, torrent) -> Optional[str]:
+        """使用下载器下载种子，成功返回下载哈希，失败返回 None"""
         if isinstance(torrent, dict):
             enclosure = torrent.get('enclosure', '')
             title = torrent.get('title', '')
@@ -734,31 +739,28 @@ class TorrentService:
         
         if not enclosure:
             logger.error("[种子服务] 种子无下载链接")
-            return False
+            return None
         
         save_path = self.config.download_path
         if not save_path:
             logger.error("[种子服务] 未配置下载目录")
-            return False
+            return None
         
         downloader_name = self.config.downloader
         if not downloader_name:
             logger.error("[种子服务] 未选择下载器")
-            return False
+            return None
         
         tags = self.config.download_tags or ["短剧整理器"]
         
-        # 1. 获取站点Cookie（关键修复）
+        # 1. 获取站点Cookie
         try:
-            # 从enclosure中提取站点域名
             from urllib.parse import urlparse
             parsed = urlparse(enclosure)
             domain = parsed.netloc
             
-            # 获取站点信息
             site = SiteOper().get_by_domain(domain)
             if not site:
-                # 如果直接匹配失败，尝试用主域名
                 domain_parts = domain.split('.')
                 if len(domain_parts) >= 2:
                     main_domain = '.'.join(domain_parts[-2:])
@@ -769,12 +771,11 @@ class TorrentService:
                 cookie = ""
             else:
                 cookie = site.cookie
-                logger.debug(f"[种子服务] 使用站点 {site.name} 的Cookie")
         except Exception as e:
             logger.warning(f"[种子服务] 获取站点Cookie失败: {e}")
             cookie = ""
         
-        # 2. 下载种子文件（携带Cookie）
+        # 2. 下载种子文件
         try:
             response = RequestUtils(
                 cookies=cookie,
@@ -784,42 +785,40 @@ class TorrentService:
             
             if not response or not response.content:
                 logger.error("[种子服务] 下载种子文件失败")
-                return False
+                return None
             
             torrent_content = response.content
             
-            # 检查是否是有效的种子文件（以 "d8:announce" 开头或 "d8:announce" 包含）
             content_sample = torrent_content[:20] if len(torrent_content) >= 20 else torrent_content
             if not (content_sample.startswith(b'd8:announce') or b'd8:announce' in content_sample):
-                logger.error(f"[种子服务] 下载的内容不是有效的种子文件，前20字节: {content_sample}")
-                return False
-            
-            logger.debug(f"[种子服务] 种子文件下载成功: {len(torrent_content)} bytes")
+                logger.error(f"[种子服务] 下载的内容不是有效的种子文件")
+                return None
         except Exception as e:
             logger.error(f"[种子服务] 下载种子文件异常: {e}")
-            return False
+            return None
         
         # 3. 获取下载器实例并添加种子
         try:
             service = DownloaderHelper().get_service(name=downloader_name)
             if not service or not service.instance:
                 logger.error(f"[种子服务] 下载器 {downloader_name} 不存在或未连接")
-                return False
+                return None
             
             dl = service.instance
+            download_hash = None
             
             if DownloaderHelper().is_downloader("qbittorrent", service=service):
-                result = dl.add_torrent(
+                success, hashes = dl.add_torrent(
                     content=torrent_content,
                     download_dir=save_path,
                     tag=",".join(tags)
                 )
-                if result:
-                    logger.info(f"[种子服务] 下载成功: {title}")
-                    return True
+                if success:
+                    download_hash = hashes[0] if hashes else None
+                    logger.info(f"[种子服务] 下载成功: {title}, hash={download_hash}")
                 else:
                     logger.error(f"[种子服务] qBittorrent 添加种子失败")
-                    return False
+                    return None
             else:
                 # Transmission
                 result = dl.add_torrent(
@@ -828,14 +827,16 @@ class TorrentService:
                     labels=tags
                 )
                 if result:
-                    logger.info(f"[种子服务] 下载成功: {title}")
-                    return True
+                    download_hash = getattr(result, 'hashString', None)
+                    logger.info(f"[种子服务] 下载成功: {title}, hash={download_hash}")
                 else:
                     logger.error(f"[种子服务] Transmission 添加种子失败")
-                    return False
+                    return None
+            
+            return download_hash
         except Exception as e:
             logger.error(f"[种子服务] 下载异常: {e}")
-            return False
+            return None
 
 
 # ==================== 整理器 ====================
@@ -875,26 +876,45 @@ class ShortDramaOrganizer:
             if not self._transfer_file(source, target_path):
                 return {"success": False, "error": "文件转移失败"}
             
-            self._generate_nfo(target_path.parent, drama_info)
+            # NFO 和海报存放在季目录的上级（剧名目录），与 Season 目录同级
+            series_dir = target_path.parent.parent
+            self._generate_nfo(series_dir, drama_info)
             
             # 海报已存在则跳过
-            poster_path = target_path.parent / "poster.jpg"
+            poster_path = series_dir / "poster.jpg"
             if not poster_path.exists():
                 # 优先从源目录复制图片作为海报
                 poster_saved = False
                 source_dir = source.parent
+                
+                # 先找文件名包含 poster 关键字的图片
                 for img_ext in ['.jpg', '.jpeg', '.png', '.webp']:
                     for img_file in source_dir.glob(f"*{img_ext}"):
-                        if img_file.is_file():
+                        if img_file.is_file() and 'poster' in img_file.stem.lower():
                             try:
                                 shutil.copy2(str(img_file), str(poster_path))
-                                logger.info(f"[海报] 从源目录复制: {img_file.name}")
+                                logger.info(f"[海报] 从源目录复制（poster优先）: {img_file.name}")
                                 poster_saved = True
                                 break
                             except Exception as e:
                                 logger.warning(f"[海报] 复制失败: {e}")
                     if poster_saved:
                         break
+                
+                # 没有 poster 关键字图片，则取第一张
+                if not poster_saved:
+                    for img_ext in ['.jpg', '.jpeg', '.png', '.webp']:
+                        for img_file in source_dir.glob(f"*{img_ext}"):
+                            if img_file.is_file():
+                                try:
+                                    shutil.copy2(str(img_file), str(poster_path))
+                                    logger.info(f"[海报] 从源目录复制: {img_file.name}")
+                                    poster_saved = True
+                                    break
+                                except Exception as e:
+                                    logger.warning(f"[海报] 复制失败: {e}")
+                        if poster_saved:
+                            break
                 
                 # 没有本地图片则从 URL 下载
                 if not poster_saved and drama_info.get("poster_url"):
@@ -1052,12 +1072,11 @@ class ShortDramaOrganizer:
                     actor_elem = SubElement(root, "actor")
                     SubElement(actor_elem, "name").text = actor
             
-            # 演员标签
+            # 演员标签（用于筛选）
             if actors:
-                tags_elem = SubElement(root, "tags")
                 for actor in actors:
                     if actor:
-                        SubElement(tags_elem, "tag").text = actor
+                        SubElement(root, "tag").text = actor
             
             # 来源
             if info.get("source"):
@@ -1088,52 +1107,6 @@ class ShortDramaOrganizer:
         except Exception as e:
             logger.error(f"[NFO] 写入失败: {e}")
     
-    def _read_nfo(self, nfo_path: Path) -> Optional[dict]:
-        """读取NFO文件（使用 lxml.etree）"""
-        try:
-            tree = parse(str(nfo_path))
-            root = tree.getroot()
-            
-            # 提取演员
-            actors = []
-            for actor_elem in root.findall("actor"):
-                name = actor_elem.findtext("name", "").strip()
-                if name:
-                    actors.append(name)
-            
-            # 提取类型
-            genres = [g.text.strip() for g in root.findall("genre") if g.text and g.text.strip()]
-            
-            # 提取 TMDB ID
-            tmdbid = None
-            uniqueid = root.find("uniqueid[@type='tmdb']")
-            if uniqueid is not None and uniqueid.text:
-                tmdbid = uniqueid.text.strip()
-            
-            # 提取评分
-            rating = None
-            rating_elem = root.find("rating")
-            if rating_elem is not None and rating_elem.text:
-                try:
-                    rating = float(rating_elem.text.strip())
-                except ValueError:
-                    pass
-            
-            return {
-                "title": self._get_text(root, "title", ""),
-                "year": self._get_text(root, "year", ""),
-                "overview": self._get_text(root, "plot", ""),
-                "genres": genres,
-                "country": self._get_text(root, "country", ""),
-                "actors": actors,
-                "source": self._get_text(root, "source", ""),
-                "tmdbid": tmdbid,
-                "rating": rating,
-            }
-        except Exception as e:
-            logger.debug(f"[NFO] 读取失败: {e}")
-            return None
-    
     @staticmethod
     def _get_text(root: Element, tag: str, default: str = "") -> str:
         """安全获取元素文本"""
@@ -1141,42 +1114,6 @@ class ShortDramaOrganizer:
         if elem is not None and elem.text:
             return elem.text.strip()
         return default
-    
-    def _merge_info(self, existing: dict, new: dict) -> dict:
-        """合并信息"""
-        result = existing.copy()
-        
-        for key in ["title", "year", "overview", "country", "source"]:
-            if not result.get(key) and new.get(key):
-                result[key] = new[key]
-        
-        # 合并类型
-        existing_genres = set(result.get("genres", []))
-        new_genres = new.get("genres", [])
-        if isinstance(new_genres, str):
-            new_genres = [new_genres]
-        for genre in new_genres:
-            if genre and genre not in existing_genres:
-                existing_genres.add(genre)
-        if existing_genres:
-            result["genres"] = list(existing_genres)
-        
-        # 合并演员
-        existing_actors = set(result.get("actors", []))
-        new_actors = new.get("actors", [])
-        if isinstance(new_actors, str):
-            new_actors = [new_actors]
-        for actor in new_actors:
-            if actor and actor not in existing_actors:
-                existing_actors.add(actor)
-        if existing_actors:
-            result["actors"] = list(existing_actors)
-        
-        # 合并评分（取较高值）
-        if new.get("rating") and (not result.get("rating") or new["rating"] > result["rating"]):
-            result["rating"] = new["rating"]
-        
-        return result
     
     def _download_poster(self, url: str, poster_path: Path):
         """下载海报"""
@@ -1331,6 +1268,10 @@ class WebhookHandler:
                 try:
                     downloader.delete_torrents(ids=[h], delete_file=True)
                     logger.info(f"[删除] 已删除种子: {h[:8]}...")
+                    # 立即更新种子数据
+                    self.plugin._update_torrent_deleted(h)
+                    # 删除对应的整理历史记录
+                    self.plugin._delete_transfer_by_hash(h)
                 except Exception as e:
                     logger.error(f"[删除] 删除种子失败 {h[:8]}...: {e}")
             
@@ -1440,13 +1381,10 @@ class shortdramaorganizer(_PluginBase):
     _executor: Optional[ThreadPoolExecutor] = None
     _processing_files: set = set()
     _lock: threading.RLock = threading.RLock()
-    _stats: dict = {}
     _task_cache: dict = {}
     _drama_cache: Optional[TTLCache] = None
     # 持久化映射：原始文件夹名 -> 最终标题，重启不丢失
     _title_mapping: Dict[str, str] = {}
-    # 增量扫描：记录每个监控路径的上次扫描时间
-    _last_scan_time: Dict[str, float] = {}
     
     # 核心模块
     _torrent_service: Optional[TorrentService] = None
@@ -1505,11 +1443,24 @@ class shortdramaorganizer(_PluginBase):
         if self._config.delete_enabled:
             self._webhook = WebhookHandler(self._config, self)
         
-        # 清空数据开关（一次性操作，保存后自动复位）
-        if self._config.clear_data:
-            logger.info("[短剧整理器] 清空插件数据")
-            self._clear_cache()
-            config["clear_data"] = False
+        # 清空数据面板（一次性操作，保存后自动复位）
+        if self._config.clear_stats:
+            logger.info("[短剧整理器] 清空数据面板")
+            self._task_cache = {}
+            self.save_data("tasks", self._task_cache)
+            self.save_data("torrents", {})
+            self.save_data("statistic", {})
+            config["clear_stats"] = False
+            self.update_config(config)
+        
+        # 清空缓存数据（一次性操作，保存后自动复位）
+        if self._config.clear_cache:
+            logger.info("[短剧整理器] 清空缓存数据")
+            self._title_mapping = {}
+            self._processing_files.clear()
+            self._drama_cache.clear()
+            self.save_data("title_mapping", self._title_mapping)
+            config["clear_cache"] = False
             self.update_config(config)
         
         # 启动监控
@@ -1525,38 +1476,11 @@ class shortdramaorganizer(_PluginBase):
         # 立即执行一次全量整理
         if config.get("organize_once"):
             logger.info("[短剧整理器] 立即执行一次全量整理")
-            threading.Timer(5, self._scan_and_process, kwargs={"force_full": True}).start()
+            threading.Timer(5, self._scan_and_process).start()
             config["organize_once"] = False
             self.update_config(config)
         
-        # 注册/刷新 API 路由
-        try:
-            from app.factory import app
-            from fastapi.routing import APIRoute
-            from fastapi import Depends
-            
-            api_path = f"{PLUGIN_PREFIX}/shortdramaorganizer/webhook/emby_delete"
-            # 移除旧路由
-            for route in list(app.routes):
-                if hasattr(route, 'path') and route.path == api_path:
-                    app.routes.remove(route)
-            
-            # 添加新路由（允许匿名访问）
-            app.add_api_route(
-                path=api_path,
-                endpoint=self._handle_webhook,
-                methods=["POST"],
-                tags=["plugin"],
-                dependencies=[Depends(lambda: None)]
-            )
-            app.openapi_schema = None
-            app.setup()
-            logger.info(f"[短剧整理器] API路由已注册: {api_path}")
-        except Exception as e:
-            logger.error(f"[短剧整理器] 注册API路由失败: {e}")
-        
-        # 注册清空数据 API
-        self._register_clear_data_api()
+        # API 路由由 get_api() 返回，框架统一注册
         
         logger.info("[短剧整理器] ========== 初始化完成 ==========")
     
@@ -1586,15 +1510,24 @@ class shortdramaorganizer(_PluginBase):
         if not self._enabled or not self._config:
             return []
         
+        services = []
         if self._config.refresh_interval > 0:
-            return [{
+            services.append({
                 "id": "shortdrama_fetch",
                 "name": "短剧整理器-种子获取",
                 "trigger": IntervalTrigger(minutes=self._config.refresh_interval),
                 "func": self._fetch_and_download,
                 "kwargs": {}
-            }]
-        return []
+            })
+        # 种子状态检查（每5分钟）
+        services.append({
+            "id": "shortdrama_check",
+            "name": "短剧整理器-种子状态检查",
+            "trigger": IntervalTrigger(minutes=5),
+            "func": self._check_torrents_status,
+            "kwargs": {}
+        })
+        return services
     
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
@@ -1628,7 +1561,8 @@ class shortdramaorganizer(_PluginBase):
             "monitor_path": "", "monitor_mode": "normal",
             "exclude_patterns": ["*.sample", "*.nfo", "临时/"], "recursive": True, "incremental_scan": True,
             "transfer_type": "link", "media_library": "", "subdir": "短剧",
-            "pt_enabled": True, "delete_enabled": False, "clear_data": False,
+            "media_type": "电视剧", "category": "短剧",
+            "pt_enabled": True, "delete_enabled": False, "clear_stats": False, "clear_cache": False,
             "debounce_time": 3,
             "use_proxy": False, "polling_interval": 5,
             "retry_count": 3, "retry_interval": 5,
@@ -1677,19 +1611,19 @@ class shortdramaorganizer(_PluginBase):
                         "component": "VRow",
                         "content": [
                             {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
-                                {"component": "VCombobox", "props": {
+                                {"component": "VTextarea", "props": {
                                     "model": "whitelist_keywords",
                                     "label": "白名单关键词",
-                                    "multiple": True,
-                                    "chips": True
+                                    "rows": 3,
+                                    "placeholder": "用逗号或换行分隔，如：短剧,微短剧,竖屏剧"
                                 }}
                             ]},
                             {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
-                                {"component": "VCombobox", "props": {
+                                {"component": "VTextarea", "props": {
                                     "model": "blacklist_keywords",
                                     "label": "黑名单关键词",
-                                    "multiple": True,
-                                    "chips": True
+                                    "rows": 3,
+                                    "placeholder": "用逗号或换行分隔，如：欧美,日剧,韩剧,电影"
                                 }}
                             ]}
                         ]
@@ -1826,6 +1760,24 @@ class shortdramaorganizer(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
+                            {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
+                                {"component": "VSelect", "props": {
+                                    "model": "media_type",
+                                    "label": "媒体类型",
+                                    "items": [
+                                        {"title": "电视剧", "value": "电视剧"},
+                                        {"title": "电影", "value": "电影"}
+                                    ]
+                                }}
+                            ]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
+                                {"component": "VTextField", "props": {"model": "category", "label": "分类", "placeholder": "如：短剧"}}
+                            ]}
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
                             {"component": "VCol", "props": {"cols": 12}, "content": [
                                 {"component": "VSwitch", "props": {"model": "pt_enabled", "label": "启用PT站点信息补全"}}
                             ]}
@@ -1837,8 +1789,11 @@ class shortdramaorganizer(_PluginBase):
                             {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
                                 {"component": "VSwitch", "props": {"model": "delete_enabled", "label": "启用同步删除"}}
                             ]},
-                            {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
-                                {"component": "VSwitch", "props": {"model": "clear_data", "label": "清空插件数据", "color": "error"}}
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [
+                                {"component": "VSwitch", "props": {"model": "clear_stats", "label": "清空数据面板", "color": "warning"}}
+                            ]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [
+                                {"component": "VSwitch", "props": {"model": "clear_cache", "label": "清空缓存数据", "color": "error"}}
                             ]}
                         ]
                     },
@@ -1881,169 +1836,243 @@ class shortdramaorganizer(_PluginBase):
             return []
     
     def get_page(self) -> List[dict]:
-        with self._lock:
-            stats = self._stats.copy()
-            tasks = list(self._task_cache.values())[-20:]
+        # 种子明细
+        torrents = self.get_data("torrents") or {}
         
-        cards = [
-            {
-                "component": "VCol",
-                "props": {"cols": 12, "md": 3},
-                "content": [{
-                    "component": "VCard",
-                    "props": {"variant": "tonal", "color": "primary"},
-                    "content": [{
-                        "component": "VCardText",
-                        "props": {"class": "text-center"},
-                        "content": [
-                            {"component": "div", "props": {"class": "text-h4"}, "text": str(stats.get("total", 0))},
-                            {"component": "div", "props": {"class": "text-caption"}, "text": "总处理"}
-                        ]
-                    }]
-                }]
-            },
-            {
-                "component": "VCol",
-                "props": {"cols": 12, "md": 3},
-                "content": [{
-                    "component": "VCard",
-                    "props": {"variant": "tonal", "color": "success"},
-                    "content": [{
-                        "component": "VCardText",
-                        "props": {"class": "text-center"},
-                        "content": [
-                            {"component": "div", "props": {"class": "text-h4"}, "text": str(stats.get("success", 0))},
-                            {"component": "div", "props": {"class": "text-caption"}, "text": "成功"}
-                        ]
-                    }]
-                }]
-            },
-            {
-                "component": "VCol",
-                "props": {"cols": 12, "md": 3},
-                "content": [{
-                    "component": "VCard",
-                    "props": {"variant": "tonal", "color": "error"},
-                    "content": [{
-                        "component": "VCardText",
-                        "props": {"class": "text-center"},
-                        "content": [
-                            {"component": "div", "props": {"class": "text-h4"}, "text": str(stats.get("failed", 0))},
-                            {"component": "div", "props": {"class": "text-caption"}, "text": "失败"}
-                        ]
-                    }]
-                }]
-            },
-            {
-                "component": "VCol",
-                "props": {"cols": 12, "md": 3},
-                "content": [{
-                    "component": "VCard",
-                    "props": {"variant": "tonal", "color": "warning"},
-                    "content": [{
-                        "component": "VCardText",
-                        "props": {"class": "text-center"},
-                        "content": [
-                            {"component": "div", "props": {"class": "text-h4"}, "text": str(len(self._processing_files))},
-                            {"component": "div", "props": {"class": "text-caption"}, "text": "处理中"}
-                        ]
-                    }]
-                }]
-            }
-        ]
+        data_list = list(torrents.values())
+        data_list.sort(key=lambda x: x.get("time") or 0, reverse=True)
         
-        rows = []
-        for task in reversed(tasks):
-            rows.append({
-                "component": "tr",
-                "content": [
-                    {"component": "td", "text": task.get("title", "-")},
-                    {"component": "td", "text": Path(task.get("source", "-")).parent.name if task.get("source") else "-"},
-                    {"component": "td", "text": Path(task.get("target", "-")).name if task.get("target") else "-"},
-                    {"component": "td", "text": datetime.datetime.fromtimestamp(task.get("timestamp", 0)).strftime("%Y-%m-%d %H:%M") if task.get("timestamp") else "-"}
-                ]
-            })
+        from app.utils.string import StringUtils
+        
+        if data_list:
+            torrent_trs = [
+                {
+                    'component': 'tr',
+                    'props': {'class': 'text-sm'},
+                    'content': [
+                        {
+                            'component': 'td',
+                            'props': {'class': 'whitespace-nowrap break-keep text-high-emphasis'},
+                            'text': data.get("site_name") or "-"
+                        },
+                        {
+                            'component': 'td',
+                            'html': f'<span style="font-size: .85rem;">{data.get("title", "")}</span>' +
+                                    (f'<br><span style="font-size: 0.75rem;">{data.get("description", "")}</span>' if data.get("description") else "")
+                        },
+                        {
+                            'component': 'td',
+                            'text': StringUtils.str_filesize(data.get("size") or 0)
+                        },
+                        {
+                            'component': 'td',
+                            'text': StringUtils.str_filesize(data.get("uploaded") or 0)
+                        },
+                        {
+                            'component': 'td',
+                            'text': StringUtils.str_filesize(data.get("downloaded") or 0)
+                        },
+                        {
+                            'component': 'td',
+                            'text': str(round(data.get('ratio') or 0, 2))
+                        },
+                        {
+                            'component': 'td',
+                            'text': "是" if data.get("hit_and_run") else "否"
+                        },
+                        {
+                            'component': 'td',
+                            'text': f"{data.get('seeding_time', 0) / 3600:.1f}h" if data.get('seeding_time') else "N/A"
+                        },
+                        {
+                            'component': 'td',
+                            'props': {'class': 'text-no-wrap'},
+                            'text': data.get("downloader") or "-"
+                        },
+                        {
+                            'component': 'td',
+                            'props': {'class': 'text-no-wrap'},
+                            'text': "已删除" if data.get("deleted") else "正常"
+                        }
+                    ]
+                } for data in data_list
+            ]
+        else:
+            torrent_trs = [{
+                'component': 'tr',
+                'content': [{'component': 'td', 'props': {'colspan': 10, 'class': 'text-center'}, 'text': '暂无数据'}]
+            }]
         
         return [
-            {"component": "VRow", "content": cards},
             {
-                "component": "VRow",
-                "props": {"class": "mt-4"},
-                "content": [{
-                    "component": "VCol",
-                    "props": {"cols": 12},
-                    "content": [{
-                        "component": "VCard",
-                        "content": [
-                            {"component": "VCardTitle", "text": "📋 最近处理"},
-                            {"component": "VCardText", "props": {"class": "pa-0"}, "content": [{
-                                "component": "VTable",
-                                "props": {"hover": True, "dense": True},
-                                "content": [
-                                    {
-                                        "component": "thead",
-                                        "content": [{
-                                            "component": "tr",
-                                            "content": [
-                                                {"component": "th", "text": "剧名"},
-                                                {"component": "th", "text": "来源文件夹"},
-                                                {"component": "th", "text": "目标文件"},
-                                                {"component": "th", "text": "时间"}
-                                            ]
-                                        }]
-                                    },
-                                    {
-                                        "component": "tbody",
-                                        "content": rows if rows else [{
-                                            "component": "tr",
-                                            "content": [{"component": "td", "props": {"colspan": 4, "class": "text-center"}, "text": "暂无记录"}]
-                                        }]
-                                    }
-                                ]
-                            }]}
-                        ]
-                    }]
-                }]
+                'component': 'VRow',
+                'content': self._get_total_elements() + [
+                    {
+                        'component': 'VCol',
+                        'props': {'cols': 12},
+                        'content': [{
+                            'component': 'VTable',
+                            'props': {'hover': True},
+                            'content': [
+                                {
+                                    'component': 'thead',
+                                    'props': {'class': 'text-no-wrap'},
+                                    'content': [{
+                                        'component': 'tr',
+                                        'content': [
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '站点'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '标题'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '大小'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '上传量'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '下载量'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '分享率'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': 'HR'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '做种时间'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '下载器'},
+                                            {'component': 'th', 'props': {'class': 'text-start ps-4'}, 'text': '状态'}
+                                        ]
+                                    }]
+                                },
+                                {
+                                    'component': 'tbody',
+                                    'content': torrent_trs
+                                }
+                            ]
+                        }]
+                    }
+                ]
             }
         ]
     
-    def _register_clear_data_api(self):
-        """注册清空插件数据的 API 路由"""
+    def get_dashboard(self, key: str, **kwargs) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], List[dict]]]:
+        if not self.get_state():
+            return None
+        return (
+            {"cols": 12},
+            {},
+            [{"component": "VRow", "content": self._get_total_elements()}]
+        )
+    
+    def _get_total_elements(self) -> List[dict]:
+        """组装统计卡片（与刷流低频版风格一致）"""
+        statistic = self.get_data("statistic") or {
+            "count": 0, "deleted": 0, "uploaded": 0, "downloaded": 0,
+            "unarchived": 0, "active": 0, "active_uploaded": 0, "active_downloaded": 0
+        }
+        from app.utils.string import StringUtils
+        
+        total_uploaded = StringUtils.str_filesize(statistic.get("uploaded") or 0)
+        total_downloaded = StringUtils.str_filesize(statistic.get("downloaded") or 0)
+        total_count = statistic.get("count") or 0
+        total_deleted = statistic.get("deleted") or 0
+        total_active = statistic.get("active") or 0
+        total_active_uploaded = StringUtils.str_filesize(statistic.get("active_uploaded") or 0)
+        total_active_downloaded = StringUtils.str_filesize(statistic.get("active_downloaded") or 0)
+        
+        # 下次刷流运行时间
+        next_run = ""
         try:
-            from app.factory import app
-            from fastapi import Depends
-            
-            api_path = f"{PLUGIN_PREFIX}/shortdramaorganizer/clear_data"
-            # 检查是否已注册
-            for route in app.routes:
-                if hasattr(route, 'path') and route.path == api_path:
-                    return
-            
-            plugin_ref = self
-            
-            async def clear_plugin_data():
-                plugin_ref._clear_cache()
-                try:
-                    plugin_ref.save_data("stats", {"total": 0, "success": 0, "failed": 0})
-                    plugin_ref.save_data("tasks", {})
-                    plugin_ref.save_data("title_mapping", {})
-                    plugin_ref.save_data("last_scan_time", {})
-                except Exception as e:
-                    logger.error(f"[短剧整理器] 清空数据库数据失败: {e}")
-                return {"code": 200, "message": "插件数据已清空"}
-            
-            app.add_api_route(
-                path=api_path,
-                endpoint=clear_plugin_data,
-                methods=["GET"],
-                tags=["plugin"],
-                dependencies=[Depends(lambda: None)]
-            )
-            app.openapi_schema = None
-            app.setup()
-            logger.info(f"[短剧整理器] 清空数据API已注册: {api_path}")
-        except Exception as e:
-            logger.error(f"[短剧整理器] 注册清空数据API失败: {e}")
+            from app.scheduler import Scheduler
+            scheduler = Scheduler()
+            if scheduler._scheduler and scheduler._scheduler.running:
+                for job in scheduler._scheduler.get_jobs():
+                    if job.id == "shortdramaorganizer_shortdrama_fetch":
+                        from app.utils.timer import TimerUtils
+                        next_run = TimerUtils.time_difference(job.next_run_time)
+                        break
+        except Exception:
+            next_run = ""
+        
+        return [
+            {
+                "component": "VCol",
+                "props": {"cols": 12, "md": 3, "sm": 6},
+                "content": [{
+                    "component": "VCard",
+                    "props": {"variant": "tonal"},
+                    "content": [{
+                        "component": "VCardText",
+                        "props": {"class": "d-flex align-center"},
+                        "content": [
+                            {"component": "VAvatar", "props": {"rounded": True, "variant": "text", "class": "me-3"},
+                             "content": [{"component": "VImg", "props": {"src": "/plugin_icon/upload.png"}}]},
+                            {"component": "div", "content": [
+                                {"component": "span", "props": {"class": "text-caption"}, "text": "总上传量 / 活跃"},
+                                {"component": "div", "props": {"class": "d-flex align-center flex-wrap"}, "content": [
+                                    {"component": "span", "props": {"class": "text-h6"}, "text": f"{total_uploaded} / {total_active_uploaded}"}
+                                ]}
+                            ]}
+                        ]
+                    }]
+                }]
+            },
+            {
+                "component": "VCol",
+                "props": {"cols": 12, "md": 3, "sm": 6},
+                "content": [{
+                    "component": "VCard",
+                    "props": {"variant": "tonal"},
+                    "content": [{
+                        "component": "VCardText",
+                        "props": {"class": "d-flex align-center"},
+                        "content": [
+                            {"component": "VAvatar", "props": {"rounded": True, "variant": "text", "class": "me-3"},
+                             "content": [{"component": "VImg", "props": {"src": "/plugin_icon/download.png"}}]},
+                            {"component": "div", "content": [
+                                {"component": "span", "props": {"class": "text-caption"}, "text": "总下载量 / 活跃"},
+                                {"component": "div", "props": {"class": "d-flex align-center flex-wrap"}, "content": [
+                                    {"component": "span", "props": {"class": "text-h6"}, "text": f"{total_downloaded} / {total_active_downloaded}"}
+                                ]}
+                            ]}
+                        ]
+                    }]
+                }]
+            },
+            {
+                "component": "VCol",
+                "props": {"cols": 12, "md": 3, "sm": 6},
+                "content": [{
+                    "component": "VCard",
+                    "props": {"variant": "tonal"},
+                    "content": [{
+                        "component": "VCardText",
+                        "props": {"class": "d-flex align-center"},
+                        "content": [
+                            {"component": "VAvatar", "props": {"rounded": True, "variant": "text", "class": "me-3"},
+                             "content": [{"component": "VImg", "props": {"src": "/plugin_icon/seed.png"}}]},
+                            {"component": "div", "content": [
+                                {"component": "span", "props": {"class": "text-caption"}, "text": "下载种子数 / 活跃"},
+                                {"component": "div", "props": {"class": "d-flex align-center flex-wrap"}, "content": [
+                                    {"component": "span", "props": {"class": "text-h6"}, "text": f"{total_count} / {total_active}"}
+                                ]}
+                            ]}
+                        ]
+                    }]
+                }]
+            },
+            {
+                "component": "VCol",
+                "props": {"cols": 12, "md": 3, "sm": 6},
+                "content": [{
+                    "component": "VCard",
+                    "props": {"variant": "tonal"},
+                    "content": [{
+                        "component": "VCardText",
+                        "props": {"class": "d-flex align-center"},
+                        "content": [
+                            {"component": "VAvatar", "props": {"rounded": True, "variant": "text", "class": "me-3"},
+                             "content": [{"component": "VImg", "props": {"src": "/plugin_icon/delete.png"}}]},
+                            {"component": "div", "content": [
+                                {"component": "span", "props": {"class": "text-caption"}, "text": "删除种子数 / 下次刷流"},
+                                {"component": "div", "props": {"class": "d-flex align-center flex-wrap"}, "content": [
+                                    {"component": "span", "props": {"class": "text-h6"}, "text": f"{total_deleted} / {next_run or '未调度'}"}
+                                ]}
+                            ]}
+                        ]
+                    }]
+                }]
+            },
+        ]
     
     # ==================== 核心功能 ====================
     
@@ -2061,6 +2090,23 @@ class shortdramaorganizer(_PluginBase):
             monitor.start()
             self._builtin_monitors.append(monitor)
             logger.info(f"[短剧整理器] 监控已启动: {mp}")
+    
+    def _update_torrent_deleted(self, download_hash: str):
+        """删除种子后立即更新种子数据"""
+        try:
+            torrent_tasks: Dict[str, dict] = self.get_data("torrents") or {}
+            if download_hash in torrent_tasks:
+                torrent_tasks[download_hash]["deleted"] = True
+                torrent_tasks[download_hash]["delete_time"] = time.time()
+                self.save_data("torrents", torrent_tasks)
+                # 更新统计
+                deleted_count = sum(1 for t in torrent_tasks.values() if t.get("deleted"))
+                statistic = self.get_data("statistic") or {}
+                statistic["deleted"] = deleted_count
+                self.save_data("statistic", statistic)
+                logger.debug(f"[短剧整理器] 种子已标记删除: {download_hash[:8]}...")
+        except Exception as e:
+            logger.error(f"[短剧整理器] 更新种子删除状态失败: {e}")
     
     def _fetch_and_download(self):
         """获取种子并下载"""
@@ -2082,19 +2128,128 @@ class shortdramaorganizer(_PluginBase):
             
             logger.info(f"[短剧整理器] 筛选出 {len(filtered)} 个种子")
             
+            torrent_tasks: Dict[str, dict] = self.get_data("torrents") or {}
             downloaded = 0
             for torrent in filtered:
                 if not self._enabled or self._stopping:
                     break
-                if self._torrent_service.download(torrent):
+                download_hash = self._torrent_service.download(torrent)
+                if download_hash:
                     downloaded += 1
+                    # 记录种子信息
+                    torrent_tasks[download_hash] = {
+                        "title": torrent.get("title", ""),
+                        "description": torrent.get("description", ""),
+                        "size": torrent.get("size", 0),
+                        "site_name": "",
+                        "downloader": self._config.downloader or "",
+                        "time": time.time(),
+                        "hash": download_hash,
+                    }
+                    # 尝试获取站点名称
+                    try:
+                        site_id = self._config.sites[0] if self._config.sites else None
+                        if site_id:
+                            site = SiteOper().get(int(site_id))
+                            if site:
+                                torrent_tasks[download_hash]["site_name"] = site.name
+                    except Exception:
+                        pass
             
+            self.save_data("torrents", torrent_tasks)
             logger.info(f"[短剧整理器] 成功下载 {downloaded}/{len(filtered)} 个种子")
         except Exception as e:
             logger.error(f"[短剧整理器] 获取种子失败: {e}")
     
+    def _check_torrents_status(self):
+        """从下载器查询种子状态，更新统计数据"""
+        if not self._enabled:
+            return
+        
+        torrent_tasks: Dict[str, dict] = self.get_data("torrents") or {}
+        if not torrent_tasks:
+            return
+        
+        downloader_name = self._config.downloader if self._config else ""
+        if not downloader_name:
+            return
+        
+        try:
+            service = DownloaderHelper().get_service(name=downloader_name)
+            if not service or not service.instance:
+                return
+            
+            dl = service.instance
+            all_torrents, error = dl.get_torrents()
+            if error or not all_torrents:
+                return
+            
+            # 建立哈希索引
+            torrent_map = {}
+            for t in all_torrents:
+                h = t.hashString if hasattr(t, 'hashString') else t.get("hash", "")
+                if h:
+                    torrent_map[h] = t
+            
+            active_count = 0
+            total_uploaded = 0
+            total_downloaded = 0
+            active_uploaded = 0
+            active_downloaded = 0
+            deleted_hashes = []
+            
+            for h, info in torrent_tasks.items():
+                t = torrent_map.get(h)
+                if t:
+                    # 种子还在下载器中
+                    uploaded = t.uploaded if hasattr(t, 'uploaded') else t.get("uploaded", 0)
+                    downloaded = t.downloaded if hasattr(t, 'downloaded') else t.get("downloaded", 0)
+                    progress = t.progress if hasattr(t, 'progress') else t.get("progress", 0)
+                    ratio = t.ratio if hasattr(t, 'ratio') else t.get("ratio", 0)
+                    seeding_time = t.seeding_time if hasattr(t, 'seeding_time') else t.get("seeding_time", 0)
+                    hit_and_run = t.hit_and_run if hasattr(t, 'hit_and_run') else t.get("hit_and_run", False)
+                    
+                    info["uploaded"] = uploaded
+                    info["downloaded"] = downloaded
+                    info["ratio"] = ratio
+                    info["progress"] = progress
+                    info["seeding_time"] = seeding_time
+                    info["hit_and_run"] = hit_and_run
+                    info["active"] = True
+                    
+                    total_uploaded += uploaded
+                    total_downloaded += downloaded
+                    
+                    if progress < 100:
+                        active_count += 1
+                        active_uploaded += uploaded
+                        active_downloaded += downloaded
+                else:
+                    # 种子已从下载器移除
+                    if not info.get("deleted"):
+                        info["deleted"] = True
+                        info["delete_time"] = time.time()
+            
+            # 统计
+            statistic = {
+                "count": len(torrent_tasks),
+                "deleted": sum(1 for t in torrent_tasks.values() if t.get("deleted")),
+                "uploaded": total_uploaded,
+                "downloaded": total_downloaded,
+                "active": active_count,
+                "active_uploaded": active_uploaded,
+                "active_downloaded": active_downloaded,
+                "unarchived": sum(1 for t in torrent_tasks.values() if t.get("progress", 0) >= 100 and not t.get("deleted")),
+            }
+            
+            self.save_data("torrents", torrent_tasks)
+            self.save_data("statistic", statistic)
+            
+        except Exception as e:
+            logger.error(f"[短剧整理器] 查询种子状态失败: {e}")
+    
     def _scan_and_process(self, force_full: bool = False):
-        """扫描并处理目录（支持增量/全量模式）
+        """扫描并处理目录
         
         Args:
             force_full: 是否强制全量扫描（忽略 incremental_scan 开关）
@@ -2105,7 +2260,6 @@ class shortdramaorganizer(_PluginBase):
         logger.info("[短剧整理器] 开始扫描目录")
         try:
             processed = 0
-            use_incremental = self._config.incremental_scan and not force_full
             
             for monitor_path_str in self._config.monitor_paths:
                 if self._stopping:
@@ -2117,14 +2271,7 @@ class shortdramaorganizer(_PluginBase):
                     logger.warning(f"[短剧整理器] 监控路径不存在: {monitor_path}")
                     continue
                 
-                # 增量/全量模式
-                last_scan = self._last_scan_time.get(monitor_path_str, 0) if use_incremental else 0
-                now = time.time()
-                
-                if use_incremental and last_scan > 0:
-                    logger.info(f"[短剧整理器] 增量扫描: {monitor_path} (上次扫描: {datetime.datetime.fromtimestamp(last_scan).strftime('%H:%M:%S')})")
-                else:
-                    logger.info(f"[短剧整理器] 全量扫描: {monitor_path}")
+                logger.info(f"[短剧整理器] 扫描: {monitor_path}")
                 
                 if self._config.recursive:
                     for ext in settings.RMT_MEDIAEXT:
@@ -2139,9 +2286,6 @@ class shortdramaorganizer(_PluginBase):
                                 continue
                             if not self._enabled:
                                 return
-                            # 增量过滤：只处理修改时间大于上次扫描的文件
-                            if last_scan > 0 and video_file.stat().st_mtime <= last_scan:
-                                continue
                             if self._process_file(str(video_file)):
                                 processed += 1
                 else:
@@ -2160,20 +2304,8 @@ class shortdramaorganizer(_PluginBase):
                                 logger.info("[短剧整理器] 停止信号，中断扫描")
                                 return
                             for video_file in folder.glob(f"*{ext}"):
-                                if last_scan > 0 and video_file.stat().st_mtime <= last_scan:
-                                    continue
                                 if self._process_file(str(video_file)):
                                     processed += 1
-                
-                # 更新扫描时间
-                self._last_scan_time[monitor_path_str] = now
-            
-            if processed > 0:
-                logger.info(f"[短剧整理器] 扫描完成，处理了 {processed} 个文件")
-            else:
-                logger.info("[短剧整理器] 扫描完成，无新文件")
-        except Exception as e:
-            logger.error(f"[短剧整理器] 扫描失败: {e}")
             
             if processed > 0:
                 logger.info(f"[短剧整理器] 扫描完成，处理了 {processed} 个文件")
@@ -2237,6 +2369,18 @@ class shortdramaorganizer(_PluginBase):
             logger.info(f"[短剧整理器] ========== 开始处理文件 ==========")
             logger.info(f"[短剧整理器] 文件路径: {file_path}")
             logger.info(f"[短剧整理器] 源文件夹: {source_dir}")
+            
+            # 检查 transferhistory 是否已有相同 src 的记录，避免后续不必要的识别
+            existing_record = self._check_transfer_history(file_path)
+            if existing_record:
+                if self._config.incremental_scan:
+                    # 增量扫描开：跳过
+                    logger.info(f"[短剧整理器] 源文件已有整理记录，跳过: {file_path}")
+                    return True
+                else:
+                    # 增量扫描关：删除旧记录，重新整理
+                    logger.info(f"[短剧整理器] 源文件已有整理记录，覆盖: {file_path}")
+                    self._delete_transfer_history(file_path)
             
             # 检查持久化映射：原始文件夹名 -> 最终标题
             folder_name = Path(source_dir).name
@@ -2405,11 +2549,6 @@ class shortdramaorganizer(_PluginBase):
                 if result and result.get("success"):
                     logger.info(f"[短剧整理器] 整理成功 -> 目标: {result.get('target_path')}")
                     
-                    with self._lock:
-                        self._stats["total"] = self._stats.get("total", 0) + 1
-                        self._stats["success"] = self._stats.get("success", 0) + 1
-                        self.save_data("stats", self._stats)
-                    
                     self._save_mapping(file_path, result, drama_info)
                     
                     if self._config and self._config.notify_enabled:
@@ -2418,18 +2557,12 @@ class shortdramaorganizer(_PluginBase):
                     return True
                 else:
                     logger.error(f"[短剧整理器] 整理失败: {result.get('error') if result else '未知错误'}")
-                    with self._lock:
-                        self._stats["failed"] = self._stats.get("failed", 0) + 1
-                        self.save_data("stats", self._stats)
                     return False
             
             return False
         
         except Exception as e:
             logger.error(f"[短剧整理器] 处理失败: {e}")
-            with self._lock:
-                self._stats["failed"] = self._stats.get("failed", 0) + 1
-                self.save_data("stats", self._stats)
             return False
         
         finally:
@@ -2502,39 +2635,176 @@ class shortdramaorganizer(_PluginBase):
     
     def _load_cache(self):
         try:
-            self._stats = self.get_data("stats") or {
-                "total": 0, "success": 0, "failed": 0,
-                "start_time": datetime.datetime.now().isoformat()
-            }
             self._task_cache = self.get_data("tasks") or {}
             self._title_mapping = self.get_data("title_mapping") or {}
-            self._last_scan_time = self.get_data("last_scan_time") or {}
-            logger.debug(f"[短剧整理器] 加载缓存: stats={self._stats}, 映射={len(self._title_mapping)}条, 扫描记录={len(self._last_scan_time)}条")
+            logger.debug(f"[短剧整理器] 加载缓存: 映射={len(self._title_mapping)}条")
         except Exception as e:
             logger.error(f"[短剧整理器] 加载缓存失败: {e}")
     
     def _save_cache(self):
         try:
-            self.save_data("stats", self._stats)
             self.save_data("tasks", self._task_cache)
             self.save_data("title_mapping", self._title_mapping)
-            self.save_data("last_scan_time", self._last_scan_time)
             logger.debug(f"[短剧整理器] 缓存已保存 (映射{len(self._title_mapping)}条)")
         except Exception as e:
             logger.error(f"[短剧整理器] 保存缓存失败: {e}")
     
     def _save_mapping(self, source_path: str, result: dict, drama_info: dict):
+        """写入系统 transferhistory 表，同时更新 _task_cache（仅保留最近200条用于面板）"""
         try:
             key = str(Path(source_path).parent.name)
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 写入系统 transferhistory 表
+            try:
+                from app.db import ScopedSession
+                
+                tmdbid = drama_info.get("tmdbid")
+                seasons = f"S{int(drama_info.get('season', 1)):02d}"
+                episodes = f"E{int(drama_info.get('episode', 1)):02d}"
+                
+                # 构造文件信息 JSON（与系统格式一致）
+                src_path = Path(source_path)
+                dest_path = Path(result.get("target_path", ""))
+                
+                def make_fileitem(path: Path) -> dict:
+                    stat = path.stat() if path.exists() else None
+                    return {
+                        "path": str(path),
+                        "storage": "local",
+                        "type": "file",
+                        "name": path.name,
+                        "basename": path.stem,
+                        "extension": path.suffix.lstrip("."),
+                        "size": stat.st_size if stat else 0,
+                        "modify_time": stat.st_mtime if stat else 0,
+                        "children": [],
+                        "fileid": None,
+                        "parent_fileid": None,
+                        "thumbnail": None,
+                        "pickcode": None,
+                        "drive_id": None,
+                        "url": None,
+                    }
+                
+                src_fileitem = make_fileitem(src_path)
+                dest_fileitem = make_fileitem(dest_path)
+                
+                db = ScopedSession()
+                try:
+                    db.execute(
+                        text("INSERT INTO transferhistory "
+                             "(src, src_storage, src_fileitem, dest, dest_storage, dest_fileitem, "
+                             "mode, type, category, title, year, tmdbid, seasons, episodes, status, date) "
+                             "VALUES (:src, 'local', :src_fileitem, :dest, 'local', :dest_fileitem, "
+                             ":mode, :type, :category, :title, :year, :tmdbid, :seasons, :episodes, true, :date)"),
+                        {
+                            "src": source_path,
+                            "src_fileitem": json.dumps(src_fileitem),
+                            "dest": result.get("target_path", ""),
+                            "dest_fileitem": json.dumps(dest_fileitem),
+                            "mode": self._config.transfer_type or "link",
+                            "type": self._config.media_type or "电视剧",
+                            "category": self._config.category or "短剧",
+                            "title": drama_info.get("title", "未知短剧"),
+                            "year": drama_info.get("year", ""),
+                            "tmdbid": tmdbid if tmdbid else None,
+                            "seasons": seasons,
+                            "episodes": episodes,
+                            "date": now,
+                        }
+                    )
+                    db.commit()
+                    logger.debug(f"[短剧整理器] 已写入 transferhistory: {drama_info.get('title')} {seasons}{episodes}")
+                except Exception:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"[短剧整理器] 写入 transferhistory 失败: {e}")
+            
+            # 更新 _task_cache（仅保留最近200条）
             self._task_cache[key] = {
                 "source": source_path,
                 "target": result.get("target_path", ""),
                 "title": drama_info.get("title", "未知短剧"),
                 "timestamp": time.time()
             }
+            # 超过200条时清理最旧的
+            if len(self._task_cache) > 200:
+                sorted_keys = sorted(self._task_cache.keys(),
+                                     key=lambda k: self._task_cache[k].get("timestamp", 0))
+                for old_key in sorted_keys[:-200]:
+                    del self._task_cache[old_key]
             self.save_data("tasks", self._task_cache)
         except Exception as e:
             logger.error(f"[短剧整理器] 保存映射失败: {e}")
+    
+    def _check_transfer_history(self, src_path: str) -> bool:
+        """检查 transferhistory 是否已有相同 src 的记录"""
+        try:
+            from app.db import ScopedSession
+            db = ScopedSession()
+            try:
+                result = db.execute(
+                    text("SELECT id FROM transferhistory WHERE src = :src LIMIT 1"),
+                    {"src": src_path}
+                )
+                return result.fetchone() is not None
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[短剧整理器] 查询 transferhistory 失败: {e}")
+            return False
+    
+    def _delete_transfer_history(self, src_path: str):
+        """删除 transferhistory 中指定 src 的记录"""
+        try:
+            from app.db import ScopedSession
+            db = ScopedSession()
+            try:
+                db.execute(
+                    text("DELETE FROM transferhistory WHERE src = :src"),
+                    {"src": src_path}
+                )
+                db.commit()
+                logger.debug(f"[短剧整理器] 已删除旧整理记录: {src_path}")
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[短剧整理器] 删除 transferhistory 失败: {e}")
+    
+    def _delete_transfer_by_hash(self, download_hash: str):
+        """根据下载哈希对应的种子信息，通过目标路径匹配删除 transferhistory 记录"""
+        try:
+            from app.db import ScopedSession
+            db = ScopedSession()
+            try:
+                # 从 torrents 数据中找到该哈希对应的种子信息
+                torrent_tasks = self.get_data("torrents") or {}
+                info = torrent_tasks.get(download_hash)
+                if info:
+                    # 通过种子标题模糊匹配 dest 路径
+                    title = info.get("title", "")
+                    if title:
+                        result = db.execute(
+                            text("DELETE FROM transferhistory WHERE src LIKE :pattern"),
+                            {"pattern": f"%{title}%"}
+                        )
+                        db.commit()
+                        if result.rowcount > 0:
+                            logger.debug(f"[短剧整理器] 已删除整理历史: {title}, {result.rowcount}条")
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[短剧整理器] 删除整理历史失败: {e}")
     
     # ==================== 通知 ====================
     
@@ -2560,42 +2830,36 @@ class shortdramaorganizer(_PluginBase):
             result = self._clear_cache()
         elif action == "scan":
             result = self._force_scan()
-        elif action == "site_refresh":
-            logger.info("[短剧整理器] 收到站点刷新命令，开始刷流")
-            threading.Thread(target=self._fetch_and_download, daemon=True).start()
-            return
         else:
-            logger.debug(f"[短剧整理器] 忽略未知命令: {action}")
             return
         
         self.post_message(mtype=NotificationType.Organize, title="【短剧整理器】", text=result)
     
     def _show_stats(self) -> str:
-        with self._lock:
-            return (
-                f"📊 短剧整理器统计\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"总处理: {self._stats.get('total', 0)}\n"
-                f"✅ 成功: {self._stats.get('success', 0)}\n"
-                f"❌ 失败: {self._stats.get('failed', 0)}\n"
-                f"处理中: {len(self._processing_files)}\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"监控路径: {', '.join(self._config.monitor_paths) if self._config and self._config.monitor_paths else '未配置'}"
-            )
+        statistic = self.get_data("statistic") or {}
+        torrents = self.get_data("torrents") or {}
+        return (
+            f"📊 短剧整理器统计\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"下载种子数: {statistic.get('count', 0)}\n"
+            f"活跃种子: {statistic.get('active', 0)}\n"
+            f"已删除: {statistic.get('deleted', 0)}\n"
+            f"总上传: {StringUtils.str_filesize(statistic.get('uploaded') or 0)}\n"
+            f"总下载: {StringUtils.str_filesize(statistic.get('downloaded') or 0)}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"监控路径: {', '.join(self._config.monitor_paths) if self._config and self._config.monitor_paths else '未配置'}"
+        )
     
     def _clear_cache(self) -> str:
         with self._lock:
-            self._stats = {"total": 0, "success": 0, "failed": 0}
             self._task_cache = {}
             self._title_mapping = {}
-            self._last_scan_time = {}
             self._processing_files.clear()
             # 清空系统缓存（Redis 后端）
-            if hasattr(self._drama_cache, 'clear'):
-                self._drama_cache.clear()
+            self._drama_cache.clear()
         self._save_cache()
         return "✅ 缓存已清空"
     
     def _force_scan(self) -> str:
-        threading.Thread(target=self._scan_and_process, kwargs={"force_full": True}, daemon=True).start()
+        threading.Thread(target=self._scan_and_process, daemon=True).start()
         return "✅ 扫描任务已启动"
