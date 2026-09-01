@@ -1370,7 +1370,7 @@ class shortdramaorganizer(_PluginBase):
     plugin_name = "短剧整理器"
     plugin_desc = "自动获取短剧种子、筛选下载、独立监控、识别整理、同步删除"
     plugin_icon = "📱"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.2"
     plugin_author = "ShortDramaOrganizer"
     plugin_config_prefix = "shortdramaorganizer_"
     plugin_order = 26
@@ -2138,7 +2138,7 @@ class shortdramaorganizer(_PluginBase):
             logger.error(f"[短剧整理器] 更新种子删除状态失败: {e}")
     
     def _fetch_and_download(self):
-        """获取种子并下载"""
+        """获取种子并下载（使用标题去重）"""
         if not self._enabled or not self._torrent_service:
             return
         
@@ -2157,36 +2157,73 @@ class shortdramaorganizer(_PluginBase):
             
             logger.info(f"[短剧整理器] 筛选出 {len(filtered)} 个种子")
             
+            # 加载已存在的种子记录（包括已删除的），用于去重
             torrent_tasks: Dict[str, dict] = self.get_data("torrents") or {}
+            
+            # 构建已下载种子的标题集合（作为唯一标识）
+            existing_titles = set()
+            for h, info in torrent_tasks.items():
+                title = info.get("title", "")
+                if title:
+                    existing_titles.add(title)
+            
+            logger.debug(f"[种子服务] 已存在 {len(existing_titles)} 个种子记录（按标题）")
+            
             downloaded = 0
+            skipped = 0
             for torrent in filtered:
                 if not self._enabled or self._stopping:
                     break
+                
+                torrent_title = torrent.get("title", "")
+                if not torrent_title:
+                    logger.warning("[种子服务] 种子无标题，跳过")
+                    continue
+                
+                torrent_size = torrent.get("size", 0)
+                
+                # 检查标题是否已下载过（包括已删除的）
+                if torrent_title in existing_titles:
+        
+                    skipped += 1
+                    continue
+                
+                # 获取站点名称
+                site_name = ""
+                try:
+                    site_id = self._config.sites[0] if self._config.sites else None
+                    if site_id:
+                        site = SiteOper().get(int(site_id))
+                        if site:
+                            site_name = site.name
+                except Exception:
+                    pass
+                
+                # 下载种子
                 download_hash = self._torrent_service.download(torrent)
                 if download_hash:
                     downloaded += 1
-                    # 记录种子信息
+                    existing_titles.add(torrent_title)  # 加入去重集合
+                    
+                    # 记录种子信息（明确标记未删除）
                     torrent_tasks[download_hash] = {
-                        "title": torrent.get("title", ""),
+                        "title": torrent_title,
                         "description": torrent.get("description", ""),
-                        "size": torrent.get("size", 0),
-                        "site_name": "",
+                        "size": torrent_size,
+                        "site_name": site_name,
                         "downloader": self._config.downloader or "",
                         "time": time.time(),
                         "hash": download_hash,
+                        "deleted": False,  # 新下载的种子未删除
                     }
-                    # 尝试获取站点名称
-                    try:
-                        site_id = self._config.sites[0] if self._config.sites else None
-                        if site_id:
-                            site = SiteOper().get(int(site_id))
-                            if site:
-                                torrent_tasks[download_hash]["site_name"] = site.name
-                    except Exception:
-                        pass
+                    logger.info(f"[种子服务] 下载成功: {torrent_title[:40]}... hash={download_hash[:8]}")
+                else:
+                    logger.warning(f"[种子服务] 下载失败: {torrent_title[:40]}...")
             
+            # 保存更新后的种子记录
             self.save_data("torrents", torrent_tasks)
-            logger.info(f"[短剧整理器] 成功下载 {downloaded}/{len(filtered)} 个种子")
+            logger.info(f"[短剧整理器] 成功下载 {downloaded} 个种子，跳过已存在 {skipped} 个")
+            
         except Exception as e:
             logger.error(f"[短剧整理器] 获取种子失败: {e}")
     
