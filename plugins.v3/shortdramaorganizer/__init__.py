@@ -13,6 +13,7 @@ import datetime
 import fnmatch
 import asyncio
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, List, Dict, Tuple, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 
@@ -46,6 +47,14 @@ try:
 except ImportError as e:
     HAS_FRAMEWORK = False
     logger.warning(f"[短剧整理器] 部分框架模块不可用: {e}")
+
+# 宿主的域名归一化实现：TorrentsChain.browse() 正是用它把站点配置里的 domain
+# 转成站点 Key 的（app/chain/torrents.py: extract_domain(indexer["domain"])）。
+# 首选复用宿主实现以保证完全一致；宿主不提供时退回 normalize_site_domain 的等价实现。
+try:
+    from app.domain.site import extract_domain as _host_extract_domain
+except Exception:
+    _host_extract_domain = None
 
 
 # ==================== 常量 ====================
@@ -133,12 +142,14 @@ class SiteInfo:
     只暴露本插件真正需要的四个字段。
     """
 
-    __slots__ = ("site_id", "name", "domain", "cookie")
+    __slots__ = ("site_id", "name", "domain", "url", "cookie")
 
-    def __init__(self, site_id=None, name: str = "", domain: str = "", cookie: str = ""):
+    def __init__(self, site_id=None, name: str = "", domain: str = "",
+                 url: str = "", cookie: str = ""):
         self.site_id = site_id
         self.name = name or ""
         self.domain = domain or ""
+        self.url = url or ""
         self.cookie = cookie or ""
 
 
@@ -151,6 +162,66 @@ def _site_field(obj, key: str) -> str:
     else:
         value = getattr(obj, key, None)
     return "" if value is None else str(value)
+
+
+def normalize_site_domain(value: str) -> str:
+    """把站点地址归一化为 MoviePilot 使用的域名 Key
+
+    与宿主 app.domain.site.extract_domain 的规则保持一致：
+    去掉协议、路径、端口以及 Cookie Domain 可能带的前导点；
+    域名段不超过 3 段时取注册域名（www.ptskit.org -> ptskit.org），
+    超过 3 段的多级域名原样保留。
+
+    宿主 SitesHelper.get_indexer() / TorrentsChain.browse() 只认这个 Key，
+    而站点索引配置里的 domain 可能是 https://www.xxx/ 这样的完整地址，
+    直接传进去会被判定为"站点不存在"。
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if _host_extract_domain is not None:
+        try:
+            return _host_extract_domain(raw)
+        except Exception as e:
+            logger.debug(f"[短剧整理器] 宿主域名归一化失败，改用内置实现: {e}")
+    if "://" in raw:
+        netloc = urlparse(raw).netloc
+    else:
+        netloc = raw.split("/")[0]
+    netloc = netloc.split("@")[-1].split(":")[0].strip().lstrip(".").lower()
+    if not netloc:
+        return ""
+    labels = netloc.split(".")
+    return netloc if len(labels) > 3 else ".".join(labels[-2:])
+
+
+def resolve_browse_domain(info: Optional[SiteInfo]) -> Tuple[str, bool]:
+    """解析 TorrentsChain.browse() 需要的域名 Key
+
+    返回 (域名, 宿主是否认识该站点)。第二个值为 True 时才可以放心调用 browse()，
+    为 False 说明该站点没有被 MoviePilot 识别（多半是没在「设定 → 站点」里配置）。
+    宿主探测能力不可用时乐观放行，交给宿主自行报错。
+    """
+    candidates: List[str] = []
+    for raw in (getattr(info, "domain", ""), getattr(info, "url", "")):
+        for cand in (normalize_site_domain(raw), (raw or "").strip()):
+            if cand and cand not in candidates:
+                candidates.append(cand)
+    if not candidates:
+        return "", False
+
+    if not HAS_FRAMEWORK:
+        return candidates[0], True
+
+    try:
+        helper = SitesHelper()
+        for cand in candidates:
+            if helper.get_indexer(cand):
+                return cand, True
+        return candidates[0], False
+    except Exception as e:
+        logger.debug(f"[短剧整理器] 站点域名 Key 探测不可用: {e}")
+        return candidates[0], True
 
 
 def get_site_info(domain: Optional[str] = None, site_id: Optional[int] = None) -> Optional[SiteInfo]:
@@ -179,6 +250,7 @@ def get_site_info(domain: Optional[str] = None, site_id: Optional[int] = None) -
                 site_id=_site_field(indexer, "id") or None,
                 name=_site_field(indexer, "name"),
                 domain=_site_field(indexer, "domain") or (domain or ""),
+                url=_site_field(indexer, "url"),
                 cookie=_site_field(indexer, "cookie"),
             )
             if info.cookie:
@@ -207,6 +279,7 @@ def get_site_info(domain: Optional[str] = None, site_id: Optional[int] = None) -
                     site_id=_site_field(record, "id") or None,
                     name=_site_field(record, "name"),
                     domain=_site_field(record, "domain") or (domain or ""),
+                    url=_site_field(record, "url"),
                     cookie=_site_field(record, "cookie"),
                 )
         except Exception as e:
@@ -439,7 +512,13 @@ class PTInfoFetcher:
         if domain not in self._site_cache:
             try:
                 # V3：优先 SitesHelper，兼容层兜底；返回带 cookie/name/domain 的视图
-                self._site_cache[domain] = get_site_info(domain=domain)
+                site = get_site_info(domain=domain)
+                if not site:
+                    # 传入的可能带协议/端口，用归一化后的域名 Key 再试一次
+                    normalized = normalize_site_domain(domain)
+                    if normalized and normalized != domain:
+                        site = get_site_info(domain=normalized)
+                self._site_cache[domain] = site
             except Exception as e:
                 logger.error(f"[PT信息] 获取站点失败 {domain}: {e}")
                 self._site_cache[domain] = None
@@ -539,7 +618,9 @@ class PTInfoFetcher:
                 return None
             
             try:
-                indexer = SitesHelper().get_indexer(domain)
+                # 站点索引配置里的 domain 可能是完整地址，按宿主规则归一化后再查
+                indexer = SitesHelper().get_indexer(domain) \
+                    or SitesHelper().get_indexer(normalize_site_domain(domain))
                 if not indexer:
                     logger.debug(f"[PT信息] 站点索引器不存在: {domain}")
                     return None
@@ -644,10 +725,31 @@ class TorrentService:
             try:
                 site = get_site_info(site_id=int(site_id))
                 if not site:
+                    logger.warning(
+                        f"[种子服务] 未找到站点配置 (ID={site_id})，"
+                        f"请在插件配置中重新选择站点"
+                    )
                     continue
-                
+
+                # 宿主只在站点 Key 为"注册域名"时才认这个站点
+                # （见 app.domain.site.extract_domain / TorrentsChain.browse），
+                # 而站点索引配置里的 domain 可能是 https://www.xxx/ 完整地址，
+                # 直接用会被判成"站点不存在"，所以这里必须先归一化。
+                domain, known = resolve_browse_domain(site)
+                if not domain:
+                    logger.warning(
+                        f"[种子服务] 站点 {site.name or site_id} 未解析出可用域名，已跳过"
+                    )
+                    continue
+                if not known:
+                    logger.warning(
+                        f"[种子服务] 站点 {site.name or domain}（{domain}）未被 MoviePilot 识别，"
+                        f"请到「设定 → 站点」添加该站点并填写 Cookie 后重试"
+                    )
+                    continue
+
                 # 使用系统 TorrentsChain 获取种子
-                torrents = TorrentsChain().browse(domain=site.domain)
+                torrents = TorrentsChain().browse(domain=domain)
                 if not torrents:
                     continue
                 
