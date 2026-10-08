@@ -1,0 +1,18 @@
+{
+  "shortdramaorganizer": {
+    "name": "短剧整理器",
+    "description": "自动获取短剧种子、筛选下载、独立监控、识别整理、Emby 删除时同步删种。",
+    "labels": "站点,下载管理,文件整理,媒体库",
+    "version": "2.0.0",
+    "icon": "shortdramaorganizer.png",
+    "author": "AI",
+    "level": 1,
+    "release": true,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v2.0.0": "适配 MoviePilot V3：导入统一改用 app.sdk.* 稳定入口；宿主整理历史读写改走 TransferHistoryOper（不再持有 ScopedSession）；媒体主身份改用 media_source + media_id 成对写入；一次性任务交由宿主调度器托管；站点信息读取改走 SitesHelper。",
+      "v1.0.5": "重构：PT 站点换血、新增下载器内去重、整理器首次生成 NFO/海报、删种遍历所有下载器、状态查询改分批。",
+      "v1.0.2": "自动获取短剧种子、筛选下载、独立监控、识别整理、Emby 删库同步删种。"
+    }
+  }
+}
