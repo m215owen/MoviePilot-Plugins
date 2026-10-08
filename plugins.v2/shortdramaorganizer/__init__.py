@@ -29,8 +29,6 @@ from app.utils.http import RequestUtils
 from app.utils.system import SystemUtils
 from collections import OrderedDict
 from app.core.metainfo import MetaInfo
-from app.api.endpoints.plugin import register_plugin_api, PLUGIN_PREFIX
-from fastapi import Request
 
 # 尝试导入可选依赖
 try:
@@ -82,6 +80,8 @@ SEASON_TOKEN_PATTERNS = [
 ]
 
 _ILLEGAL_NAME_CHARS = re.compile(r'[\\/*?:"<>|]')
+# 剧名中的分隔符，季信息被剔除后用于收紧残留字符
+_NAME_SEPARATORS = r'\s\-_.·：:、,，;；'
 
 
 def clean_dir_title(title: str) -> str:
@@ -99,10 +99,10 @@ def clean_dir_title(title: str) -> str:
         cleaned = pattern.sub(' ', cleaned)
 
     # 收紧剔除季信息后残留的分隔符与空白
-    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
-    cleaned = re.sub(r'[\-_.·]+\s*[\-_.·]+', ' ', cleaned)
-    cleaned = re.sub(r'^[\s\-_.·]+', '', cleaned)
-    cleaned = re.sub(r'[\s\-_.·]+$', '', cleaned)
+    cleaned = re.sub(r'[%s]{2,}' % _NAME_SEPARATORS, ' ', cleaned)
+    cleaned = re.sub(r'^[%s]+' % _NAME_SEPARATORS, '', cleaned)
+    cleaned = re.sub(r'[%s]+$' % _NAME_SEPARATORS, '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
     return cleaned or raw
 
@@ -1418,7 +1418,7 @@ class shortdramaorganizer(_PluginBase):
     _processing_files: set = set()
     _lock: threading.RLock = threading.RLock()
     _task_cache: dict = {}
-    _drama_cache: Optional[TTLCache] = None
+    _drama_cache: Optional[Any] = None
     # 持久化映射：原始文件夹名 -> 最终标题，重启不丢失
     _title_mapping: Dict[str, str] = {}
     
@@ -1432,8 +1432,11 @@ class shortdramaorganizer(_PluginBase):
     
     def __init__(self):
         super().__init__()
-        # 初始化缓存（使用系统 TTLCache，Redis 后端，重启不丢失）
-        self._drama_cache = TTLCache(maxsize=500, ttl=86400)  # 最多500条，24小时过期
+        # 初始化缓存（优先系统 TTLCache，Redis 后端，重启不丢失；不可用时退回内置缓存）
+        if HAS_TTLCACHE:
+            self._drama_cache = TTLCache(maxsize=500, ttl=86400)  # 最多500条，24小时过期
+        else:
+            self._drama_cache = SimpleTTLCache(maxsize=500, ttl=86400)
         logger.debug("[短剧整理器] 实例创建")
 
     
