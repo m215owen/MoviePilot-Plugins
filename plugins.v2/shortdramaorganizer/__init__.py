@@ -73,6 +73,39 @@ EPISODE_PATTERNS = [
     re.compile(r'第\s*(\d+)\s*集'),
     ]
 
+# 剧名中需要剔除的季信息（用于生成剧名目录，避免 S01/第二季 把同一部剧拆成多个目录）
+SEASON_TOKEN_PATTERNS = [
+    re.compile(r'(?:full\s*)?[sS]eason\s*0*\d+', re.IGNORECASE),
+    re.compile(r'[sS]0*\d{1,2}(?!\d)'),
+    re.compile(r'第\s*0*\d+\s*[季部]'),
+    re.compile(r'第\s*[一二三四五六七八九十]+\s*[季部]'),
+]
+
+_ILLEGAL_NAME_CHARS = re.compile(r'[\\/*?:"<>|]')
+
+
+def clean_dir_title(title: str) -> str:
+    """生成剧名目录名：剔除季信息与非法字符
+
+    "闪婚老公是豪门 S01" / "闪婚老公是豪门 第二季" -> "闪婚老公是豪门"
+    若剔除后为空（剧名本身就是季信息），则退回原始剧名，避免生成空目录名。
+    """
+    raw = _ILLEGAL_NAME_CHARS.sub('', (title or '').strip())
+    if not raw:
+        return ''
+
+    cleaned = raw
+    for pattern in SEASON_TOKEN_PATTERNS:
+        cleaned = pattern.sub(' ', cleaned)
+
+    # 收紧剔除季信息后残留的分隔符与空白
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    cleaned = re.sub(r'[\-_.·]+\s*[\-_.·]+', ' ', cleaned)
+    cleaned = re.sub(r'^[\s\-_.·]+', '', cleaned)
+    cleaned = re.sub(r'[\s\-_.·]+$', '', cleaned)
+
+    return cleaned or raw
+
 DEFAULT_PT_SITES = [
     {
         "domain": "agsvpt.com",
@@ -943,7 +976,8 @@ class ShortDramaOrganizer:
             return None
         
         subdir = self.config.subdir or "短剧"
-        safe_title = re.sub(r'[\\/*?:"<>|]', '', title).strip()
+        # 剧名目录不带季信息：S01 / 第二季 / Season 2 等统一剔除
+        safe_title = clean_dir_title(title) or "未知短剧"
         
         target_dir = Path(media_library) / subdir / safe_title / f"Season {season:02d}"
         source_suffix = Path(drama_info.get('source_path', '')).suffix
