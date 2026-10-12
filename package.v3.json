@@ -14,5 +14,18 @@
       "v1.0.5": "重构：PT 站点换血、新增下载器内去重、整理器首次生成 NFO/海报、删种遍历所有下载器、状态查询改分批。",
       "v1.0.2": "自动获取短剧种子、筛选下载、独立监控、识别整理、Emby 删库同步删种。"
     }
+  },
+  "PluginTemplate": {
+    "name": "插件开发模板",
+    "description": "MoviePilot V3 插件开发模板：内置配置页、详情页、仪表板、侧栏全页、定时服务、远程命令、插件 API、工作流动作与智能体工具，可直接二次开发。",
+    "labels": "开发,模板,示例",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/Moviepilot_A.png",
+    "author": "m215owen",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "首次发布：面向 MoviePilot V3 的插件开发模板，Vue 模块联邦 UI，覆盖配置页、详情页、仪表板、侧栏全页、定时服务、远程命令、插件 API、工作流动作与智能体工具。"
+    }
   }
 }
