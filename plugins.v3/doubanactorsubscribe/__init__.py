@@ -93,6 +93,37 @@ _COOKIE_EXPIRED_HINT = (
     "请在浏览器重新登录豆瓣并同步 CookieCloud，或在插件里更新豆瓣 Cookie"
 )
 
+# 每位演员「成功搜索一次」后，24 小时内不再按名称重复搜索。
+# 豆瓣的搜索额度（匿名约 5 次、登录态也只多几倍）极其有限，而解析出人物 ID 后
+# 本可长期复用；这里加一道 24 小时冷却，避免缓存丢失或异常路径下白花一次额度。
+#
+# 冷却是**成功才触发**的：限流 / need_login / 查无此人这些失败不记账，
+# 下一轮刷新仍会重试（限流窗口很短，锁死一整天反而让演员长期解析不出来）。
+#
+# 注意：冷却只作用于「按名称搜索」这一步。已经解析出人物 ID 的演员本来就不搜索，
+# 其作品与详情仍按 cron / 手动刷新照常抓取，不受此冷却影响。
+_SEARCH_COOLDOWN_SECONDS = 24 * 3600
+
+
+def _format_remaining(seconds: float) -> str:
+    """把剩余冷却秒数写成「X 小时 Y 分钟」，便于用户判断什么时候会重试。"""
+    total = max(0, int(seconds))
+    hours, minutes = total // 3600, (total % 3600) // 60
+    if hours and minutes:
+        return f"{hours} 小时 {minutes} 分钟"
+    if hours:
+        return f"{hours} 小时"
+    return f"{max(1, minutes)} 分钟"
+
+
+def _search_cooldown_hint(remain_seconds: float) -> str:
+    """搜索冷却期内的提示。要带上「还有多久」，否则用户会以为插件卡住了。"""
+    return (
+        f"24 小时内已搜索过（每位演员每 24 小时只搜 1 次），"
+        f"约 {_format_remaining(remain_seconds)}后自动重试；"
+        f"也可直接填人物 ID/主页链接跳过搜索"
+    )
+
 # 从豆瓣人物主页地址中提取人物 ID，方便用户直接粘贴链接
 _PERSON_URL_PATTERN = re.compile(r"(?:personage|celebrity)/(\d+)")
 
@@ -235,6 +266,9 @@ class _DoubanClient:
         # 是否命中过 need_login（豆瓣把「未登录」当限流信号用）
         self.last_need_login = False
         self.last_body = ""
+        # 真实发起过的名称搜索次数。上层用它判断「这位演员今天到底搜没搜过」，
+        # 只有真的打了搜索接口才记账，拿链接/ID 直接命中的不算。
+        self.search_calls = 0
 
     @classmethod
     def _sign(cls, url_path: str, ts: str) -> str:
@@ -361,6 +395,7 @@ class _DoubanClient:
 
     def search_person(self, name: str, count: int = 10) -> List[Dict[str, Any]]:
         """按名称搜索豆瓣人物，返回 ``[{id, name, avatar, url}]``。"""
+        self.search_calls += 1
         payload = self._get("/search/subjects", type="person", q=name, start=0, count=count)
         results: List[Dict[str, Any]] = []
         seen = set()
@@ -430,7 +465,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -486,6 +521,8 @@ class DoubanActorSubscribe(_PluginBase):
     _DATA_STATE = "state"
     # 上一次生效的演员配置，用于识别「演员列表已变更」并安排自动刷新
     _DATA_CONFIGURED = "configured_actors"
+    # 每位演员「最近一次成功发起名称搜索」的时间戳，用于 24 小时搜索冷却
+    _DATA_SEARCH_LOG = "search_log"
 
     # 一次性任务标识
     _ONCE_JOB_ID = "refresh_once"
@@ -887,9 +924,33 @@ class DoubanActorSubscribe(_PluginBase):
         # 已经解析出人物 ID 的演员不受影响（走详情/作品集接口，配额宽松且会快速恢复）。
         search_blocked = False
         skipped = 0
+        # 搜索冷却记账：某位演员**成功搜索一次**后，24 小时内不再重复搜这个名字。
+        # 失败不记账（限流是暂时的，要允许下一轮重试）。只作用于「按名称搜索」这一步。
+        now_ts = time.time()
+        search_log = self._load_search_log()
+        search_log_dirty = False
+        cooling = 0
 
         for key in self._actor_entries:
             need_search = not str((cache.get(key) or {}).get("id") or "").strip()
+            last_search = search_log.get(key) if need_search else None
+            if last_search and now_ts - last_search < _SEARCH_COOLDOWN_SECONDS:
+                # 24 小时内已经为这位演员打过一次搜索接口，不再重复消耗额度
+                cooling += 1
+                hint = _search_cooldown_hint(_SEARCH_COOLDOWN_SECONDS - (now_ts - last_search))
+                errors.append(f"{key}：{hint}")
+                snapshot[key] = {
+                    "actor": {
+                        "key": key,
+                        "id": "",
+                        "name": key,
+                        "resolved_from": "search",
+                        "error": hint,
+                        "retryable": True,
+                    },
+                    "works": [],
+                }
+                continue
             if need_search and search_blocked:
                 skipped += 1
                 errors.append(f"{key}：{client.failure_hint()}")
@@ -905,12 +966,20 @@ class DoubanActorSubscribe(_PluginBase):
                     "works": [],
                 }
                 continue
+            search_calls_before = client.search_calls
             try:
                 actor, works, cached = self._refresh_actor(client, key, previous, cache)
             except Exception as err:  # pragma: no cover - 单演员失败不影响其他演员
                 logger.error(f"{self.plugin_name} 刷新演员「{key}」失败：{err}")
                 errors.append(f"{key}：{err}")
                 continue
+            if need_search and client.search_calls > search_calls_before:
+                # 记账规则：只有**搜索成功**（真的解析出了人物 ID）才进入 24 小时冷却。
+                # 失败（限流 / need_login / 查无此人）不冷却 —— 限流只是暂时的，
+                # 锁死一整天会让这些演员长期解析不出来，下轮重试才合理。
+                if str(actor.get("id") or "").strip():
+                    search_log[key] = time.time()
+                    search_log_dirty = True
             cache_dirty = cache_dirty or cached
             if actor.get("error"):
                 errors.append(f"{key}：{actor['error']}")
@@ -923,6 +992,8 @@ class DoubanActorSubscribe(_PluginBase):
 
         if cache_dirty:
             self.save_data(self._DATA_ACTORS, cache)
+        if search_log_dirty:
+            self.save_data(self._DATA_SEARCH_LOG, search_log)
         self.save_data(self._DATA_WORKS, snapshot)
 
         subscribed: List[Dict[str, Any]] = []
@@ -948,6 +1019,8 @@ class DoubanActorSubscribe(_PluginBase):
             detail += f"，{len(errors)} 项异常"
         if skipped:
             detail += f"，{skipped} 位因豆瓣限流顺延到下次"
+        if cooling:
+            detail += f"，{cooling} 位搜索冷却中（24 小时内已搜过）"
         self._refreshing = False
         logger.info(f"{self.plugin_name} 任务完成（{trigger}）：{detail}")
 
@@ -978,6 +1051,7 @@ class DoubanActorSubscribe(_PluginBase):
         actors.sort(key=lambda item: str(item.get("name") or ""))
         total = sum(len(item["works"]) for item in actors)
         new_count = sum(1 for item in actors for work in item["works"] if work.get("is_new"))
+        search_log = self._load_search_log()
         return {
             "enabled": self._enabled,
             "updated_at": self._last_run_at,
@@ -1000,6 +1074,10 @@ class DoubanActorSubscribe(_PluginBase):
             # 豆瓣 Cookie 来源，供面板显示「是不是靠登录态在提额度」
             "douban_cookie_source": self._cookie_source,
             "douban_cookie_hint": self._cookie_hint,
+            # 仍在 24 小时搜索冷却内的演员数（成功搜过一次，近期不再重复搜）
+            "search_cooldown_count": sum(
+                1 for key in self._actor_entries if search_log.get(key)
+            ),
         }
 
     # ─── 业务逻辑：演员解析与作品抓取 ────────────────────────────
@@ -1034,7 +1112,10 @@ class DoubanActorSubscribe(_PluginBase):
             # 不要把它伪装成「未找到该演员的豆瓣影视作品集」。
             actor["error"] = client.failure_hint()
             actor["retryable"] = True
-            return actor, [], False
+            # 关键：ID 已经解析出来了，即使详情这次被限流也要把 ID 落缓存。
+            # 否则下一轮会为一个**已经解析好**的演员再花一次宝贵的搜索额度。
+            cache[key] = {k: v for k, v in actor.items() if k not in ("works", "retryable")}
+            return actor, [], True
 
         if actor_id and not actor.get("error"):
             cache[key] = {k: v for k, v in actor.items() if k not in ("works", "retryable")}
@@ -1403,6 +1484,26 @@ class DoubanActorSubscribe(_PluginBase):
         data = self.get_data(self._DATA_ACTORS)
         return data if isinstance(data, dict) else {}
 
+    def _load_search_log(self) -> Dict[str, float]:
+        """读取「演员 → 最近一次真实搜索时间」的记账表。
+
+        只保留仍在 24 小时冷却窗口内的记录：过期的没有意义，顺手清掉，
+        避免这份数据随着时间无限增长。时间戳存成 float（epoch 秒）。
+        """
+        data = self.get_data(self._DATA_SEARCH_LOG)
+        if not isinstance(data, dict):
+            return {}
+        threshold = time.time() - _SEARCH_COOLDOWN_SECONDS
+        cleaned: Dict[str, float] = {}
+        for key, value in data.items():
+            try:
+                ts = float(value)
+            except (TypeError, ValueError):
+                continue
+            if ts > threshold:
+                cleaned[str(key)] = ts
+        return cleaned
+
     def _load_sub_history(self) -> List[Dict[str, Any]]:
         data = self.get_data(self._DATA_SUBS)
         return list(data) if isinstance(data, list) else []
@@ -1621,14 +1722,19 @@ class DoubanActorSubscribe(_PluginBase):
         return {"success": True, "data": results}
 
     def api_clear(self) -> Dict[str, Any]:
-        """清空作品快照与自动订阅记录（配置不受影响）。"""
+        """清空作品快照与自动订阅记录（配置不受影响）。
+
+        同时清掉搜索冷却记账：这是用户显式要求重来的动作，
+        相当于手动放行一次重搜（会重新消耗豆瓣搜索额度）。
+        """
         self.save_data(self._DATA_WORKS, {})
         self.save_data(self._DATA_SUBS, [])
         self.save_data(self._DATA_SEEN, [])
+        self.save_data(self._DATA_SEARCH_LOG, {})
         self._run_count = 0
         self._last_run_at = ""
         self.save_data(self._DATA_STATE, {"run_count": 0, "last_run_at": ""})
-        return {"success": True, "message": "作品与自动订阅记录已清空"}
+        return {"success": True, "message": "作品、自动订阅记录与搜索记账已清空"}
 
     # ─── 配置解析与默认值 ────────────────────────────────────────
 

@@ -83,6 +83,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         title: hint || "未取到豆瓣登录态，按名称搜索演员会被严格限流；可在配置页手工粘贴 Cookie"
       };
     });
+    const cooldownCount = computed(() => payload.value?.search_cooldown_count ?? 0);
     const errorList = computed(() => {
       const items = payload.value?.errors || [];
       return [...items].sort((a, b) => {
@@ -279,6 +280,19 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   ]),
                   _: 1
                 }, 8, ["color", "prepend-icon", "title"]),
+                cooldownCount.value ? (_openBlock(), _createBlock(_component_v_chip, {
+                  key: 2,
+                  size: "small",
+                  variant: "tonal",
+                  color: "info",
+                  "prepend-icon": "mdi-timer-sand",
+                  title: `${cooldownCount.value} 位演员在 24 小时内成功搜索过，需等冷却结束后才会重试；直接填人物 ID 可跳过搜索`
+                }, {
+                  default: _withCtx(() => [
+                    _createTextVNode(" 搜索冷却 " + _toDisplayString(cooldownCount.value), 1)
+                  ]),
+                  _: 1
+                }, 8, ["title"])) : _createCommentVNode("", true),
                 _createVNode(_component_v_spacer),
                 _createVNode(_component_v_btn, {
                   size: "small",
@@ -599,6 +613,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-5ac6a709"]]);
+const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-53919be1"]]);
 
 export { Page as default };

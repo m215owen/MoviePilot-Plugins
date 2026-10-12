@@ -17,6 +17,18 @@
       >
         {{ cookieChip.text }}
       </v-chip>
+      <!-- 搜索冷却徽标：解释「为什么这些演员还是未解析」 -->
+      <v-chip
+        v-if="cooldownCount"
+        size="small"
+        variant="tonal"
+        color="info"
+        class="ml-1"
+        prepend-icon="mdi-timer-sand"
+        :title="`${cooldownCount} 位演员在 24 小时内成功搜索过，需等冷却结束后才会重试；直接填人物 ID 可跳过搜索`"
+      >
+        搜索冷却 {{ cooldownCount }}
+      </v-chip>
       <v-spacer />
       <!-- 侧栏快捷开关：直接启停插件，无需再进配置页 -->
       <v-switch
@@ -276,6 +288,9 @@ const cookieChip = computed(() => {
     title: hint || '未取到豆瓣登录态，按名称搜索演员会被严格限流；可在配置页手工粘贴 Cookie',
   }
 })
+
+/** 仍处于 24 小时搜索冷却中的演员数；为 0 时不显示徽标 */
+const cooldownCount = computed(() => payload.value?.search_cooldown_count ?? 0)
 
 /** 异常提示：「需改配置」的排在最后，可重试的限流提示优先展示 */
 const errorList = computed(() => {

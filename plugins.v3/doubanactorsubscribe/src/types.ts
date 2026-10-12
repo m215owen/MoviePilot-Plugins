@@ -149,6 +149,13 @@ export interface WorksPayload {
   douban_cookie_source?: string
   /** 未取到豆瓣 Cookie 时的原因，直接展示给用户 */
   douban_cookie_hint?: string
+  /**
+   * 仍在 24 小时搜索冷却内的演员数。
+   *
+   * 某位演员成功搜到人物 ID 后，24 小时内不会重复按名称搜索（豆瓣搜索额度极紧），
+   * 这个数字用于解释面板上「这批演员为什么还是未解析状态」。
+   */
+  search_cooldown_count?: number
   /** 是否正在等待后台补刷新 */
   pending_refresh: boolean
   /** 后台刷新是否正在进行（演员多时一次刷新会持续较久） */

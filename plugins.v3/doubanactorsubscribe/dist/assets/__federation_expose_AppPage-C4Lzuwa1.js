@@ -5,7 +5,7 @@ import { m as mergeWorks, s as sortWorks, w as workKey, r as resolveApi, A as AP
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
-const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,renderList:_renderList,Fragment:_Fragment,openBlock:_openBlock,createElementBlock:_createElementBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode} = await importShared('vue');
+const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,renderList:_renderList,Fragment:_Fragment,createElementBlock:_createElementBlock} = await importShared('vue');
 
 const _hoisted_1 = { class: "das-root pa-4" };
 const _hoisted_2 = { class: "d-flex align-center mb-3 flex-wrap das-titlebar" };
@@ -77,6 +77,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         title: hint || "未取到豆瓣登录态，按名称搜索演员会被严格限流；可在配置页手工粘贴 Cookie"
       };
     });
+    const cooldownCount = computed(() => payload.value?.search_cooldown_count ?? 0);
     const errorList = computed(() => {
       const items = payload.value?.errors || [];
       return [...items].sort((a, b) => {
@@ -293,6 +294,20 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }, 8, ["color", "prepend-icon", "title"]),
+          cooldownCount.value ? (_openBlock(), _createBlock(_component_v_chip, {
+            key: 0,
+            size: "small",
+            variant: "tonal",
+            color: "info",
+            class: "ml-1",
+            "prepend-icon": "mdi-timer-sand",
+            title: `${cooldownCount.value} 位演员在 24 小时内成功搜索过，需等冷却结束后才会重试；直接填人物 ID 可跳过搜索`
+          }, {
+            default: _withCtx(() => [
+              _createTextVNode(" 搜索冷却 " + _toDisplayString(cooldownCount.value), 1)
+            ]),
+            _: 1
+          }, 8, ["title"])) : _createCommentVNode("", true),
           _createVNode(_component_v_spacer),
           _createVNode(_component_v_switch, {
             modelValue: enabled.value,
@@ -564,6 +579,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const AppPage = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-23f9b170"]]);
+const AppPage = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-cfd61833"]]);
 
 export { AppPage as default };
