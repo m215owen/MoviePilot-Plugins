@@ -1,5 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { a as formatTime, A as API_BASE, r as resolveApi, u as unwrap, P as PLUGIN_ID, _ as _export_sfc } from './_plugin-vue_export-helper-CY9eCSTe.js';
+import { S as SubscribePrefs } from './SubscribePrefs-Bgn2B3IW.js';
+import { c as formatTime, A as API_BASE, r as resolveApi, n as normalizeResult, P as PLUGIN_ID, a as waitForRefresh, _ as _export_sfc } from './api-BbaK2SUr.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -60,6 +61,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       }
       console.warn(`[${PLUGIN_ID}] ${message}`);
     }
+    function onPrefsSaved(ok, message) {
+      notify(ok ? "success" : "error", message);
+    }
     async function load() {
       const api = resolveApi(props);
       if (!api) {
@@ -72,14 +76,14 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           api.get(`${API_BASE}/config`),
           api.get(`${API_BASE}/works`)
         ]);
-        const cfg = unwrap(cfgRaw);
-        if (cfg?.success && cfg.data) {
+        const cfg = normalizeResult(cfgRaw);
+        if (cfg.ok && cfg.data) {
           local.enabled = Boolean(cfg.data.enabled);
           local.actors = String(cfg.data.actors || "");
           local.cron = String(cfg.data.cron || "");
         }
-        const works = unwrap(worksRaw);
-        if (works?.success && works.data) payload.value = works.data;
+        const works = normalizeResult(worksRaw);
+        if (works.ok && works.data) payload.value = works.data;
       } catch (err) {
         notify("error", "读取状态失败");
         console.warn(`[${PLUGIN_ID}] 读取状态失败`, err);
@@ -100,12 +104,12 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           actors: local.actors,
           cron: local.cron
         });
-        const res = unwrap(raw);
-        if (res?.success) {
+        const res = normalizeResult(raw);
+        if (res.ok) {
           notify("success", "配置已保存");
           await runNow();
         } else {
-          notify("error", res?.message || "保存失败");
+          notify("error", res.message || "保存失败");
         }
       } catch (err) {
         notify("error", "保存失败");
@@ -120,10 +124,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       refreshing.value = true;
       try {
         const raw = await api.post(`${API_BASE}/run`);
-        const res = unwrap(raw);
-        if (res?.data) payload.value = res.data;
-        if (res?.success) notify("success", "已刷新演员最新作品");
-        else notify("error", res?.message || "刷新失败");
+        const res = normalizeResult(raw);
+        if (res.data) payload.value = res.data;
+        if (res.ok) notify("success", res.message || "已开始刷新演员最新作品");
+        else notify("error", res.message || "刷新失败");
+        if (payload.value?.refreshing || payload.value?.pending_refresh) {
+          waitForRefresh(api, (data) => {
+            payload.value = data;
+          });
+        }
       } catch (err) {
         notify("error", "刷新失败");
         console.warn(`[${PLUGIN_ID}] 刷新失败`, err);
@@ -137,13 +146,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       clearing.value = true;
       try {
         const raw = await api.post(`${API_BASE}/clear`);
-        const res = unwrap(raw);
-        if (res?.success) {
+        const res = normalizeResult(raw);
+        if (res.ok) {
           notify("success", res.message || "已清空记录");
           confirmClear.value = false;
           await load();
         } else {
-          notify("error", res?.message || "清空失败");
+          notify("error", res.message || "清空失败");
         }
       } catch (err) {
         notify("error", "清空失败");
@@ -239,6 +248,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _: 2
           }, 1024);
         }), 128)),
+        _createVNode(SubscribePrefs, {
+          class: "mb-3",
+          api: props.api,
+          onSaved: onPrefsSaved
+        }, null, 8, ["api"]),
         _createVNode(_component_v_row, null, {
           default: _withCtx(() => [
             _createVNode(_component_v_col, {
@@ -283,7 +297,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     _createVNode(_component_v_textarea, {
                       modelValue: local.actors,
                       "onUpdate:modelValue": _cache[1] || (_cache[1] = ($event) => local.actors = $event),
-                      label: "订阅的演员（每行一个：演员名或豆瓣人物 ID）",
+                      label: "订阅的演员",
+                      placeholder: "支持逗号/顿号/分号分隔，也可每行一个：\n刘德华, 吴京, 张译\n或直接粘贴人物主页链接：\nhttps://www.douban.com/personage/37871253/",
+                      hint: "演员名或豆瓣人物 ID/主页链接均可。填 ID 或链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。",
+                      "persistent-hint": "",
                       rows: "4",
                       "auto-grow": "",
                       density: "comfortable",
@@ -471,6 +488,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-35227773"]]);
+const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-176977a4"]]);
 
 export { AppPageSettings as default };

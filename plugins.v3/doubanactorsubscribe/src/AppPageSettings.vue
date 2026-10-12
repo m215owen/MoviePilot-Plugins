@@ -29,6 +29,9 @@
       {{ err }}
     </v-alert>
 
+    <!-- 订阅选项：下载保存路径 + 订阅站点（组件内自行 PUT /config 持久化） -->
+    <SubscribePrefs class="mb-3" :api="props.api" @saved="onPrefsSaved" />
+
     <v-row>
       <!-- 快速配置 -->
       <v-col cols="12" lg="5">
@@ -45,7 +48,10 @@
           <v-switch v-model="local.enabled" label="启用插件" color="primary" hide-details class="mb-2" />
           <v-textarea
             v-model="local.actors"
-            label="订阅的演员（每行一个：演员名或豆瓣人物 ID）"
+            label="订阅的演员"
+            placeholder="支持逗号/顿号/分号分隔，也可每行一个：&#10;刘德华, 吴京, 张译&#10;或直接粘贴人物主页链接：&#10;https://www.douban.com/personage/37871253/"
+            hint="演员名或豆瓣人物 ID/主页链接均可。填 ID 或链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。"
+            persistent-hint
             rows="4"
             auto-grow
             density="comfortable"
@@ -147,8 +153,9 @@
  * 并通过宿主注入的 Toast 反馈结果。
  */
 import { computed, inject, onMounted, reactive, ref } from 'vue'
-import { API_BASE, PLUGIN_ID, formatTime, resolveApi, unwrap } from './api'
-import type { ApiResult, PluginApi, PluginConfig, WorksPayload } from './types'
+import SubscribePrefs from './SubscribePrefs.vue'
+import { API_BASE, PLUGIN_ID, formatTime, normalizeResult, resolveApi, waitForRefresh } from './api'
+import type { PluginApi, PluginConfig, WorksPayload } from './types'
 
 interface HostToast {
   success(message: string): unknown
@@ -192,6 +199,11 @@ function notify(type: 'success' | 'error', message: string): void {
   console.warn(`[${PLUGIN_ID}] ${message}`)
 }
 
+/** 订阅选项「保存为默认」的回调 */
+function onPrefsSaved(ok: boolean, message: string): void {
+  notify(ok ? 'success' : 'error', message)
+}
+
 async function load(): Promise<void> {
   const api = resolveApi(props)
   if (!api) {
@@ -204,14 +216,14 @@ async function load(): Promise<void> {
       api.get(`${API_BASE}/config`),
       api.get(`${API_BASE}/works`),
     ])
-    const cfg = unwrap<ApiResult<PluginConfig>>(cfgRaw)
-    if (cfg?.success && cfg.data) {
+    const cfg = normalizeResult<PluginConfig>(cfgRaw)
+    if (cfg.ok && cfg.data) {
       local.enabled = Boolean(cfg.data.enabled)
       local.actors = String(cfg.data.actors || '')
       local.cron = String(cfg.data.cron || '')
     }
-    const works = unwrap<ApiResult<WorksPayload>>(worksRaw)
-    if (works?.success && works.data) payload.value = works.data
+    const works = normalizeResult<WorksPayload>(worksRaw)
+    if (works.ok && works.data) payload.value = works.data
   } catch (err) {
     notify('error', '读取状态失败')
     console.warn(`[${PLUGIN_ID}] 读取状态失败`, err)
@@ -234,12 +246,12 @@ async function save(): Promise<void> {
       actors: local.actors,
       cron: local.cron,
     })
-    const res = unwrap<ApiResult<PluginConfig>>(raw)
-    if (res?.success) {
+    const res = normalizeResult<PluginConfig>(raw)
+    if (res.ok) {
       notify('success', '配置已保存')
       await runNow()
     } else {
-      notify('error', res?.message || '保存失败')
+      notify('error', res.message || '保存失败')
     }
   } catch (err) {
     notify('error', '保存失败')
@@ -249,17 +261,22 @@ async function save(): Promise<void> {
   }
 }
 
-/** 立即刷新一次作品 */
+/** 立即刷新一次作品（后台执行，轮询等待结果） */
 async function runNow(): Promise<void> {
   const api = resolveApi(props)
   if (!api) return
   refreshing.value = true
   try {
     const raw = await api.post(`${API_BASE}/run`)
-    const res = unwrap<ApiResult<WorksPayload>>(raw)
-    if (res?.data) payload.value = res.data
-    if (res?.success) notify('success', '已刷新演员最新作品')
-    else notify('error', res?.message || '刷新失败')
+    const res = normalizeResult<WorksPayload>(raw)
+    if (res.data) payload.value = res.data
+    if (res.ok) notify('success', res.message || '已开始刷新演员最新作品')
+    else notify('error', res.message || '刷新失败')
+    if (payload.value?.refreshing || payload.value?.pending_refresh) {
+      waitForRefresh(api, (data) => {
+        payload.value = data
+      })
+    }
   } catch (err) {
     notify('error', '刷新失败')
     console.warn(`[${PLUGIN_ID}] 刷新失败`, err)
@@ -275,13 +292,13 @@ async function clearRecords(): Promise<void> {
   clearing.value = true
   try {
     const raw = await api.post(`${API_BASE}/clear`)
-    const res = unwrap<ApiResult<unknown>>(raw)
-    if (res?.success) {
+    const res = normalizeResult<unknown>(raw)
+    if (res.ok) {
       notify('success', res.message || '已清空记录')
       confirmClear.value = false
       await load()
     } else {
-      notify('error', res?.message || '清空失败')
+      notify('error', res.message || '清空失败')
     }
   } catch (err) {
     notify('error', '清空失败')

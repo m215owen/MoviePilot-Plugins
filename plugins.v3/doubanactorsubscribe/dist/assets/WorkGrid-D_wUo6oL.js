@@ -1,5 +1,90 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { w as workKey, _ as _export_sfc } from './_plugin-vue_export-helper-CY9eCSTe.js';
+import { _ as _export_sfc, w as workKey, p as proxyImage } from './api-BbaK2SUr.js';
+
+const {defineComponent:_defineComponent$1} = await importShared('vue');
+
+const {renderList:_renderList$1,Fragment:_Fragment$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1} = await importShared('vue');
+
+const _hoisted_1$1 = {
+  key: 0,
+  class: "das-errors"
+};
+const {onBeforeUnmount,ref,watch} = await importShared('vue');
+
+const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
+  __name: "ErrorAlerts",
+  props: {
+    errors: { default: () => [] },
+    duration: { default: 5e3 }
+  },
+  setup(__props) {
+    const props = __props;
+    const visible = ref(true);
+    let timer;
+    function clearTimer() {
+      if (timer !== void 0) {
+        window.clearTimeout(timer);
+        timer = void 0;
+      }
+    }
+    function show() {
+      clearTimer();
+      visible.value = true;
+      if (props.duration > 0) {
+        timer = window.setTimeout(() => {
+          visible.value = false;
+        }, props.duration);
+      }
+    }
+    watch(
+      () => (props.errors || []).join("\n"),
+      () => {
+        if (!props.errors || !props.errors.length) {
+          clearTimer();
+          visible.value = true;
+          return;
+        }
+        show();
+      },
+      { immediate: true }
+    );
+    onBeforeUnmount(clearTimer);
+    return (_ctx, _cache) => {
+      const _component_v_alert = _resolveComponent$1("v-alert");
+      const _component_v_chip = _resolveComponent$1("v-chip");
+      return __props.errors.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_1$1, [
+        visible.value ? (_openBlock$1(true), _createElementBlock$1(_Fragment$1, { key: 0 }, _renderList$1(__props.errors, (item, index) => {
+          return _openBlock$1(), _createBlock$1(_component_v_alert, {
+            key: `${index}-${item}`,
+            type: "warning",
+            variant: "tonal",
+            density: "compact",
+            class: "mb-2"
+          }, {
+            default: _withCtx$1(() => [
+              _createTextVNode$1(_toDisplayString$1(item), 1)
+            ]),
+            _: 2
+          }, 1024);
+        }), 128)) : (_openBlock$1(), _createBlock$1(_component_v_chip, {
+          key: 1,
+          size: "small",
+          variant: "tonal",
+          color: "warning",
+          "prepend-icon": "mdi-alert-outline",
+          onClick: show
+        }, {
+          default: _withCtx$1(() => [
+            _createTextVNode$1(_toDisplayString$1(__props.errors.length) + " 项异常（点击查看） ", 1)
+          ]),
+          _: 1
+        }))
+      ])) : _createCommentVNode$1("", true);
+    };
+  }
+});
+
+const ErrorAlerts = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-df55bed5"]]);
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -26,18 +111,21 @@ const _hoisted_9 = {
   key: 1,
   class: "das-dim das-vote"
 };
-const _hoisted_10 = {
-  key: 0,
+const _hoisted_10 = ["title"];
+const _hoisted_11 = { class: "das-actors-text" };
+const _hoisted_12 = {
+  key: 1,
   class: "das-dim das-roles"
 };
 const _sfc_main = /* @__PURE__ */ _defineComponent({
   __name: "WorkGrid",
   props: {
     works: {},
-    subscribedKeys: {},
+    subscribedKeys: { default: () => [] },
     pendingKey: {},
     busy: { type: Boolean },
-    emptyText: {}
+    emptyText: {},
+    showActors: { type: Boolean, default: true }
   },
   emits: ["subscribe"],
   setup(__props, { emit: __emit }) {
@@ -65,7 +153,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               default: _withCtx(() => [
                 _createElementVNode("div", _hoisted_3, [
                   _createVNode(_component_v_img, {
-                    src: work.poster,
+                    src: _unref(proxyImage)(work.poster),
                     "aspect-ratio": 2 / 3,
                     cover: "",
                     class: "das-poster-img"
@@ -140,7 +228,18 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         _createTextVNode(_toDisplayString(work.vote.toFixed(1)), 1)
                       ])) : _createCommentVNode("", true)
                     ]),
-                    work.roles && work.roles.length ? (_openBlock(), _createElementBlock("div", _hoisted_10, _toDisplayString(work.roles.join(" / ")), 1)) : _createCommentVNode("", true)
+                    __props.showActors && work.actorNames && work.actorNames.length ? (_openBlock(), _createElementBlock("div", {
+                      key: 0,
+                      class: "das-actors",
+                      title: work.actorNames.join(" / ")
+                    }, [
+                      _createVNode(_component_v_icon, {
+                        icon: "mdi-account-outline",
+                        size: "11"
+                      }),
+                      _createElementVNode("span", _hoisted_11, _toDisplayString(work.actorNames.join(" / ")), 1)
+                    ], 8, _hoisted_10)) : _createCommentVNode("", true),
+                    work.roles && work.roles.length ? (_openBlock(), _createElementBlock("div", _hoisted_12, _toDisplayString(work.roles.join(" / ")), 1)) : _createCommentVNode("", true)
                   ]),
                   _: 2
                 }, 1024),
@@ -183,6 +282,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-17a16a7c"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-c4f10d20"]]);
 
-export { WorkGrid as W };
+export { ErrorAlerts as E, WorkGrid as W };

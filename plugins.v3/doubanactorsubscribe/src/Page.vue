@@ -1,32 +1,65 @@
 <template>
   <div class="das-root das-page pa-2">
-    <!-- 概览 -->
+    <!-- 顶部操作条：所有动作都固定在顶部，作品再多也不必滚到最后一行 -->
     <v-card variant="outlined" class="mb-3">
-      <v-card-title class="d-flex align-center flex-wrap">
-        <v-icon icon="mdi-account-star-outline" class="mr-2" />
+      <v-card-title class="d-flex align-center flex-wrap das-titlebar">
+        <v-icon icon="mdi-account-star-outline" class="mr-1" />
         <span>豆瓣演员订阅</span>
+        <v-chip v-if="actors.length" size="small" variant="tonal">{{ actors.length }} 位演员</v-chip>
+        <v-chip v-if="visibleWorks.length" size="small" variant="tonal">
+          {{ visibleWorks.length }} 部作品
+        </v-chip>
+        <v-chip
+          size="small"
+          variant="tonal"
+          :color="cookieChip.color"
+          :prepend-icon="cookieChip.icon"
+          :title="cookieChip.title"
+        >
+          {{ cookieChip.text }}
+        </v-chip>
         <v-spacer />
         <v-btn
           size="small"
           variant="tonal"
           color="primary"
           prepend-icon="mdi-refresh"
-          :loading="refreshing"
+          :loading="refreshing || Boolean(payload?.refreshing)"
           @click="refresh"
         >
-          刷新作品
+          {{ payload?.refreshing ? '刷新中…' : '刷新作品' }}
         </v-btn>
+        <v-btn size="small" variant="text" prepend-icon="mdi-cog-outline" @click="emit('switch')">
+          配置插件
+        </v-btn>
+        <v-btn size="small" variant="text" prepend-icon="mdi-open-in-app" @click="emit('action')">
+          通知宿主刷新
+        </v-btn>
+        <v-btn size="small" variant="text" @click="emit('close')">关闭</v-btn>
       </v-card-title>
 
-      <v-card-text>
+      <v-card-text class="pt-0">
         <v-alert
           v-if="!payload?.enabled"
           type="warning"
           variant="tonal"
           density="compact"
-          class="mb-3"
+          class="mb-2"
         >
           插件未启用或尚未配置演员，请先在配置页填写演员并保存。
+        </v-alert>
+
+        <v-alert v-if="payload?.refreshing" type="info" variant="tonal" density="compact" class="mb-2">
+          正在后台刷新演员作品（演员较多时需要几分钟），完成后此页会自动更新…
+        </v-alert>
+        <v-alert
+          v-else-if="payload?.pending_refresh"
+          type="info"
+          variant="tonal"
+          density="compact"
+          class="mb-2"
+        >
+          演员列表已变更，正在后台刷新作品，稍候会自动更新…
         </v-alert>
 
         <v-row dense>
@@ -47,24 +80,25 @@
           </span>
         </div>
 
-        <v-alert
-          v-for="(err, index) in payload?.errors || []"
-          :key="index"
-          type="error"
-          variant="tonal"
-          density="compact"
-          class="mt-2"
-        >
-          {{ err }}
-        </v-alert>
+        <!-- 异常提示：展示 5 秒后自动收起，避免长列表被提示刷屏 -->
+        <ErrorAlerts :errors="errorList" class="mt-3" />
       </v-card-text>
     </v-card>
 
-    <!-- 筛选 -->
+    <!-- 订阅选项：下载保存路径 + 订阅站点 -->
+    <SubscribePrefs
+      v-model:save-path="subscribeSavePath"
+      v-model:sites="subscribeSites"
+      :api="props.api"
+      @saved="onPrefsSaved"
+    />
+
+    <!-- 筛选工具条 -->
     <v-card variant="outlined" class="mb-3">
       <v-card-text class="pb-2">
-        <div class="d-flex align-center flex-wrap" style="gap: 12px">
-          <v-chip-group v-model="actorFilter" mandatory class="das-chips">
+        <!-- 演员筛选：作品墙统一展示，分类交给这一列 -->
+        <div class="das-chips">
+          <v-chip-group v-model="actorFilter" mandatory>
             <v-chip size="small" variant="tonal" :value="ALL_ACTORS">全部演员</v-chip>
             <v-chip
               v-for="actor in actors"
@@ -72,14 +106,22 @@
               size="small"
               variant="tonal"
               :value="actor.key"
+              :title="actor.error || actor.name"
             >
+              <v-icon
+                v-if="actor.error"
+                icon="mdi-alert-circle-outline"
+                size="14"
+                color="warning"
+                class="mr-1"
+              />
               {{ actor.name }}
-              <span class="ml-1 das-dim">（{{ (actor.works || []).length }}）</span>
+              <span class="ml-1 das-dim">{{ (actor.works || []).length }}</span>
             </v-chip>
           </v-chip-group>
         </div>
 
-        <div class="d-flex align-center flex-wrap mt-2" style="gap: 12px">
+        <div class="d-flex align-center flex-wrap mt-2 das-toolbar">
           <v-btn-toggle v-model="typeFilter" density="compact" variant="outlined" divided>
             <v-btn size="small" value="">全部</v-btn>
             <v-btn size="small" value="电影">电影</v-btn>
@@ -92,6 +134,17 @@
             hide-details
             class="das-checkbox"
           />
+          <v-checkbox
+            v-model="onlyUnsubscribed"
+            label="只看未订阅"
+            density="compact"
+            hide-details
+            class="das-checkbox"
+          />
+          <v-btn-toggle v-model="sortMode" density="compact" variant="outlined" divided>
+            <v-btn size="small" value="year">最新优先</v-btn>
+            <v-btn size="small" value="new">新作品优先</v-btn>
+          </v-btn-toggle>
           <v-text-field
             v-model="keyword"
             density="compact"
@@ -99,83 +152,48 @@
             hide-details
             clearable
             prepend-inner-icon="mdi-magnify"
-            placeholder="搜索作品名"
+            placeholder="搜索作品名 / 演员名"
             class="das-search"
           />
+          <v-spacer />
+          <v-btn
+            size="small"
+            color="primary"
+            variant="tonal"
+            prepend-icon="mdi-plus-multiple"
+            :disabled="busy || !pendingTargets.length"
+            @click="subscribeMany(pendingTargets)"
+          >
+            订阅筛选结果（{{ pendingTargets.length }}）
+          </v-btn>
         </div>
       </v-card-text>
     </v-card>
 
-    <!-- 演员作品 -->
-    <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-3" />
-
-    <div v-if="!visibleActors.length && !loading" class="text-center text-medium-emphasis py-6">
-      暂无数据，点击「刷新作品」抓取演员最新作品。
-    </div>
-
-    <v-card
-      v-for="actor in visibleActors"
-      :key="actor.key"
-      variant="outlined"
+    <v-progress-linear
+      v-if="loading || payload?.refreshing"
+      indeterminate
+      color="primary"
       class="mb-3"
+    />
+
+    <div
+      v-if="!visibleWorks.length && !loading"
+      class="text-center text-medium-emphasis py-6"
     >
-      <v-card-title class="d-flex align-center flex-wrap">
-        <v-avatar size="36" class="mr-2">
-          <v-img v-if="actor.avatar" :src="actor.avatar" />
-          <v-icon v-else icon="mdi-account-outline" />
-        </v-avatar>
-        <div class="das-actor-name">
-          {{ actor.name }}
-          <span class="das-dim text-caption ml-2">
-            共 {{ (actor.works || []).length }} 部 · 新 {{ newCount(actor) }} 部
-          </span>
-        </div>
-        <v-spacer />
-        <v-btn
-          size="small"
-          variant="tonal"
-          color="primary"
-          prepend-icon="mdi-plus-multiple"
-          :disabled="busy || !unsubscribed(actor).length"
-          @click="subscribeMany(unsubscribed(actor))"
-        >
-          订阅全部未订阅（{{ unsubscribed(actor).length }}）
-        </v-btn>
-      </v-card-title>
-
-      <v-card-text>
-        <v-alert
-          v-if="actor.error"
-          type="warning"
-          variant="tonal"
-          density="compact"
-          class="mb-3"
-        >
-          {{ actor.error }}
-        </v-alert>
-        <div v-if="actor.biography" class="text-caption das-dim mb-3">{{ actor.biography }}</div>
-
-        <WorkGrid
-          :works="actor.works || []"
-          :subscribed-keys="subscribedKeys"
-          :pending-key="pendingKey"
-          :busy="busy"
-          empty-text="该演员暂无匹配的作品"
-          @subscribe="subscribe"
-        />
-      </v-card-text>
-    </v-card>
-
-    <!-- 宿主交互：switch 切到配置页，close 关闭弹窗，action 通知宿主刷新 -->
-    <div class="d-flex mt-3 flex-wrap" style="gap: 4px">
-      <v-btn size="small" variant="text" prepend-icon="mdi-cog-outline" @click="emit('switch')">
-        配置插件
-      </v-btn>
-      <v-btn size="small" variant="text" prepend-icon="mdi-refresh" @click="emit('action')">
-        通知宿主刷新
-      </v-btn>
-      <v-btn size="small" variant="text" @click="emit('close')">关闭</v-btn>
+      暂无数据，点击顶部「刷新作品」抓取演员最新作品。
     </div>
+
+    <!-- 统一作品墙：按作品去重，卡片上标注出演演员 -->
+    <WorkGrid
+      v-else
+      :works="visibleWorks"
+      :subscribed-keys="subscribedKeys"
+      :pending-key="pendingKey"
+      :busy="busy"
+      empty-text="没有符合条件的作品"
+      @subscribe="subscribe"
+    />
   </div>
 </template>
 
@@ -185,19 +203,27 @@
  *
  * 数据来源：
  *   GET  plugin/DoubanActorSubscribe/works   演员与作品快照
- *   POST plugin/DoubanActorSubscribe/run     立即刷新作品
+ *   POST plugin/DoubanActorSubscribe/run     立即刷新作品（后台执行，靠 refreshing 轮询）
  *   POST subscribe/                          提交订阅（宿主原生接口，归属当前用户）
+ *
+ * 作品墙是「统一视图」：不再按演员分卡片，因为演员筛选 chip 已经承担了分类职责，
+ * 按演员重复展示会让列表随演员数量线性膨胀。
  */
 import { computed, inject, onMounted, ref } from 'vue'
+import ErrorAlerts from './ErrorAlerts.vue'
+import SubscribePrefs from './SubscribePrefs.vue'
 import WorkGrid from './WorkGrid.vue'
 import {
   API_BASE,
   PLUGIN_ID,
   fetchSubscribedKeys,
   formatTime,
+  mergeWorks,
   resolveApi,
+  sortWorks,
   submitSubscribe,
   unwrap,
+  waitForRefresh,
   workKey,
 } from './api'
 import type { ActorGroup, ActorWork, ApiResult, PluginApi, WorksPayload } from './types'
@@ -229,6 +255,9 @@ const busy = ref(false)
 const pendingKey = ref('')
 const payload = ref<WorksPayload | null>(null)
 const subscribedKeys = ref<string[]>([])
+/** 订阅偏好：下载保存路径与订阅站点，提交订阅时一并带上 */
+const subscribeSavePath = ref('')
+const subscribeSites = ref<number[]>([])
 
 /** 演员筛选的「全部」哨兵值：chip-group 处于 mandatory 模式，需要一个真实值 */
 const ALL_ACTORS = '__all__'
@@ -236,51 +265,101 @@ const ALL_ACTORS = '__all__'
 const actorFilter = ref(ALL_ACTORS)
 const typeFilter = ref('')
 const onlyNew = ref(false)
+const onlyUnsubscribed = ref(false)
+const sortMode = ref('year')
 const keyword = ref('')
 
 const actors = computed<ActorGroup[]>(() => payload.value?.actors || [])
 
-const statCards = computed(() => [
-  { label: '演员', value: payload.value?.actor_count ?? actors.value.length },
-  { label: '作品', value: payload.value?.work_count ?? 0 },
-  { label: '新作品', value: payload.value?.new_count ?? 0 },
-  { label: '累计刷新', value: payload.value?.run_count ?? 0 },
-])
+/** 尚未解析出豆瓣人物 ID 的演员数（豆瓣搜索限流会让这个数逐步下降） */
+const unresolvedCount = computed(() => actors.value.filter((actor) => !actor.id).length)
 
-/** 筛选后的演员与其作品（无匹配时不渲染该演员） */
-const visibleActors = computed<ActorGroup[]>(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  const filtering = Boolean(
-    (actorFilter.value && actorFilter.value !== ALL_ACTORS) || typeFilter.value || onlyNew.value || kw
-  )
-  const result: ActorGroup[] = []
-  for (const actor of actors.value) {
-    if (actorFilter.value && actorFilter.value !== ALL_ACTORS) {
-      if (actor.key !== actorFilter.value && actor.id !== actorFilter.value) continue
-    }
-    const works = (actor.works || []).filter((work) => {
-      if (typeFilter.value && work.type !== typeFilter.value) return false
-      if (onlyNew.value && !work.is_new) return false
-      if (kw && !work.title.toLowerCase().includes(kw)) return false
-      return true
-    })
-    if (!works.length && filtering) continue
-    result.push({ ...actor, works })
+const statCards = computed(() => {
+  const rows = [
+    { label: '演员', value: actors.value.length },
+    { label: '作品', value: payload.value?.work_count ?? 0 },
+    { label: '新作品', value: payload.value?.new_count ?? 0 },
+  ]
+  // 有未解析演员时优先暴露这个数：它才是「为什么作品这么少」的真正原因
+  if (unresolvedCount.value) {
+    rows.push({ label: '未解析演员', value: unresolvedCount.value })
+  } else {
+    rows.push({ label: '累计刷新', value: payload.value?.run_count ?? 0 })
   }
-  return result
+  return rows
+})
+
+/**
+ * 豆瓣 Cookie 状态徽标。
+ *
+ * 它回答的是「额度够不够用」这个根因：匿名只能搜几次，用上登录态后额度明显更高。
+ * 取不到时把原因原样带出来，用户才知道是去配 CookieCloud 还是去更新 Cookie。
+ */
+const cookieChip = computed(() => {
+  const source = payload.value?.douban_cookie_source
+  const hint = payload.value?.douban_cookie_hint || ''
+  if (source === 'manual') {
+    return { text: 'Cookie：手填', color: 'success', icon: 'mdi-cookie', title: '使用插件内手工粘贴的豆瓣 Cookie' }
+  }
+  if (source === 'cookiecloud') {
+    return {
+      text: 'Cookie：CookieCloud',
+      color: 'success',
+      icon: 'mdi-cookie',
+      title: '已自动从宿主 CookieCloud 读取豆瓣登录态，搜索额度更高',
+    }
+  }
+  return {
+    text: 'Cookie：未取到',
+    color: 'warning',
+    icon: 'mdi-cookie-alert',
+    title: hint || '未取到豆瓣登录态，按名称搜索演员会被严格限流；可在配置页手工粘贴 Cookie',
+  }
+})
+
+/** 异常提示：把「可重试」与「需改配置」的提示排在前面，便于一眼看到 */
+const errorList = computed(() => {
+  const items = payload.value?.errors || []
+  return [...items].sort((a, b) => {
+    const rank = (text: string) => (text.includes('人物 ID') ? 1 : 0)
+    return rank(a) - rank(b)
+  })
 })
 
 function isSubscribed(work: ActorWork): boolean {
   return subscribedKeys.value.includes(workKey(work))
 }
 
-function newCount(actor: ActorGroup): number {
-  return (actor.works || []).filter((work) => work.is_new).length
+function actorMatches(actor: ActorGroup): boolean {
+  return !actorFilter.value || actorFilter.value === ALL_ACTORS
+    ? true
+    : actor.key === actorFilter.value || actor.id === actorFilter.value
 }
 
-function unsubscribed(actor: ActorGroup): ActorWork[] {
-  return (actor.works || []).filter((work) => !isSubscribed(work))
-}
+/**
+ * 统一作品列表：先按演员筛选，再合并去重，最后叠加类型/新作品/关键词筛选与排序。
+ * 关键词同时匹配作品名与出演演员名——合并视图下作品不再挂在演员卡片里，
+ * 只搜作品名会让「按演员找作品」失去入口。
+ */
+const visibleWorks = computed<ActorWork[]>(() => {
+  const groups = actors.value.filter(actorMatches)
+  let works = mergeWorks(groups)
+  if (typeFilter.value) works = works.filter((work) => work.type === typeFilter.value)
+  if (onlyNew.value) works = works.filter((work) => work.is_new)
+  if (onlyUnsubscribed.value) works = works.filter((work) => !isSubscribed(work))
+  const kw = keyword.value.trim().toLowerCase()
+  if (kw) {
+    works = works.filter(
+      (work) =>
+        String(work.title || '').toLowerCase().includes(kw) ||
+        (work.actorNames || []).some((name) => String(name).toLowerCase().includes(kw))
+    )
+  }
+  return sortWorks(works, sortMode.value)
+})
+
+/** 当前筛选结果里所有未订阅的作品，作为「订阅筛选结果」的目标 */
+const pendingTargets = computed<ActorWork[]>(() => visibleWorks.value.filter((work) => !isSubscribed(work)))
 
 function notify(type: 'success' | 'error' | 'info', message: string): void {
   const handler = toast && (toast as unknown as Record<string, unknown>)[type]
@@ -292,6 +371,18 @@ function notify(type: 'success' | 'error' | 'info', message: string): void {
   else console.info(`[${PLUGIN_ID}] ${message}`)
 }
 
+/** 用最新快照覆盖面板数据，并同步后端下发的订阅偏好 */
+function applyPayload(data: WorksPayload): void {
+  payload.value = data
+  subscribeSavePath.value = data.subscribe_save_path || ''
+  subscribeSites.value = data.subscribe_sites || []
+}
+
+/** 订阅选项保存回调 */
+function onPrefsSaved(ok: boolean, message: string): void {
+  notify(ok ? 'success' : 'error', message)
+}
+
 /** 读取作品快照与已有订阅 */
 async function load(showSpinner = true): Promise<void> {
   const api = resolveApi(props)
@@ -300,8 +391,12 @@ async function load(showSpinner = true): Promise<void> {
   try {
     const raw = await api.get(`${API_BASE}/works`)
     const res = unwrap<ApiResult<WorksPayload>>(raw)
-    if (res?.success && res.data) payload.value = res.data
+    if (res?.success && res.data) applyPayload(res.data)
     subscribedKeys.value = await fetchSubscribedKeys(api)
+    // 后台正在刷新（含配置变更补刷新）时轮询到结束
+    if (payload.value?.pending_refresh || payload.value?.refreshing) {
+      waitForRefresh(api, applyPayload)
+    }
   } catch (err) {
     console.warn(`[${PLUGIN_ID}] 加载作品失败`, err)
   } finally {
@@ -309,7 +404,7 @@ async function load(showSpinner = true): Promise<void> {
   }
 }
 
-/** 立即刷新一次作品 */
+/** 立即刷新一次作品（后端改为后台执行，这里轮询等待结果） */
 async function refresh(): Promise<void> {
   const api = resolveApi(props)
   if (!api) return
@@ -317,10 +412,13 @@ async function refresh(): Promise<void> {
   try {
     const raw = await api.post(`${API_BASE}/run`)
     const res = unwrap<ApiResult<WorksPayload>>(raw)
-    if (res?.data) payload.value = res.data
-    if (res?.success) notify('success', '已刷新演员最新作品')
+    if (res?.data) applyPayload(res.data)
+    if (res?.success) notify('success', res.message || '已开始刷新演员最新作品')
     else notify('error', res?.message || '刷新失败')
     subscribedKeys.value = await fetchSubscribedKeys(api)
+    if (payload.value?.refreshing || payload.value?.pending_refresh) {
+      waitForRefresh(api, applyPayload)
+    }
     emit('action')
   } catch (err) {
     notify('error', '刷新失败，请查看后端日志')
@@ -337,7 +435,10 @@ async function subscribe(work: ActorWork): Promise<void> {
   const key = workKey(work)
   pendingKey.value = key
   try {
-    const res = await submitSubscribe(api, work)
+    const res = await submitSubscribe(api, work, {
+      savePath: subscribeSavePath.value,
+      sites: subscribeSites.value,
+    })
     if (res.ok) {
       if (!subscribedKeys.value.includes(key)) subscribedKeys.value.push(key)
       notify('success', res.message)
@@ -360,7 +461,10 @@ async function subscribeMany(works: ActorWork[]): Promise<void> {
     for (const work of works) {
       const key = workKey(work)
       pendingKey.value = key
-      const res = await submitSubscribe(api, work)
+      const res = await submitSubscribe(api, work, {
+        savePath: subscribeSavePath.value,
+        sites: subscribeSites.value,
+      })
       if (res.ok) {
         success += 1
         if (!subscribedKeys.value.includes(key)) subscribedKeys.value.push(key)
@@ -386,13 +490,23 @@ onMounted(() => load())
   max-width: 100%;
 }
 
-.das-dim {
-  opacity: 0.75;
+.das-titlebar {
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 4px;
 }
 
-.das-actor-name {
-  font-size: 1rem;
-  font-weight: 600;
+.das-chips {
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.das-toolbar {
+  gap: 12px;
+}
+
+.das-dim {
+  opacity: 0.75;
 }
 
 .das-search {
@@ -400,6 +514,6 @@ onMounted(() => load())
 }
 
 .das-checkbox {
-  max-width: 140px;
+  max-width: 130px;
 }
 </style>

@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { w as workKey, a as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, s as submitSubscribe, _ as _export_sfc } from './_plugin-vue_export-helper-CY9eCSTe.js';
+import { m as mergeWorks, s as sortWorks, w as workKey, c as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, _ as _export_sfc } from './api-BbaK2SUr.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -52,17 +52,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       updated_at: payload.value?.updated_at || ""
     }));
     const flattened = computed(() => {
-      const rows = [];
-      for (const actor of payload.value?.actors || []) {
-        for (const work of actor.works || []) {
-          rows.push({ actor: actor.name, work });
-        }
-      }
-      return rows.sort((a, b) => {
-        const flag = Number(Boolean(b.work.is_new)) - Number(Boolean(a.work.is_new));
-        if (flag) return flag;
-        return (Number(b.work.year) || 0) - (Number(a.work.year) || 0);
-      });
+      const works = mergeWorks(payload.value?.actors || []);
+      return sortWorks(works, "new").map((work) => ({
+        actor: (work.actorNames || [])[0] || "—",
+        work
+      }));
     });
     const latest = computed(() => flattened.value.slice(0, LIMIT));
     const item0 = computed(() => ({ actor: latest.value[0]?.actor || "未配置演员" }));
@@ -101,6 +95,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         const res = unwrap(raw);
         if (res?.data) payload.value = res.data;
         subscribedKeys.value = await fetchSubscribedKeys(api);
+        if (payload.value?.refreshing || payload.value?.pending_refresh) {
+          waitForRefresh(api, (data) => {
+            payload.value = data;
+          });
+        }
       } catch (err) {
         console.warn(`[${PLUGIN_ID}] 仪表板刷新失败`, err);
       } finally {
@@ -113,7 +112,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       const key = workKey(work);
       pendingKey.value = key;
       try {
-        const res = await submitSubscribe(api, work);
+        const res = await submitSubscribe(api, work, {
+          savePath: payload.value?.subscribe_save_path || props.config?.subscribe_save_path || "",
+          sites: payload.value?.subscribe_sites || props.config?.subscribe_sites || []
+        });
         if (res.ok) {
           if (!subscribedKeys.value.includes(key)) subscribedKeys.value.push(key);
           notify("success", res.message);
@@ -228,6 +230,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-f00799b1"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-b2a309a9"]]);
 
 export { Dashboard as default };

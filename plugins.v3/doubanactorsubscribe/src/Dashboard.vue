@@ -77,7 +77,19 @@
  * 内容由本组件渲染。这里聚焦「新作品 + 一键订阅」这一最常用动作。
  */
 import { computed, inject, onMounted, ref } from 'vue'
-import { API_BASE, PLUGIN_ID, fetchSubscribedKeys, formatTime, resolveApi, submitSubscribe, unwrap, workKey } from './api'
+import {
+  API_BASE,
+  PLUGIN_ID,
+  fetchSubscribedKeys,
+  formatTime,
+  mergeWorks,
+  resolveApi,
+  sortWorks,
+  submitSubscribe,
+  unwrap,
+  waitForRefresh,
+  workKey,
+} from './api'
 import type { ActorWork, ApiResult, PluginApi, PluginConfig, WorksPayload } from './types'
 
 interface HostToast {
@@ -117,19 +129,13 @@ const stats = computed(() => ({
   updated_at: payload.value?.updated_at || '',
 }))
 
-/** 展平后的作品：新作品优先，其次按年份倒序 */
+/** 展平后的作品：按作品去重（同一部作品可能挂在多位演员名下），新作品优先 */
 const flattened = computed(() => {
-  const rows: { actor: string; work: ActorWork }[] = []
-  for (const actor of payload.value?.actors || []) {
-    for (const work of actor.works || []) {
-      rows.push({ actor: actor.name, work })
-    }
-  }
-  return rows.sort((a, b) => {
-    const flag = Number(Boolean(b.work.is_new)) - Number(Boolean(a.work.is_new))
-    if (flag) return flag
-    return (Number(b.work.year) || 0) - (Number(a.work.year) || 0)
-  })
+  const works = mergeWorks(payload.value?.actors || [])
+  return sortWorks(works, 'new').map((work) => ({
+    actor: (work.actorNames || [])[0] || '—',
+    work,
+  }))
 })
 
 const latest = computed(() => flattened.value.slice(0, LIMIT))
@@ -173,6 +179,12 @@ async function refresh(): Promise<void> {
     const res = unwrap<ApiResult<WorksPayload>>(raw)
     if (res?.data) payload.value = res.data
     subscribedKeys.value = await fetchSubscribedKeys(api)
+    // 刷新已改为后台任务，这里轮询到结束再落最终数据
+    if (payload.value?.refreshing || payload.value?.pending_refresh) {
+      waitForRefresh(api, (data) => {
+        payload.value = data
+      })
+    }
   } catch (err) {
     console.warn(`[${PLUGIN_ID}] 仪表板刷新失败`, err)
   } finally {
@@ -186,7 +198,11 @@ async function subscribe(work: ActorWork): Promise<void> {
   const key = workKey(work)
   pendingKey.value = key
   try {
-    const res = await submitSubscribe(api, work)
+    // 复用插件配置里的订阅偏好（下载路径 / 站点），留空则跟随宿主默认
+    const res = await submitSubscribe(api, work, {
+      savePath: payload.value?.subscribe_save_path || props.config?.subscribe_save_path || '',
+      sites: payload.value?.subscribe_sites || props.config?.subscribe_sites || [],
+    })
     if (res.ok) {
       if (!subscribedKeys.value.includes(key)) subscribedKeys.value.push(key)
       notify('success', res.message)

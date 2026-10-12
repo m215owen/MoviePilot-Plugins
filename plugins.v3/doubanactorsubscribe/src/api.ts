@@ -10,8 +10,18 @@
  *    并复用宿主的识别、去重与校验逻辑。
  * 4. 主框架 axios 拦截器通常已解包响应，但个别版本仍会套一层 axios response，
  *    统一用 `unwrap()` 归一化。
+ * 5. 宿主列表接口的分页参数有硬上限（`page` ≥ 1、`count` ≤ 200，二者越界都会
+ *    返回 422「请求参数不正确」），因此读取订阅列表必须显式分页。
  */
-import type { ActorWork, PluginApi } from './types'
+import type {
+  ActorGroup,
+  ActorWork,
+  ApiResult,
+  PluginApi,
+  SiteOption,
+  DownloadPathOption,
+  WorksPayload,
+} from './types'
 
 /** 插件 ID，必须与后端插件类名一致 */
 export const PLUGIN_ID = 'DoubanActorSubscribe'
@@ -22,14 +32,92 @@ export const API_BASE = `plugin/${PLUGIN_ID}`
 /** 宿主原生订阅接口（相对 baseURL `api/v1/`） */
 export const HOST_SUBSCRIBE = 'subscribe/'
 
+/** 宿主站点列表接口（含各站点 cookie，前端只取 id/name，不做其他存储） */
+export const HOST_SITES = 'site/rss'
+
+/** 宿主下载目录接口 */
+export const HOST_DOWNLOAD_PATHS = 'download/paths'
+
+/** 宿主单次列表查询允许的最大条数（见后端 COLLECTION_MAX_PAGE_SIZE） */
+const MAX_PAGE_SIZE = 200
+
+/** 读取订阅列表时的每页条数；取上限的一半，留出余量避免宿主收紧上限 */
+const SUBSCRIBE_PAGE_SIZE = 100
+
+/** 订阅列表最多翻多少页，避免极端数据量下无限循环 */
+const SUBSCRIBE_MAX_PAGES = 20
+
+/** 最近一次可用的宿主 axios 实例，供图片代理等非 props 场景推导接口前缀 */
+let lastApi: PluginApi | null = null
+
 /** 解析可用的 HTTP 客户端：优先 api prop，其次全局注入 */
 export function resolveApi(props: { api?: PluginApi }): PluginApi | null {
-  if (props && props.api) return props.api
+  if (props && props.api) {
+    rememberApi(props.api)
+    return props.api
+  }
   const globalApi =
     typeof window !== 'undefined'
       ? (window as unknown as { MoviePilotAPI?: PluginApi }).MoviePilotAPI
       : null
-  return globalApi ?? null
+  if (globalApi) rememberApi(globalApi)
+  return globalApi ?? lastApi
+}
+
+/** 记录 axios 实例与其 baseURL，供图片代理拼装绝对地址 */
+function rememberApi(api: PluginApi): void {
+  lastApi = api
+  const base = (api as { defaults?: { baseURL?: string } }).defaults?.baseURL
+  if (typeof base === 'string' && base) apiBase = normalizeApiBase(base)
+}
+
+/**
+ * 把 baseURL 收敛到 `api/v1/` 根，避免宿主的 baseURL 携带插件前缀时
+ * 拼出 `api/v1/plugin/<id>/system/img/...` 这种错误地址。
+ */
+function normalizeApiBase(base: string): string {
+  const marker = 'api/v1/'
+  const index = base.indexOf(marker)
+  return index >= 0 ? base.slice(0, index + marker.length) : base
+}
+
+/** 宿主 axios 的 baseURL（默认 `api/v1/`） */
+let apiBase = 'api/v1/'
+
+/** 把 baseURL 解析成绝对前缀，兼容部署在子路径下的实例 */
+function apiPrefix(): string {
+  const fallback = apiBase.endsWith('/') ? apiBase : `${apiBase}/`
+  try {
+    const href = typeof window !== 'undefined' ? window.location.href : 'http://127.0.0.1/'
+    const resolved = new URL(apiBase, href).toString()
+    return resolved.endsWith('/') ? resolved : `${resolved}/`
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * 把图片地址转换为宿主图片代理地址。
+ *
+ * 豆瓣图片 CDN（`*.doubanio.com`）有防盗链：无 Referer 返回 418、Referer 不是豆瓣域名
+ * 返回 403，浏览器无法伪造 Referer，因此必须经宿主 `system/img` 代理取图
+ * —— 宿主会为豆瓣地址自动补 `Referer: https://movie.douban.com/`，并带图片缓存。
+ *
+ * 契约与宿主前端 `getDisplayImageUrl()` 完全一致（探索页走的就是这条路径）：
+ * `/api/v1/system/img/0?imgurl=<urlencoded>&cache=true`
+ * - `{proxy}` 取 **0**：不强制走用户配置的代理服务器（豆瓣直连即可），
+ *   取 1 会把取图请求塞进用户的代理配置，代理异常时图片全挂。
+ * - 接口鉴权走浏览器资源 Token Cookie，因此 `<img src>` 直接可访问；
+ *   服务端用 apikey 调它一定 401，这是预期行为。
+ */
+export function proxyImage(url?: string | null): string {
+  const raw = String(url || '').trim()
+  if (!raw) return ''
+  // 非 http(s) 地址（data:、相对路径）原样返回
+  if (!/^https?:\/\//i.test(raw)) return raw
+  // 已经是宿主代理地址时不再二次包装
+  if (raw.includes('/system/img/')) return raw
+  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`
 }
 
 /** 归一化宿主响应：拦截器已解包的直接返回，否则取 .data */
@@ -41,12 +129,62 @@ export function unwrap<T = unknown>(raw: unknown): T {
   return (nested ?? raw) as T
 }
 
+/**
+ * 从宿主响应中取出**列表**。
+ *
+ * 宿主列表接口统一返回 `{success, data: [...]}` 信封，而 `unwrap()` 遇到带 `success`
+ * 的对象会原样返回信封（对 `submitSubscribe` 这类要读 `success`/`message` 的场景是必须的），
+ * 于是 `Array.isArray(信封)` 恒为假——这正是「下载保存路径 / 订阅站点下拉是空的」的原因。
+ *
+ * 这里对三种形状一并兜底：裸数组、`{data: [...]}` 信封、以及拦截器已解包的裸数组。
+ */
+export function unwrapList<T = unknown>(raw: unknown): T[] {
+  const value = raw as unknown
+  if (Array.isArray(value)) return value as T[]
+  if (value && typeof value === 'object') {
+    const inner = (value as { data?: unknown }).data
+    if (Array.isArray(inner)) return inner as T[]
+    // 少数版本会再套一层 axios response
+    const deeper = (inner as { data?: unknown } | null)?.data
+    if (Array.isArray(deeper)) return deeper as T[]
+  }
+  return []
+}
+
+/** 归一化后的插件接口结果 */
+export interface NormalizedResult<T> {
+  ok: boolean
+  data?: T
+  message: string
+}
+
+/**
+ * 归一并容错插件接口的返回体。
+ *
+ * 宿主不会为插件的动态路由套 `Response[T]`，因此插件接口的返回形状由插件自己决定：
+ * 多数接口返回 `{success, data}`，但也有接口（历史原因）直接返回裸对象。
+ * 这里把两种形状统一成 `{ok, data, message}`，避免把「成功」误判成失败——
+ * 例如 `GET /config` 曾返回裸配置对象，前端按外壳取值会拿到 undefined。
+ */
+export function normalizeResult<T = unknown>(raw: unknown): NormalizedResult<T> {
+  const value = unwrap<Record<string, unknown>>(raw)
+  if (value && typeof value === 'object' && 'success' in value) {
+    return {
+      ok: Boolean(value.success),
+      data: value.data as T | undefined,
+      message: String(value.message || ''),
+    }
+  }
+  // 裸对象 / 裸数组：视为成功，数据就是返回体本身
+  return { ok: true, data: (value ?? undefined) as T | undefined, message: '' }
+}
+
 /** 作品的订阅身份键，与后端 media_source:media_id 保持一致 */
 export function workKey(work: ActorWork): string {
   return `${work.media_source}:${work.media_id}`
 }
 
-/** 从捕获的异常里提取可读的错误信息（兼容 axios 与宿主响应体） */
+/** 从捕获的异常里提取可读的错误信息（兼容 axios 与宿主统一响应体） */
 export function extractError(err: unknown): string {
   const anyErr = err as {
     response?: { data?: { detail?: unknown; message?: unknown } }
@@ -64,6 +202,14 @@ export function extractError(err: unknown): string {
   return anyErr?.message || '请求失败'
 }
 
+/** 订阅提交附加偏好：下载保存路径与订阅站点 */
+export interface SubscribeExtras {
+  /** 下载保存路径，空串表示跟随宿主默认配置 */
+  savePath?: string
+  /** 订阅站点 ID 列表，空数组表示跟随宿主默认配置 */
+  sites?: number[]
+}
+
 /** 订阅提交结果 */
 export interface SubscribeOutcome {
   ok: boolean
@@ -75,10 +221,12 @@ export interface SubscribeOutcome {
  *
  * 使用豆瓣媒体身份（media_source=douban + media_id）提交，因此不依赖宿主的识别源设置，
  * 命中准确且速度快；宿主侧会自动处理季号拆分、去重与用户归属。
+ * `save_path` / `sites` 只在有值时提交，留空则沿用宿主自己的默认订阅配置。
  */
 export async function submitSubscribe(
   api: PluginApi,
-  work: ActorWork
+  work: ActorWork,
+  extras: SubscribeExtras = {}
 ): Promise<SubscribeOutcome> {
   const payload: Record<string, unknown> = {
     name: work.title,
@@ -87,6 +235,9 @@ export async function submitSubscribe(
     media_id: work.media_id,
   }
   if (work.type) payload.type = work.type
+  const savePath = String(extras.savePath || '').trim()
+  if (savePath) payload.save_path = savePath
+  if (extras.sites && extras.sites.length) payload.sites = extras.sites
   try {
     const raw = await api.post(HOST_SUBSCRIBE, payload)
     const res = unwrap<{ success?: boolean; message?: string }>(raw)
@@ -99,26 +250,130 @@ export async function submitSubscribe(
   }
 }
 
-/** 读取宿主现有订阅的媒体身份集合，用于在面板上标记「已订阅」 */
+/**
+ * 读取宿主现有订阅的媒体身份集合，用于在面板上标记「已订阅」。
+ *
+ * 必须分页：宿主对 `count` 做了 `le=200` 校验，历史上直接请求 `count=500`
+ * 会得到 422「请求参数不正确」，表现为「一进插件页面就报错」。
+ */
 export async function fetchSubscribedKeys(api: PluginApi): Promise<string[]> {
+  const keys: string[] = []
   try {
-    const raw = await api.get(HOST_SUBSCRIBE, { params: { page: 1, count: 500 } })
-    const list = unwrap<unknown>(raw)
-    const keys: string[] = []
-    if (Array.isArray(list)) {
+    for (let page = 1; page <= SUBSCRIBE_MAX_PAGES; page += 1) {
+      const raw = await api.get(HOST_SUBSCRIBE, {
+        params: { page, count: SUBSCRIBE_PAGE_SIZE },
+      })
+      const list = unwrapList<Record<string, unknown>>(raw)
+      if (!list.length) break
       for (const item of list) {
         const row = item as { media_source?: unknown; media_id?: unknown }
         if (row?.media_source && row?.media_id) {
           keys.push(`${row.media_source}:${row.media_id}`)
         }
       }
+      if (list.length < SUBSCRIBE_PAGE_SIZE) break
     }
     return keys
   } catch (err) {
     // 读取失败只影响「已订阅」标记，不阻塞面板渲染
-    console.warn(`[${PLUGIN_ID}] 读取已有订阅失败`, err)
+    console.warn(`[${PLUGIN_ID}] 读取已有订阅失败，已按 ${keys.length} 条处理`, err)
+    return keys
+  }
+}
+
+/**
+ * 读取宿主可选的订阅站点列表。
+ *
+ * 宿主返回体包含站点凭据（cookie/apikey），这里只保留 `{id, name}` 并丢弃其余字段，
+ * 避免敏感信息进入插件前端状态。仅保留启用中的站点。
+ */
+export async function fetchSiteOptions(api: PluginApi): Promise<SiteOption[]> {
+  try {
+    const raw = await api.get(HOST_SITES)
+    const list = unwrapList<Record<string, unknown>>(raw)
+    if (!list.length) return []
+    const options: SiteOption[] = []
+    for (const row of list) {
+      if (row?.id == null) continue
+      if (row.is_active === false) continue
+      options.push({ id: Number(row.id), name: String(row.name || `站点 ${row.id}`) })
+    }
+    return options
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 读取站点列表失败`, err)
     return []
   }
+}
+
+/** 读取宿主可选的下载保存路径 */
+export async function fetchPathOptions(api: PluginApi): Promise<DownloadPathOption[]> {
+  try {
+    const raw = await api.get(HOST_DOWNLOAD_PATHS)
+    const list = unwrapList<Record<string, unknown>>(raw)
+    if (!list.length) return []
+    const options: DownloadPathOption[] = []
+    const seen = new Set<string>()
+    for (const row of list) {
+      const path = String(row.save_path || row.download_path || '').trim()
+      if (!path || seen.has(path)) continue
+      seen.add(path)
+      const name = String(row.name || '').trim()
+      options.push({ name, path })
+    }
+    return options
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 读取下载目录失败`, err)
+    return []
+  }
+}
+
+/** 宿主列表接口的 count 上限，暴露给需要自行分页的调用方 */
+export const MAX_LIST_PAGE_SIZE = MAX_PAGE_SIZE
+
+/**
+ * 把所有演员的作品合并成一份去重的作品列表。
+ *
+ * 作品墙不再按演员分卡片：演员那一列的筛选 chip 已经承担了「按演员分类」的职责，
+ * 重复展示会让列表变得极长。同一部作品出现在多位演员名下时只保留一条，
+ * 并把演员名聚合进 `actorNames`，这样信息不丢失、列表也不会重复膨胀。
+ */
+export function mergeWorks(actors: ActorGroup[]): ActorWork[] {
+  const merged = new Map<string, ActorWork>()
+  for (const actor of actors) {
+    for (const work of actor.works || []) {
+      const key = workKey(work)
+      const existing = merged.get(key)
+      if (!existing) {
+        merged.set(key, {
+          ...work,
+          roles: [...(work.roles || [])],
+          actorNames: actor.name ? [actor.name] : [],
+        })
+        continue
+      }
+      if (actor.name && !(existing.actorNames || []).includes(actor.name)) {
+        existing.actorNames = [...(existing.actorNames || []), actor.name]
+      }
+      // 任一演员把它视为新作品，就按新作品呈现
+      if (work.is_new) existing.is_new = true
+      const extraRoles = (work.roles || []).filter(
+        (item) => !(existing.roles || []).includes(item)
+      )
+      if (extraRoles.length) existing.roles = [...(existing.roles || []), ...extraRoles]
+    }
+  }
+  return Array.from(merged.values())
+}
+
+/** 作品默认排序：新作品优先，其次按年份倒序 */
+export function sortWorks(works: ActorWork[], mode = 'year'): ActorWork[] {
+  return [...works].sort((a, b) => {
+    if (mode === 'new') {
+      const flag = Number(Boolean(b.is_new)) - Number(Boolean(a.is_new))
+      if (flag) return flag
+    }
+    return (Number(b.year) || 0) - (Number(a.year) || 0)
+  })
 }
 
 /** 格式化时间为「刚刚 / N 分钟前 / 绝对时间」 */
@@ -131,4 +386,35 @@ export function formatTime(value?: string): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
   return value
+}
+
+/**
+ * 等待后端刷新结束。
+ *
+ * 两种情况都要等：保存配置时后端会安排一次延迟补刷新（`pending_refresh`），
+ * 手动刷新则改成了后台任务（`refreshing`）——演员多时一次刷新要跑几百个请求，
+ * 放在 HTTP 请求里同步执行必然超时。这里轮询到两个标记都消失为止。
+ */
+export function waitForRefresh(
+  api: PluginApi,
+  apply: (payload: WorksPayload) => void,
+  tries = 72,
+  intervalMs = 2500
+): void {
+  const tick = async (): Promise<void> => {
+    for (let index = 0; index < tries; index += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs))
+      try {
+        const res = unwrap<ApiResult<WorksPayload>>(await api.get(`${API_BASE}/works`))
+        if (res?.success && res.data) {
+          apply(res.data)
+          if (!res.data.pending_refresh && !res.data.refreshing) return
+        }
+      } catch (err) {
+        // 单次失败不影响继续轮询
+        console.debug(`[${PLUGIN_ID}] 等待刷新完成时读取失败`, err)
+      }
+    }
+  }
+  void tick()
 }

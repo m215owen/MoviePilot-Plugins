@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import time
 from datetime import datetime
 from random import choice
@@ -73,6 +74,116 @@ def _clean_text(value: Any) -> str:
     return str(value or "").translate(_INVISIBLE_CHARS).strip()
 
 
+# 豆瓣匿名搜索的限流非常严格：实测连续搜索约 5 次后，后续请求一律返回
+# 403 ``{"msg": "need_login", "code": 103}``，且 90 秒内不恢复。
+# 这种失败**不是**「没这个人」，必须与真正的空结果分开提示，否则会误导用户改配置。
+_RATE_LIMIT_HINT = "豆瓣搜索被限流，稍后会自动重试；也可直接填人物 ID 跳过搜索"
+
+# 豆瓣对匿名请求返回 403 need_login（code 103）作为限流信号；带上已登录的 Cookie 能显著抬高额度。
+# 因此这条提示是可操作的：告诉用户去哪里解决，而不是让他反复重试。
+_NEED_LOGIN_HINT = (
+    "豆瓣要求登录（need_login）：请在插件配置里粘贴「豆瓣 Cookie」，"
+    "或确认宿主的 CookieCloud 已同步豆瓣登录态；额度会明显提升。"
+    "也可直接填人物 ID/主页链接跳过搜索"
+)
+
+# 已经带 Cookie 却仍返回 need_login，通常意味着登录态已过期，提示要能区分这两种情况
+_COOKIE_EXPIRED_HINT = (
+    "豆瓣仍要求登录（need_login）：Cookie 可能已失效，"
+    "请在浏览器重新登录豆瓣并同步 CookieCloud，或在插件里更新豆瓣 Cookie"
+)
+
+# 从豆瓣人物主页地址中提取人物 ID，方便用户直接粘贴链接
+_PERSON_URL_PATTERN = re.compile(r"(?:personage|celebrity)/(\d+)")
+
+
+class _CookieCloudClient:
+    """从 CookieCloud 取指定域名的 Cookie。
+
+    为什么不自己解密：CookieCloud 服务端支持 ``POST /get/{key}`` 带密码直接返回**已解密**的
+    ``cookie_data``，这样插件不必实现 CookieCloud 的 AES 解密（那需要宿主内部模块或额外依赖），
+    只依赖 ``app.sdk.network`` 即可。
+
+    注意：本类只把 Cookie 留在内存里，不落盘、不写日志，避免把用户的登录态持久化。
+    """
+
+    TIMEOUT = 20
+
+    def __init__(self, host: str = "", key: str = "", password: str = "") -> None:
+        self._host = str(host or "").strip().rstrip("/")
+        self._key = str(key or "").strip()
+        self._password = str(password or "").strip()
+        self.last_error = ""
+
+    @property
+    def configured(self) -> bool:
+        """服务器地址、用户 KEY、加密密码三者齐全才算配置可用。"""
+        return bool(self._host and self._key and self._password)
+
+    def fetch(self, domain_keyword: str) -> str:
+        """取包含 ``domain_keyword`` 的域名分组，拼成可直接使用的 Cookie 头。
+
+        :param domain_keyword: 域名关键字，如 ``douban.com``
+        :return: 形如 ``bid=xxx; dbcl2=yyy`` 的 Cookie 头；失败返回空串并写入 ``last_error``
+        """
+        self.last_error = ""
+        if not self.configured:
+            self.last_error = "CookieCloud 未配置（缺服务器地址 / KEY / 密码）"
+            return ""
+
+        response = None
+        try:
+            response = RequestUtils(
+                content_type="application/json", timeout=self.TIMEOUT
+            ).post_res(url=f"{self._host}/get/{self._key}", json={"password": self._password})
+            if response is None:
+                self.last_error = "CookieCloud 请求失败（网络不可达或地址有误）"
+                return ""
+            if response.status_code != 200:
+                self.last_error = f"CookieCloud 返回 HTTP {response.status_code}"
+                return ""
+            payload = response.json()
+        except Exception as err:  # noqa: BLE001 - 任何异常都降级为「取不到」
+            self.last_error = f"CookieCloud 请求异常：{err}"
+            return ""
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:  # pragma: no cover - 关闭失败可忽略
+                    pass
+
+        contents = payload.get("cookie_data") if isinstance(payload, dict) else None
+        if not isinstance(contents, dict):
+            # 服务端没解密时会只回 encrypted，此时必须给出明确原因，否则用户无从下手
+            self.last_error = (
+                "CookieCloud 只返回了密文（服务端未解密），请在插件配置里手工粘贴豆瓣 Cookie"
+                if isinstance(payload, dict) and payload.get("encrypted")
+                else "CookieCloud 返回内容为空"
+            )
+            return ""
+
+        pairs: List[str] = []
+        seen: set = set()
+        for domain, cookies in contents.items():
+            if domain_keyword not in str(domain).lower() or not isinstance(cookies, list):
+                continue
+            for item in cookies:
+                if not isinstance(item, dict):
+                    continue
+                name, value = item.get("name"), item.get("value")
+                # 同名 Cookie 只取第一个，避免后面的空值覆盖前面的有效值
+                if not name or value is None or name in seen:
+                    continue
+                seen.add(name)
+                pairs.append(f"{name}={value}")
+
+        if not pairs:
+            self.last_error = f"CookieCloud 里没有 {domain_keyword} 的 Cookie（请确认浏览器已登录豆瓣并同步）"
+            return ""
+        return "; ".join(pairs)
+
+
 class _DoubanClient:
     """豆瓣 Frodo API 的轻量客户端（插件内自持，不依赖宿主内部模块）。
 
@@ -96,6 +207,14 @@ class _DoubanClient:
     MAX_WORKS_PER_REQUEST = 10
     # 该接口仅 time / collection 有效；vote 会返回空列表，故做白名单兜底
     SORT_ORDERS = ("time", "collection")
+    # 豆瓣限流响应：搜索为 403 code 103(need_login)，详情为 403 code 400010(subject_ip_rate_limit)。
+    # 详情接口的限流窗口很短（实测第 11 次失败、第 15 次已恢复），因此值得退避重试；
+    # 搜索接口的限流窗口很长（90 秒内不恢复），重试几次后就该放弃并如实上报。
+    RATE_LIMIT_STATUS = frozenset({403, 429, 503})
+    RATE_LIMIT_RETRIES = 2
+    RATE_LIMIT_BACKOFF = 1.5
+    # 相邻请求之间的最小间隔，降低触发限流的概率
+    POLITE_DELAY = 0.35
     USER_AGENTS = (
         "api-client/1 com.douban.frodo/7.22.0.beta9(231) Android/23 product/Mate 40 "
         "vendor/HUAWEI model/Mate 40 brand/HUAWEI  rom/android  network/wifi  platform/AndroidPad",
@@ -103,8 +222,19 @@ class _DoubanClient:
         "model/MI 9 brand/Android  rom/miui6  network/wifi  platform/mobile nd/1",
     )
 
-    def __init__(self, proxy: bool = False) -> None:
+    def __init__(self, proxy: bool = False, cookie: str = "") -> None:
         self._proxy = proxy
+        # 用户粘贴的豆瓣 Cookie（完整请求头原文）。豆瓣对匿名请求用 403 need_login
+        # 做限流，带上已登录 Cookie 后额度会明显抬升，因此这是首选的可配置项。
+        self._cookie = str(cookie or "").strip()
+        self._last_request_at = 0.0
+        # 最近一次请求的可观测状态，供上层区分「确实没有结果」与「请求被限流/失败」
+        self.last_status = 0
+        self.last_error = ""
+        self.last_rate_limited = False
+        # 是否命中过 need_login（豆瓣把「未登录」当限流信号用）
+        self.last_need_login = False
+        self.last_body = ""
 
     @classmethod
     def _sign(cls, url_path: str, ts: str) -> str:
@@ -118,8 +248,61 @@ class _DoubanClient:
         digest = hmac.new(cls.API_SECRET.encode(), raw.encode(), hashlib.sha1).digest()
         return base64.b64encode(digest).decode()
 
+    def _wait_turn(self) -> None:
+        """维持相邻请求之间的最小间隔。"""
+        gap = time.monotonic() - self._last_request_at
+        if gap < self.POLITE_DELAY:
+            time.sleep(self.POLITE_DELAY - gap)
+        self._last_request_at = time.monotonic()
+
+    def _request_once(
+        self, url_path: str, params: Dict[str, Any], proxies: Any
+    ) -> Optional[Tuple[int, Optional[Dict[str, Any]]]]:
+        """发起一次带签名的 GET，返回 ``(status, payload)``；网络层失败返回 None。"""
+        self._wait_turn()
+        response = None
+        try:
+            response = RequestUtils(
+                ua=choice(self.USER_AGENTS),
+                proxies=proxies,
+                cookies=self._cookie or None,
+                timeout=self.TIMEOUT,
+            ).get_res(url=f"{self.BASE_URL}{url_path}", params=params)
+            if response is None:
+                self.last_error = "豆瓣请求无响应"
+                logger.error(f"{PLUGIN_NAME} 豆瓣请求无响应：{url_path}")
+                return None
+            status = response.status_code
+            self.last_status = status
+            if status != 200:
+                # 保留一段响应体：豆瓣用 403 need_login 表达「未登录/被限流」，
+                # 只有读到 body 才能把提示写成「去配 Cookie」而不是笼统的「失败」。
+                try:
+                    self.last_body = (response.text or "")[:300]
+                except Exception:  # pragma: no cover - 读取失败不影响判定
+                    self.last_body = ""
+                if "need_login" in self.last_body:
+                    self.last_need_login = True
+                return status, None
+            payload = response.json()
+            return status, (payload if isinstance(payload, dict) else None)
+        except Exception as err:
+            self.last_error = str(err)
+            logger.error(f"{PLUGIN_NAME} 请求豆瓣接口失败（{url_path}）：{err}")
+            return None
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:  # pragma: no cover - 关闭失败可忽略
+                    pass
+
     def _get(self, url_path: str, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        """发起一次签名 GET 请求；失败时记录日志并返回 None。"""
+        """发起一次签名 GET 请求；限流时按指数退避重试。
+
+        失败时不会抛异常，但会把原因写进 ``last_status`` / ``last_error`` /
+        ``last_rate_limited``，让调用方能给出准确的提示而不是笼统的「无结果」。
+        """
         ts = datetime.now().strftime("%Y%m%d")
         params: Dict[str, Any] = dict(kwargs)
         params.update(
@@ -131,28 +314,50 @@ class _DoubanClient:
             }
         )
         proxies = getattr(settings, "PROXY", None) if self._proxy else None
-        response = None
-        try:
-            response = RequestUtils(
-                ua=choice(self.USER_AGENTS), proxies=proxies, timeout=self.TIMEOUT
-            ).get_res(url=f"{self.BASE_URL}{url_path}", params=params)
-            if response is None:
-                logger.error(f"{PLUGIN_NAME} 豆瓣请求无响应：{url_path}")
+
+        self.last_status = 0
+        self.last_error = ""
+        self.last_rate_limited = False
+        self.last_need_login = False
+        self.last_body = ""
+
+        for attempt in range(self.RATE_LIMIT_RETRIES + 1):
+            outcome = self._request_once(url_path, params, proxies)
+            if outcome is None:
                 return None
-            if response.status_code != 200:
-                logger.warning(f"{PLUGIN_NAME} 豆瓣接口返回 {response.status_code}：{url_path}")
+            status, payload = outcome
+            if status == 200:
+                return payload
+            if status in self.RATE_LIMIT_STATUS:
+                self.last_rate_limited = True
+                # need_login 说明豆瓣把匿名请求挡在了门外，退避重试基本无效，
+                # 直接放弃并让上层提示「去配 Cookie」，比连打三次更省配额。
+                if self.last_need_login and not self._cookie:
+                    self.last_error = "豆瓣要求登录（need_login）"
+                    logger.warning(f"{PLUGIN_NAME} 豆瓣返回 need_login，建议配置豆瓣 Cookie：{url_path}")
+                    return None
+                self.last_error = f"豆瓣限流（HTTP {status}）"
+                if attempt < self.RATE_LIMIT_RETRIES:
+                    delay = self.RATE_LIMIT_BACKOFF * (2**attempt)
+                    logger.warning(f"{PLUGIN_NAME} 豆瓣限流，{delay:.1f}s 后重试：{url_path}")
+                    time.sleep(delay)
+                    continue
+                logger.warning(f"{PLUGIN_NAME} 豆瓣接口持续限流（HTTP {status}）：{url_path}")
                 return None
-            payload = response.json()
-            return payload if isinstance(payload, dict) else None
-        except Exception as err:
-            logger.error(f"{PLUGIN_NAME} 请求豆瓣接口失败（{url_path}）：{err}")
+            self.last_error = f"豆瓣接口返回 HTTP {status}"
+            logger.warning(f"{PLUGIN_NAME} 豆瓣接口返回 {status}：{url_path}")
             return None
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:  # pragma: no cover - 关闭失败可忽略
-                    pass
+        return None
+
+    def failure_hint(self) -> str:
+        """按最近一次失败的成因给出**可操作**的提示，供上层直接展示给用户。
+
+        三种成因要分清：没配 Cookie（去配）、配了 Cookie 但已失效（去更新）、
+        单纯被限流（等一会儿）。
+        """
+        if self.last_need_login:
+            return _COOKIE_EXPIRED_HINT if self._cookie else _NEED_LOGIN_HINT
+        return _RATE_LIMIT_HINT
 
     def search_person(self, name: str, count: int = 10) -> List[Dict[str, Any]]:
         """按名称搜索豆瓣人物，返回 ``[{id, name, avatar, url}]``。"""
@@ -225,7 +430,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -249,6 +454,29 @@ class DoubanActorSubscribe(_PluginBase):
     _auto_max_per_run: int = 5
     _run_count: int = 0
     _last_run_at: str = ""
+    # 订阅偏好：面板与自动订阅提交时附带的下载目录与订阅站点
+    _subscribe_save_path: str = ""
+    _subscribe_sites: List[int] = []
+    # 手填的豆瓣 Cookie（留空则自动从宿主已配置的 CookieCloud 拉取）
+    _douban_cookie: str = ""
+    # CookieCloud 取到的豆瓣 Cookie：只缓存于内存，不落盘
+    _cookie_cache: str = ""
+    _cookie_cached_at: float = 0.0
+    # 当前 Cookie 来源，供面板展示：manual / cookiecloud / none
+    _cookie_source: str = "none"
+    # CookieCloud 取不到时的原因，供面板提示
+    _cookie_hint: str = ""
+    # Cookie 缓存有效期（秒）；豆瓣登录态通常能以天计，这里取半小时足够
+    _COOKIE_TTL = 1800
+    # 配置变更后等待后台补刷新的标记，供前端提示与轮询
+    _pending_refresh: bool = False
+    # 后台刷新进行中的标记；演员多时一次刷新可能持续数分钟，
+    # 因此手动刷新改为后台执行，前端靠这个标记轮询进度
+    _refreshing: bool = False
+    # 本轮刷新开始时间，用于兜底清除异常中断残留的「刷新中」状态
+    _refresh_started_at: float = 0.0
+    # 超过该秒数仍未结束就认为标记已失效（避免线程异常导致标记永久卡住）
+    _REFRESH_STALE_SECONDS = 1800
 
     # 插件数据表中的键名
     _DATA_ACTORS = "actors"
@@ -256,9 +484,15 @@ class DoubanActorSubscribe(_PluginBase):
     _DATA_SEEN = "auto_seen"
     _DATA_SUBS = "auto_subscribed"
     _DATA_STATE = "state"
+    # 上一次生效的演员配置，用于识别「演员列表已变更」并安排自动刷新
+    _DATA_CONFIGURED = "configured_actors"
 
     # 一次性任务标识
     _ONCE_JOB_ID = "refresh_once"
+    # 演员列表变更后触发的补刷新任务标识
+    _STALE_JOB_ID = "refresh_stale"
+    # 手动刷新改为后台任务后使用的任务标识
+    _MANUAL_JOB_ID = "refresh_manual"
 
     # ─── 生命周期 ────────────────────────────────────────────────
 
@@ -281,24 +515,51 @@ class DoubanActorSubscribe(_PluginBase):
         self._auto_min_vote = self._to_float(cfg.get("auto_min_vote"), 0.0)
         self._auto_types = self._parse_types(cfg.get("auto_types"))
         self._auto_max_per_run = self._clamp_int(cfg.get("auto_max_per_run"), 5, 1, 100)
+        self._subscribe_save_path = str(cfg.get("subscribe_save_path") or "").strip()
+        self._subscribe_sites = self._parse_sites(cfg.get("subscribe_sites"))
+        # Cookie 变更后旧缓存立即失效，避免继续用上一个账号的登录态
+        new_cookie = str(cfg.get("douban_cookie") or "").strip()
+        if new_cookie != self._douban_cookie:
+            self._cookie_cache = ""
+            self._cookie_cached_at = 0.0
+        self._douban_cookie = new_cookie
 
         state = self.get_data(self._DATA_STATE)
         if isinstance(state, dict):
             self._run_count = self._clamp_int(state.get("run_count"), 0, 0, 10 ** 9)
             self._last_run_at = str(state.get("last_run_at") or "")
 
+        # 演员列表变更 → 旧快照已失效：先去掉已移除演员的残留数据，再安排一次后台补刷新。
+        # 之所以不在 init_plugin 里直接刷新，是因为本方法运行在宿主保存配置的 HTTP 请求线程里，
+        # 同步抓豆瓣会让保存接口长时间无响应。
+        actors_changed = self._detect_actors_changed()
+        if actors_changed:
+            self._drop_stale_snapshot()
+        self.save_data(self._DATA_CONFIGURED, list(self._actor_entries))
+
         # 把当前运行实例注入智能体工具，避免工具依赖进程级单例查找
         DoubanActorWorksTool.bind(self)
 
-        # 勾选“启用后立即执行一次”时交给宿主调度器延迟执行，而不是自建线程
+        scheduled = False
+        # 勾选「启用后立即执行一次」时交给宿主调度器延迟执行，而不是自建线程
         if self._enabled and cfg.get("onlyonce"):
-            if self._add_once_job():
+            if self._add_once_job(self._ONCE_JOB_ID, 3, "once"):
                 cfg["onlyonce"] = False
                 self.update_config(cfg)
 
+        # 演员列表变更，或尚无任何快照数据时，短延迟后自动补一次刷新，
+        # 让面板不必等到下一个 cron 周期才更新。
+        need_refresh = actors_changed or not self._load_works()
+        if self._enabled and self._actor_entries and need_refresh:
+            scheduled = self._add_once_job(self._STALE_JOB_ID, 2, "config_changed")
+            if scheduled:
+                logger.info(f"{self.plugin_name} 检测到演员配置变化，已安排后台刷新")
+
+        self._pending_refresh = bool(scheduled)
         logger.info(
             f"{self.plugin_name} 初始化完成：enabled={self._enabled}，"
             f"演员 {len(self._actor_entries)} 位，cron={self._cron}"
+            + ("，已安排补刷新" if scheduled else "")
         )
 
     def get_state(self) -> bool:
@@ -308,14 +569,49 @@ class DoubanActorSubscribe(_PluginBase):
     def stop_service(self) -> None:
         """停用或卸载插件时释放后台资源；需保证可重复、安全地调用。"""
         self._enabled = False
+        self._pending_refresh = False
+        self._refreshing = False
         try:
             from app.sdk import scheduler as scheduler_sdk  # 延迟导入，避免版本差异影响加载
 
             remove_job = getattr(scheduler_sdk, "remove_plugin_once_job", None)
             if remove_job:
-                remove_job(self.__class__.__name__, self._ONCE_JOB_ID)
+                for job_id in (self._ONCE_JOB_ID, self._STALE_JOB_ID, self._MANUAL_JOB_ID):
+                    remove_job(self.__class__.__name__, job_id)
         except Exception as err:  # pragma: no cover - 宿主版本差异兜底
             logger.debug(f"{self.plugin_name} 清理一次性任务时跳过：{err}")
+
+    def _detect_actors_changed(self) -> bool:
+        """判断本次配置的演员列表与上一次生效的是否不同。
+
+        首次初始化（尚无历史记录）视为「未变更」，避免每次重启都触发一次刷新。
+        """
+        previous = self.get_data(self._DATA_CONFIGURED)
+        if not isinstance(previous, (list, tuple)):
+            return False
+        return self._parse_actors(previous) != self._actor_entries
+
+    def _drop_stale_snapshot(self) -> None:
+        """丢弃已不再属于配置的演员快照。
+
+        只删除被移除演员的数据，保留仍然有效的演员快照，避免面板整体闪空。
+        """
+        snapshot = self._load_works()
+        if not snapshot:
+            return
+        keep_ids = set()
+        cache = self._load_actor_cache()
+        for key in self._actor_entries:
+            cached = cache.get(key) if isinstance(cache, dict) else None
+            if isinstance(cached, dict) and cached.get("id"):
+                keep_ids.add(str(cached["id"]))
+        if not keep_ids:
+            # 新配置的演员全部尚未解析出人物 ID，无法精确比对，整体清空更安全
+            self.save_data(self._DATA_WORKS, {})
+            return
+        kept = {key: value for key, value in snapshot.items() if str(key) in keep_ids}
+        if len(kept) != len(snapshot):
+            self.save_data(self._DATA_WORKS, kept)
 
     # ─── 页面与渲染模式 ──────────────────────────────────────────
 
@@ -505,6 +801,59 @@ class DoubanActorSubscribe(_PluginBase):
         DoubanActorWorksTool.bind(self)
         return [DoubanActorWorksTool]
 
+    # ─── 豆瓣 Cookie 解析 ────────────────────────────────────────
+
+    def _resolve_douban_cookie(self) -> str:
+        """解析要带给豆瓣的 Cookie，按优先级：插件手填 → 宿主 CookieCloud → 无。
+
+        为什么需要 Cookie：豆瓣对匿名请求用 ``403 need_login`` 做限流，实测搜索额度只有
+        约 5 次／窗口；带上已登录 Cookie 后实测连续可用次数翻倍以上，且不再受出口 IP
+        被拉黑的影响（额度绑定到账号）。
+
+        解析结果缓存在内存中（``_COOKIE_TTL`` 秒），不落盘，避免持久化用户的登录态。
+        """
+        # 1) 插件里手填的 Cookie 优先级最高，且视为长期有效
+        if self._douban_cookie:
+            self._cookie_source = "manual"
+            self._cookie_hint = ""
+            return self._douban_cookie
+
+        # 2) 复用宿主已配置的 CookieCloud（用户不必再手工复制一次 Cookie）
+        now = time.time()
+        if self._cookie_cached_at and now - self._cookie_cached_at < self._COOKIE_TTL:
+            return self._cookie_cache
+
+        host, key, password = self._cookiecloud_config()
+        client = _CookieCloudClient(host, key, password)
+        cookie = client.fetch("douban.com")
+        self._cookie_cache = cookie
+        self._cookie_cached_at = now
+        if cookie:
+            self._cookie_source = "cookiecloud"
+            self._cookie_hint = ""
+            logger.info(f"{PLUGIN_NAME} 已从宿主 CookieCloud 取到豆瓣 Cookie（长度 {len(cookie)}）")
+        else:
+            self._cookie_source = "none"
+            self._cookie_hint = client.last_error
+            logger.info(f"{PLUGIN_NAME} 未取得豆瓣 Cookie：{client.last_error}")
+        return cookie
+
+    @staticmethod
+    def _cookiecloud_config() -> Tuple[str, str, str]:
+        """读取 CookieCloud 配置：一律沿用宿主系统设置里的值。
+
+        这三个键是宿主 ``ConfigModel`` 的字段（CookieCloud 设置页），插件只需读取，
+        不重复提供一套配置，避免用户在两个地方各配一遍。
+        """
+        def _read(name: str) -> str:
+            return str(getattr(settings, name, "") or "").strip()
+
+        return (
+            _read("COOKIECLOUD_HOST"),
+            _read("COOKIECLOUD_KEY"),
+            _read("COOKIECLOUD_PASSWORD"),
+        )
+
     # ─── 业务逻辑：刷新作品 ──────────────────────────────────────
 
     def execute_task(self, trigger: str = "manual") -> bool:
@@ -520,26 +869,60 @@ class DoubanActorSubscribe(_PluginBase):
             logger.warning(f"{self.plugin_name} 未配置演员，跳过执行")
             return False
 
+        self._refreshing = True
+        self._refresh_started_at = time.time()
         started = time.time()
-        client = _DoubanClient(proxy=self._proxy)
+        # 带上豆瓣 Cookie（手填或宿主 CookieCloud）：匿名额度只有约 5 次/窗口，
+        # 登录态能显著提高搜索可用次数，是解析大量演员名称的前提。
+        client = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
         previous = self._load_works()
         snapshot: Dict[str, Any] = {}
         errors: List[str] = []
         new_count = 0
+        # 演员解析缓存由本轮统一读写，最后一次性落盘
+        cache = self._load_actor_cache()
+        cache_dirty = False
+        # 豆瓣匿名搜索限流极严（实测约 5 次后 403）：一旦触发，本轮剩下的「尚未解析过」
+        # 演员直接跳过，避免对着 100+ 个名字空打一遍必然失败的请求。
+        # 已经解析出人物 ID 的演员不受影响（走详情/作品集接口，配额宽松且会快速恢复）。
+        search_blocked = False
+        skipped = 0
 
         for key in self._actor_entries:
+            need_search = not str((cache.get(key) or {}).get("id") or "").strip()
+            if need_search and search_blocked:
+                skipped += 1
+                errors.append(f"{key}：{client.failure_hint()}")
+                snapshot[key] = {
+                    "actor": {
+                        "key": key,
+                        "id": "",
+                        "name": key,
+                        "resolved_from": "search",
+                        "error": client.failure_hint(),
+                        "retryable": True,
+                    },
+                    "works": [],
+                }
+                continue
             try:
-                actor, works = self._refresh_actor(client, key, previous)
+                actor, works, cached = self._refresh_actor(client, key, previous, cache)
             except Exception as err:  # pragma: no cover - 单演员失败不影响其他演员
                 logger.error(f"{self.plugin_name} 刷新演员「{key}」失败：{err}")
                 errors.append(f"{key}：{err}")
                 continue
+            cache_dirty = cache_dirty or cached
             if actor.get("error"):
                 errors.append(f"{key}：{actor['error']}")
             group_key = str(actor.get("id") or key)
             snapshot[group_key] = {"actor": actor, "works": works}
             new_count += sum(1 for item in works if item.get("is_new"))
+            if need_search and client.last_rate_limited:
+                search_blocked = True
+                logger.warning(f"{self.plugin_name} 豆瓣搜索已限流，本轮跳过剩余未解析的演员")
 
+        if cache_dirty:
+            self.save_data(self._DATA_ACTORS, cache)
         self.save_data(self._DATA_WORKS, snapshot)
 
         subscribed: List[Dict[str, Any]] = []
@@ -549,6 +932,8 @@ class DoubanActorSubscribe(_PluginBase):
         elapsed_ms = int((time.time() - started) * 1000)
         self._run_count += 1
         self._last_run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 本次已产出最新快照，「等待补刷新」标记随之失效
+        self._pending_refresh = False
         self.save_data(
             self._DATA_STATE,
             {"run_count": self._run_count, "last_run_at": self._last_run_at},
@@ -561,10 +946,23 @@ class DoubanActorSubscribe(_PluginBase):
         )
         if errors:
             detail += f"，{len(errors)} 项异常"
+        if skipped:
+            detail += f"，{skipped} 位因豆瓣限流顺延到下次"
+        self._refreshing = False
         logger.info(f"{self.plugin_name} 任务完成（{trigger}）：{detail}")
 
         if self._notify:
             self._send_notify(detail, subscribed, errors)
+        return True
+
+    def _is_refreshing(self) -> bool:
+        """后台刷新是否仍在进行（带超时兜底，避免标记永久卡住）。"""
+        if not self._refreshing:
+            return False
+        if self._REFRESH_STALE_SECONDS and self._refresh_started_at:
+            if time.time() - self._refresh_started_at > self._REFRESH_STALE_SECONDS:
+                self._refreshing = False
+                return False
         return True
 
     def get_works_payload(self) -> Dict[str, Any]:
@@ -594,34 +992,59 @@ class DoubanActorSubscribe(_PluginBase):
             "auto_subscribed": self._load_sub_history()[:50],
             "errors": self._load_errors(),
             "actors": actors,
+            # 订阅偏好与「配置已变更待补刷新」「后台刷新中」标记，供面板回显与轮询
+            "subscribe_save_path": self._subscribe_save_path,
+            "subscribe_sites": list(self._subscribe_sites),
+            "pending_refresh": bool(self._pending_refresh),
+            "refreshing": self._is_refreshing(),
+            # 豆瓣 Cookie 来源，供面板显示「是不是靠登录态在提额度」
+            "douban_cookie_source": self._cookie_source,
+            "douban_cookie_hint": self._cookie_hint,
         }
 
     # ─── 业务逻辑：演员解析与作品抓取 ────────────────────────────
 
     def _refresh_actor(
-        self, client: "_DoubanClient", key: str, previous: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        """解析（必要时搜索）演员并抓取其最新作品，返回 ``(演员信息, 作品列表)``。"""
-        cache = self._load_actor_cache()
+        self,
+        client: "_DoubanClient",
+        key: str,
+        previous: Dict[str, Any],
+        cache: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], bool]:
+        """解析（必要时搜索）演员并抓取其最新作品。
+
+        :param cache: 共享的演员解析缓存，由调用方统一读写，
+            避免每位演员都落盘一次（112 位演员会变成 112 次写库）。
+        :return: ``(演员信息, 作品列表, 缓存是否有更新)``
+        """
         actor: Dict[str, Any] = dict(cache.get(key) or {})
         actor_id = str(actor.get("id") or "").strip()
         if not actor_id:
             actor = self._resolve_actor(client, key)
             actor_id = str(actor.get("id") or "").strip()
 
+        cache_dirty = False
         # 每次刷新都取一次人物详情：既刷新头像/简介，也拿到最新的作品集 ID
         detail = client.person_detail(actor_id) if actor_id else None
         if detail:
             actor = {**actor, **self._actor_from_detail(actor_id, detail, key)}
+            actor.pop("retryable", None)
+        elif actor_id and client.last_rate_limited:
+            # 详情接口的限流窗口很短，退避重试后仍失败就如实上报，
+            # 不要把它伪装成「未找到该演员的豆瓣影视作品集」。
+            actor["error"] = client.failure_hint()
+            actor["retryable"] = True
+            return actor, [], False
+
         if actor_id and not actor.get("error"):
-            cache[key] = {k: v for k, v in actor.items() if k != "works"}
-            self.save_data(self._DATA_ACTORS, cache)
+            cache[key] = {k: v for k, v in actor.items() if k not in ("works", "retryable")}
+            cache_dirty = True
 
         collection_id = self._work_collection_id(detail) if detail else None
         if not collection_id:
             if not actor.get("error"):
                 actor["error"] = "未找到该演员的豆瓣影视作品集"
-            return actor, []
+            return actor, [], cache_dirty
 
         # 豆瓣作品集接口不支持翻页，每位演员最多取到 10 部
         fetch_count = min(self._max_works, _DoubanClient.MAX_WORKS_PER_REQUEST)
@@ -655,15 +1078,54 @@ class DoubanActorSubscribe(_PluginBase):
             else:
                 work["first_seen"] = now
                 work["is_new"] = True
-        return actor, works
+        return actor, works, cache_dirty
+
+    @staticmethod
+    def _extract_person_id(value: str) -> str:
+        """从配置项里提取豆瓣人物 ID，提取不到时返回空串。
+
+        支持三种写法，方便用户直接从浏览器地址栏复制：
+        ``37871253``、``https://www.douban.com/personage/37871253/``、
+        ``https://movie.douban.com/celebrity/1025229/``。
+        直接给 ID/链接可完全绕开豆瓣的匿名搜索限流。
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.isdigit():
+            return text
+        matched = _PERSON_URL_PATTERN.search(text)
+        return matched.group(1) if matched else ""
 
     def _resolve_actor(self, client: "_DoubanClient", key: str) -> Dict[str, Any]:
-        """把配置项解析为豆瓣人物：纯数字按人物 ID 处理，否则按名称搜索。"""
-        if key.isdigit():
-            return {"key": key, "id": key, "name": key, "resolved_from": "id", "error": None}
+        """把配置项解析为豆瓣人物：人物 ID/主页链接直接采用，否则按名称搜索。"""
+        person_id = self._extract_person_id(key)
+        if person_id:
+            return {"key": key, "id": person_id, "name": key, "resolved_from": "id", "error": None}
 
         candidates = client.search_person(key)
         if not candidates:
+            # 关键：必须区分「被限流/请求失败」与「确实搜不到这个人」。
+            # 早期版本把限流也报成「未搜索到该演员」，会误导用户去改配置，
+            # 而真实原因是豆瓣匿名搜索配额用尽（实测约 5 次后 403 need_login）。
+            if client.last_rate_limited:
+                return {
+                    "key": key,
+                    "id": "",
+                    "name": key,
+                    "resolved_from": "search",
+                    "error": client.failure_hint(),
+                    "retryable": True,
+                }
+            if client.last_error:
+                return {
+                    "key": key,
+                    "id": "",
+                    "name": key,
+                    "resolved_from": "search",
+                    "error": f"豆瓣搜索失败：{client.last_error}",
+                    "retryable": True,
+                }
             return {
                 "key": key,
                 "id": "",
@@ -921,6 +1383,9 @@ class DoubanActorSubscribe(_PluginBase):
                 season=meta.begin_season,
                 exist_ok=True,
                 username=PLUGIN_NAME,
+                # 订阅偏好：留空时交给宿主按系统默认配置补全
+                save_path=self._subscribe_save_path or None,
+                sites=list(self._subscribe_sites) or None,
             )
             if sid:
                 return True, f"订阅成功（ID {sid}）"
@@ -990,8 +1455,14 @@ class DoubanActorSubscribe(_PluginBase):
         except Exception as err:  # pragma: no cover - 未配置通知渠道时兜底
             logger.warning(f"{self.plugin_name} 发送通知失败：{err}")
 
-    def _add_once_job(self) -> bool:
-        """向宿主调度器登记一次性任务，返回是否登记成功。"""
+    def _add_once_job(
+        self, job_id: str = _ONCE_JOB_ID, delay_seconds: float = 3, trigger: str = "once"
+    ) -> bool:
+        """向宿主调度器登记一次性任务，返回是否登记成功。
+
+        注意 ``add_plugin_once_job`` 的关键字参数名是 ``func_kwargs``（不是 ``kwargs``），
+        传错会被它自己的 try/except 吞掉并只留下一条错误日志。
+        """
         try:
             from app.sdk import scheduler as scheduler_sdk
 
@@ -1001,11 +1472,11 @@ class DoubanActorSubscribe(_PluginBase):
                 return False
             add_once(
                 self.__class__.__name__,
-                self._ONCE_JOB_ID,
+                job_id,
                 self.execute_task,
-                f"{self.plugin_name}立即刷新一次",
-                delay_seconds=3,
-                kwargs={"trigger": "once"},
+                f"{self.plugin_name}延迟刷新",
+                delay_seconds=delay_seconds,
+                func_kwargs={"trigger": trigger},
             )
             return True
         except Exception as err:  # pragma: no cover - 宿主版本差异兜底
@@ -1014,8 +1485,14 @@ class DoubanActorSubscribe(_PluginBase):
 
     # ─── 插件 API 实现 ───────────────────────────────────────────
 
-    def api_get_config(self) -> Dict[str, Any]:
-        """返回当前运行时配置，供前端 Config 组件回显。"""
+    def _config_snapshot(self) -> Dict[str, Any]:
+        """组装当前运行时配置（不含响应外壳）。
+
+        单独抽出是为了让 ``api_get_config`` 的响应壳与持久化用的配置体解耦：
+        宿主不会为插件动态路由套 ``Response[T]``，因此插件自己的接口必须
+        自行返回 ``{success, data}``（与 ``api_get_works`` 等保持一致），
+        但落盘/合并时只能用裸配置，不能把外壳写进配置。
+        """
         return {
             "enabled": self._enabled,
             "cron": self._cron,
@@ -1029,15 +1506,26 @@ class DoubanActorSubscribe(_PluginBase):
             "auto_min_vote": self._auto_min_vote,
             "auto_types": ",".join(self._auto_types),
             "auto_max_per_run": self._auto_max_per_run,
+            "subscribe_save_path": self._subscribe_save_path,
+            "subscribe_sites": list(self._subscribe_sites),
+            "douban_cookie": self._douban_cookie,
+            "douban_cookie_source": self._cookie_source,
+            "douban_cookie_hint": self._cookie_hint,
+            "pending_refresh": bool(self._pending_refresh),
+            "refreshing": self._is_refreshing(),
             "run_count": self._run_count,
         }
+
+    def api_get_config(self) -> Dict[str, Any]:
+        """返回当前运行时配置，供前端 Config 组件回显。"""
+        return {"success": True, "data": self._config_snapshot()}
 
     def api_update_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """接收前端提交的配置，持久化后重新初始化插件。"""
         if not config or not isinstance(config, dict):
             return {"success": False, "message": "请求体不是合法对象"}
 
-        merged = {**self.api_get_config(), **config}
+        merged = {**self._config_snapshot(), **config}
         merged["enabled"] = bool(merged.get("enabled"))
         merged["notify"] = bool(merged.get("notify"))
         merged["proxy"] = bool(merged.get("proxy"))
@@ -1050,25 +1538,59 @@ class DoubanActorSubscribe(_PluginBase):
         merged["auto_min_vote"] = self._to_float(merged.get("auto_min_vote"), 0.0)
         merged["max_works"] = self._clamp_int(merged.get("max_works"), 10, 5, 10)
         merged["auto_max_per_run"] = self._clamp_int(merged.get("auto_max_per_run"), 5, 1, 100)
-        # run_count 属于运行时统计，不落盘
+        merged["subscribe_save_path"] = str(merged.get("subscribe_save_path") or "").strip()
+        merged["subscribe_sites"] = self._parse_sites(merged.get("subscribe_sites"))
+        merged["douban_cookie"] = str(merged.get("douban_cookie") or "").strip()
+        # run_count / pending_refresh / refreshing / Cookie 来源属于运行时状态，不落盘
         merged.pop("run_count", None)
+        merged.pop("pending_refresh", None)
+        merged.pop("refreshing", None)
+        merged.pop("douban_cookie_source", None)
+        merged.pop("douban_cookie_hint", None)
 
         if not self.update_config(merged):
             return {"success": False, "message": "配置持久化失败"}
 
         self.init_plugin(merged)
-        return {"success": True, "data": self.api_get_config()}
+        return {"success": True, "data": self._config_snapshot()}
 
     def api_get_works(self) -> Dict[str, Any]:
         """返回演员与作品快照，供前端面板渲染。"""
         return {"success": True, "data": self.get_works_payload()}
 
     def api_run(self) -> Dict[str, Any]:
-        """手动刷新一次。"""
-        ok = self.execute_task(trigger="api")
+        """手动刷新一次。
+
+        演员多时（一次刷新可能上百个请求、持续数分钟）不能在 HTTP 请求里同步跑完，
+        否则前端会先超时并报错。这里改为交给宿主调度器立即后台执行，
+        前端依据 ``refreshing`` 标记轮询结果。
+        """
+        if not self.get_state() or not self._actor_entries:
+            return {
+                "success": False,
+                "message": "刷新失败（插件未启用或未配置演员）",
+                "data": self.get_works_payload(),
+            }
+        if self._refreshing:
+            return {
+                "success": True,
+                "message": "刷新已在进行中",
+                "data": self.get_works_payload(),
+            }
+        if not self._add_once_job(self._MANUAL_JOB_ID, 0, "manual"):
+            # 宿主不支持一次性任务时退回同步执行
+            ok = self.execute_task(trigger="api")
+            return {
+                "success": ok,
+                "message": "刷新完成" if ok else "刷新失败（插件未启用或未配置演员）",
+                "data": self.get_works_payload(),
+            }
+        self._refreshing = True
+        self._refresh_started_at = time.time()
+        logger.info(f"{self.plugin_name} 已安排后台刷新，共 {len(self._actor_entries)} 位演员")
         return {
-            "success": ok,
-            "message": "刷新完成" if ok else "刷新失败（插件未启用或未配置演员）",
+            "success": True,
+            "message": f"已在后台开始刷新 {len(self._actor_entries)} 位演员的作品",
             "data": self.get_works_payload(),
         }
 
@@ -1077,10 +1599,25 @@ class DoubanActorSubscribe(_PluginBase):
         keyword = str(name or "").strip()
         if not keyword:
             return {"success": False, "message": "请提供演员名称"}
+        # 直接粘贴人物 ID / 主页链接时无需搜索，避免占用本就紧张的搜索配额
+        person_id = self._extract_person_id(keyword)
+        if person_id:
+            return {
+                "success": True,
+                "data": [{"id": person_id, "name": keyword, "avatar": None, "url": None}],
+                "message": "已按人物 ID 解析",
+            }
+        client = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
         try:
-            results = _DoubanClient(proxy=self._proxy).search_person(keyword)
+            results = client.search_person(keyword)
         except Exception as err:
             return {"success": False, "message": f"搜索失败：{err}"}
+        if not results:
+            # 同样是空结果，原因不同：限流要提示稍后重试，而不是让用户误以为没有这个人
+            if client.last_rate_limited:
+                return {"success": False, "message": client.failure_hint(), "rate_limited": True}
+            if client.last_error:
+                return {"success": False, "message": f"搜索失败：{client.last_error}"}
         return {"success": True, "data": results}
 
     def api_clear(self) -> Dict[str, Any]:
@@ -1097,12 +1634,21 @@ class DoubanActorSubscribe(_PluginBase):
 
     @staticmethod
     def _parse_actors(value: Any) -> List[str]:
-        """解析演员配置：支持换行、逗号、分号分隔，去重并保序。"""
+        """解析演员配置。
+
+        分隔符同时支持换行、英文/中文逗号与分号、中文顿号，方便直接粘贴
+        「刘德华,吴京,张译」这类列表；连续分隔符与空白项会被忽略，重复项去重并保序。
+        """
         if isinstance(value, (list, tuple)):
             raw_items = [str(item) for item in value]
         else:
-            text = str(value or "").replace("，", ",").replace("；", ";")
-            for sep in ("\r\n", "\n", ";", ","):
+            text = (
+                str(value or "")
+                .replace("，", ",")
+                .replace("；", ";")
+                .replace("、", ",")
+            )
+            for sep in ("\r\n", "\n", "\r", ";", ","):
                 text = text.replace(sep, "\n")
             raw_items = text.split("\n")
         result: List[str] = []
@@ -1126,6 +1672,27 @@ class DoubanActorSubscribe(_PluginBase):
             if item not in deduped:
                 deduped.append(item)
         return deduped or list(_SUBSCRIBABLE_TYPES)
+
+    @staticmethod
+    def _parse_sites(value: Any) -> List[int]:
+        """解析订阅站点 ID 列表；非法项直接丢弃，保持原有顺序并去重。"""
+        if value in (None, ""):
+            return []
+        if isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        elif isinstance(value, str):
+            raw_items = [item for item in value.replace("，", ",").split(",")]
+        else:
+            raw_items = [value]
+        result: List[int] = []
+        for item in raw_items:
+            try:
+                site_id = int(str(item).strip())
+            except (TypeError, ValueError):
+                continue
+            if site_id > 0 and site_id not in result:
+                result.append(site_id)
+        return result
 
     @staticmethod
     def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
@@ -1158,5 +1725,8 @@ class DoubanActorSubscribe(_PluginBase):
             "auto_min_vote": 0,
             "auto_types": "电影,电视剧",
             "auto_max_per_run": 5,
+            "subscribe_save_path": "",
+            "subscribe_sites": [],
+            "douban_cookie": "",
             "onlyonce": False,
         }

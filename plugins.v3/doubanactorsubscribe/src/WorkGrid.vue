@@ -12,7 +12,7 @@
         class="das-card"
       >
         <div class="das-poster">
-          <v-img :src="work.poster" :aspect-ratio="2 / 3" cover class="das-poster-img">
+          <v-img :src="proxyImage(work.poster)" :aspect-ratio="2 / 3" cover class="das-poster-img">
             <template #placeholder>
               <div class="das-poster-ph">
                 <v-icon icon="mdi-image-outline" size="22" />
@@ -53,6 +53,10 @@
               <v-icon icon="mdi-star" size="11" color="amber" />{{ work.vote.toFixed(1) }}
             </span>
           </div>
+          <div v-if="showActors && work.actorNames && work.actorNames.length" class="das-actors" :title="work.actorNames.join(' / ')">
+            <v-icon icon="mdi-account-outline" size="11" />
+            <span class="das-actors-text">{{ work.actorNames.join(' / ') }}</span>
+          </div>
           <div v-if="work.roles && work.roles.length" class="das-dim das-roles">
             {{ work.roles.join(' / ') }}
           </div>
@@ -92,22 +96,28 @@
  *
  * 只负责渲染与事件抛出，订阅的后端交互由父组件完成，
  * 这样详情页 / 侧栏全页 / 仪表板可以复用同一套视觉与交互。
+ * 海报统一经宿主图片代理加载，绕开豆瓣 CDN 的 Referer 防盗链。
  */
-import { workKey } from './api'
+import { proxyImage, workKey } from './api'
 import type { ActorWork } from './types'
 
-const props = defineProps<{
-  /** 待渲染的作品列表 */
-  works: ActorWork[]
-  /** 已订阅作品的身份键集合 */
-  subscribedKeys: string[]
-  /** 正在提交订阅的作品键（用于显示按钮 loading） */
-  pendingKey?: string
-  /** 批量提交进行中，禁用全部按钮 */
-  busy?: boolean
-  /** 空列表时的提示文案 */
-  emptyText?: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    /** 待渲染的作品列表 */
+    works: ActorWork[]
+    /** 已订阅作品的身份键集合 */
+    subscribedKeys: string[]
+    /** 正在提交订阅的作品键（用于显示按钮 loading） */
+    pendingKey?: string
+    /** 批量提交进行中，禁用全部按钮 */
+    busy?: boolean
+    /** 空列表时的提示文案 */
+    emptyText?: string
+    /** 是否在卡片上显示「出演演员」，合并视图下用它替代按演员分组 */
+    showActors?: boolean
+  }>(),
+  { subscribedKeys: () => [], showActors: true }
+)
 
 const emit = defineEmits<{ (e: 'subscribe', work: ActorWork): void }>()
 
@@ -199,6 +209,23 @@ function isSubscribed(work: ActorWork): boolean {
 
 .das-roles {
   margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 出演演员：合并视图下替代按演员分组，因此需要能一眼看到 */
+.das-actors {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 4px;
+  font-size: 0.7rem;
+  opacity: 0.85;
+  min-width: 0;
+}
+
+.das-actors-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

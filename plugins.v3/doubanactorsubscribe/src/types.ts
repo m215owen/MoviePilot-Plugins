@@ -30,10 +30,27 @@ export interface PluginConfig {
   auto_types: string
   /** 单次自动订阅的数量上限 */
   auto_max_per_run: number
+  /** 订阅偏好：默认下载保存路径，空串表示跟随宿主默认配置 */
+  subscribe_save_path: string
+  /** 订阅偏好：默认订阅站点 ID 列表，空数组表示跟随宿主默认配置 */
+  subscribe_sites: number[]
+  /**
+   * 手工粘贴的豆瓣 Cookie（留空 = 自动复用宿主 CookieCloud 里的豆瓣登录态）。
+   *
+   * 豆瓣对匿名请求返回 `403 need_login` 做限流，按名称搜索演员时额度只有个位数；
+   * 带上登录态后实测可用次数显著提升，且不受出口 IP 被拉黑影响。
+   */
+  douban_cookie: string
+  /** 运行时回显：当前 Cookie 来源 manual / cookiecloud / none（只读） */
+  douban_cookie_source?: string
+  /** 运行时回显：CookieCloud 取不到时的原因（只读） */
+  douban_cookie_hint?: string
   /** 保存后立即刷新一次 */
   onlyonce?: boolean
   /** 运行期统计：累计刷新次数（只读） */
   run_count?: number
+  /** 运行期标记：配置已变更、后台补刷新尚未完成（只读） */
+  pending_refresh?: boolean
 }
 
 /** 单个影视作品（豆瓣条目） */
@@ -62,6 +79,8 @@ export interface ActorWork {
   url?: string
   /** 该演员在此作品中的职务 */
   roles?: string[]
+  /** 出演该作品的演员名（作品墙合并去重后聚合而来） */
+  actorNames?: string[]
   /** 首次被发现的时间 */
   first_seen?: string
   /** 是否为本次刷新新发现的作品 */
@@ -84,6 +103,8 @@ export interface ActorBrief {
   resolved_from?: string
   /** 解析或抓取错误 */
   error?: string | null
+  /** 该错误是否为可重试（豆瓣限流/网络失败），前端据此显示「稍后重试」而非「改配置」 */
+  retryable?: boolean
 }
 
 /** 演员 + 其作品列表 */
@@ -120,6 +141,30 @@ export interface WorksPayload {
   auto_subscribed: AutoSubscribeRecord[]
   errors: string[]
   actors: ActorGroup[]
+  /** 订阅偏好：当前默认保存路径 */
+  subscribe_save_path: string
+  /** 订阅偏好：当前默认订阅站点 */
+  subscribe_sites: number[]
+  /** 当前豆瓣 Cookie 来源：manual（插件内手填）/ cookiecloud（宿主自动取）/ none */
+  douban_cookie_source?: string
+  /** 未取到豆瓣 Cookie 时的原因，直接展示给用户 */
+  douban_cookie_hint?: string
+  /** 是否正在等待后台补刷新 */
+  pending_refresh: boolean
+  /** 后台刷新是否正在进行（演员多时一次刷新会持续较久） */
+  refreshing: boolean
+}
+
+/** 可选的订阅站点（只保留展示所需字段，凭据不进前端状态） */
+export interface SiteOption {
+  id: number
+  name: string
+}
+
+/** 可选的下载保存路径 */
+export interface DownloadPathOption {
+  name: string
+  path: string
 }
 
 /** 豆瓣演员搜索候选 */

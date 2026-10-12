@@ -11,9 +11,10 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| 演员配置 | 支持**演员名称**（自动搜索并缓存豆瓣人物 ID）或直接填**豆瓣人物 ID**（纯数字，最精确） |
+| 演员配置 | 支持**豆瓣人物主页链接**（推荐，最稳，直接解析出 ID，不消耗搜索配额）、**演员名称**（自动搜索并缓存豆瓣人物 ID）或直接填**豆瓣人物 ID**（纯数字） |
 | 作品抓取 | 豆瓣 Frodo API：人物详情 → 影视作品集 → 作品列表，归一化标题/年份/类型/评分/海报/职务 |
-| 面板展示 | 仪表板小组件（Top 4 + 新作品徽标）、侧栏全页（完整筛选 + 批量订阅） |
+| 面板展示 | **统一作品墙**（跨演员按时/新作品排序，卡片标出**出演演员**，演员以 chip 筛选代替分组）+ 完整筛选 + 批量订阅 |
+| 异常提示 | 面板异常**显示 5 秒后自动收起**为「N 项异常（点击查看）」小标签，内容变化会重新计时 |
 | 一键订阅 | 前端调用宿主 `subscribe/` 接口，携带 `media_source=douban` + `media_id`，归属当前登录用户 |
 | 自动订阅 | 定时刷新后按「只订阅新作品 / 类型白名单 / 最低评分 / 每次上限」自动调用订阅链落库 |
 | 通知 | 可通过宿主通知渠道推送刷新结果与自动订阅明细 |
@@ -24,7 +25,9 @@
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | bool | `false` | 启用插件 |
-| `actors` | str | 空 | 演员列表，一行一个，支持名称或豆瓣人物 ID（也支持逗号/分号分隔） |
+| `actors` | str | 空 | 演员列表，一行一个；**推荐直接粘贴豆瓣人物主页链接**（如 `https://www.douban.com/personage/37871253/`），也支持人物 ID 或名称（分隔符可用逗号/顿号/分号/换行） |
+| `subscribe_save_path` | str | 空 | 面板订阅时默认保存路径（透传给宿主 `subscribe/`） |
+| `subscribe_sites` | list | `[]` | 面板订阅时默认站点白名单（留空表示全部站点） |
 | `max_works` | int | `10` | 每位演员保留的作品条数（5–10）。上限 10 是豆瓣接口限制，不是插件限制 |
 | `sort_by` | str | `time` | 豆瓣侧排序：`time` 按时间（最新作品优先）/ `collection` 豆瓣默认；其余取值回退 `time` |
 | `cron` | str | `0 8 * * *` | 刷新周期（cron 表达式） |
@@ -35,6 +38,7 @@
 | `auto_types` | str | `电影,电视剧` | 自动订阅的媒体类型白名单 |
 | `auto_min_vote` | float | `0` | 自动订阅的最低豆瓣评分（0 表示不限） |
 | `auto_max_per_run` | int | `5` | 单次刷新最多自动订阅的条数 |
+| `douban_cookie` | str | 空 | 手工粘贴的豆瓣 Cookie（留空则自动尝试宿主 CookieCloud）。**搜索额度明显更高** |
 | `onlyonce` | bool | `false` | 保存配置后立即刷新一次（勾选后自动复位） |
 
 ## HTTP 接口
@@ -45,10 +49,12 @@
 | --- | --- | --- |
 | GET | `/config` | 获取运行时配置（`actors` 以换行串、`auto_types` 以逗号串返回给前端） |
 | PUT | `/config` | 合并更新配置，持久化后重新初始化插件 |
-| GET | `/works` | 演员 + 作品快照 + 统计（面板数据源） |
-| POST | `/run` | 立即刷新一次 |
-| GET | `/search_actor?name=` | 按名称搜索豆瓣演员，辅助填写配置 |
+| GET | `/works` | 演员 + 作品快照 + 统计（面板数据源），含 `refreshing` 标记 |
+| POST | `/run` | 立即刷新一次。**异步**：立即返回并置 `refreshing=true`；重复调用返回「刷新已在进行中」 |
+| GET | `/search_actor?name=` | 解析演员：可传**主页链接 / 人物 ID / 名称**。链接与 ID 直接命中，不消耗搜索配额 |
 | POST | `/clear` | 清空作品快照与自动订阅记录（不动配置） |
+
+> 插件动态路由**不套宿主的 `Response[T]` 外壳**，因此插件接口一律自行返回 `{success, data}`。
 
 ## 其他扩展点
 
@@ -64,15 +70,27 @@
 
 ```
 src/
-├── api.ts                 # 接口封装：插件 API + 宿主 subscribe/ 接口 + 时间格式化
+├── api.ts                 # 接口封装：插件 API + 宿主 subscribe/ 接口 + 图片代理 + 时间格式化
 ├── types.ts               # 与后端 payload 对齐的 TS 类型
-├── WorkGrid.vue           # 作品海报墙（Page / AppPage 复用，带订阅按钮）
-├── Page.vue               # 插件详情页
+├── WorkGrid.vue           # 作品海报墙（Page / AppPage 复用，带出演演员行与订阅按钮）
+├── ErrorAlerts.vue        # 异常提示条：5s 后自动收起，可点击小标签再展开
+├── SubscribePrefs.vue     # 订阅偏好（保存路径 / 站点），Config 与运行状态页共用
+├── Page.vue               # 插件详情页（顶部固定操作条：刷新 / 配置插件 / 通知宿主刷新 / 关闭）
 ├── Config.vue             # 配置页（emit('save', cfg) 由宿主持久化）
 ├── Dashboard.vue          # 仪表板小组件
 ├── AppPage.vue            # 侧栏全页 · 作品面板（nav_key=main）
 └── AppPageSettings.vue    # 侧栏全页 · 运行状态（nav_key=settings）
 ```
+
+> **详情页布局**：操作按钮固定在页面**顶部**，作品墙再长也不需要滚到底找按钮。
+> **图片**：海报走宿主 `system/img/0?imgurl=…`（与「探索」页同路径，**取 `1` 会强制走用户代理配置，
+> 代理异常时图片会全挂**）；接口鉴权走浏览器资源 Cookie，服务端用 apikey 调它必定 401（预期行为）。
+>
+> **响应解包（易错点）**：宿主列表接口返回 `{success, data: [...]}` 信封。
+> `unwrap()` 遇到带 `success` 的对象会**原样返回信封**（`submitSubscribe` 需要读 `success`/`message`，
+> 所以不能改它），于是 `Array.isArray(信封)` 恒为假——这正是「下载保存路径 / 订阅站点下拉是空的」的原因。
+> **凡是要取列表，一律用 `unwrapList<T>()`**，它同时兼容裸数组、`{data: [...]}` 信封与再套一层 axios response。
+> `normalizeResult()` 则用于需要读 `success`/`message` 的场景。
 
 构建：
 
@@ -119,6 +137,61 @@ node node_modules/vite/bin/vite.js build
 | 排序 | `sortby` 仅 `time` / `collection` 有效，`vote` 会返回**空数组**，已做白名单兜底 |
 | 人物搜索 | `/search/subjects?type=person&q=` → `items[].target.{id,title,cover_img}` |
 | 作品集 ID | 人物详情 `modules[].type == "work_collections"` → `payload.id`（标题实测为「作品集」） |
+| 搜索限流 | `/search/subjects?type=person` 同一出口 IP **约 5 次**后返回 `403 {"msg":"need_login","code":103}`，**恢复窗口 > 90 秒**（恢复后可再用约 5–7 次） |
+| 详情限流 | `/elessar/subject/{id}` 约 **10 次**后返回 `403 {"msg":"subject_ip_rate_limit","code":400010}`，但**窗口很短**（第 11 次失败、第 15 次已 200）→ 值得退避重试 |
+
+### 限流应对（重点）
+
+搜索配额只有 5 次/窗口，而配置里动辄上百位演员，因此插件做了四件事：
+
+1. **优先走链接/ID**：`苏凝` 这类名字解析失败时，直接粘贴 `https://www.douban.com/personage/37871253/`
+   或填 `37871253`，一步到位且**不消耗任何搜索配额**（`_extract_person_id()` → 支持 `personage` / `celebrity` 两种主页）。
+2. **区分限流与「查无此人」**：客户端记录 `last_status` / `last_error` / `last_rate_limited`，
+   只有**真正返回 0 条**才提示「豆瓣未搜索到该演员，请改用人物 ID」；
+   被限流时提示「豆瓣搜索被限流，稍后会自动重试；也可直接填人物 ID 跳过搜索」并标 `retryable`。
+3. **限流后中止本轮搜索**：某次按名称搜索一旦被限流，本轮**剩余尚未解析**的演员直接跳过并归入限流分组，
+   不再对上百个名字空打必然失败的请求（`execute_task()` 里的 `search_blocked` / `skipped`）。
+   已解析出 ID 的演员缓存在本地，**下轮不再搜索**，所以逐轮刷新会让已解析数单调上升。
+4. **手动刷新改后台任务**：`POST /run` 只负责排一个一次性任务并立即返回，避免上百位演员的同步刷新
+   触发 HTTP 超时；面板通过 `refreshing` 标记轮询到结束（`_is_refreshing()` 带 1800s 超时兜底）。
+
+### 提高额度：复用宿主 CookieCloud（推荐）
+
+> **实测结论**：同一个出口 IP，匿名请求约 5 次即被 `403 {"msg":"need_login","code":103}` 挡下；
+> 带上**已登录**的豆瓣 Cookie 后，连续 10 次搜索全部 200，而且**立即生效**。
+> 说明匿名额度是硬瓶颈，而登录态额度绑账号、不绑 IP。
+
+因此插件优先自动复用宿主已有的 **CookieCloud**，无需用户手工复制 Cookie：
+
+1. `_resolve_douban_cookie()` 按 **手填 `douban_cookie` → 宿主 CookieCloud → 无** 的顺序取 Cookie，
+   结果在内存里缓存 `_COOKIE_TTL = 1800` 秒（30 分钟），不落盘、不打日志。
+2. CookieCloud 取值走 `POST {COOKIECLOUD_HOST}/get/{COOKIECLOUD_KEY}`，body `{"password": COOKIECLOUD_PASSWORD}`，
+   直接拿**服务端已解密**的 `cookie_data`（插件**不实现 AES 解密**）。
+   配置键读自宿主 `settings`：`COOKIECLOUD_HOST` / `COOKIECLOUD_KEY` / `COOKIECLOUD_PASSWORD`。
+3. 只挑域名含 `douban.com` 的分组，同名 Cookie 保留第一个、跳过空值，拼成 `k=v; k=v` 传给 `RequestUtils(cookies=...)`。
+4. 取不到时 `last_error` 会写明原因（未配置 / 只回密文 / 没有该域名 / HTTP 非 200 / 网络异常），
+   面板与配置页把 `douban_cookie_source`（`manual` / `cookiecloud` / 空）原样展示出来。
+
+面板标题栏与配置页都有 **Cookie 状态徽标**：
+
+| 徽标 | 含义 |
+| --- | --- |
+| `Cookie：CookieCloud`（绿） | 已自动读取宿主豆瓣登录态，额度最佳 |
+| `Cookie：手填`（绿） | 使用插件配置里手工粘贴的 Cookie |
+| `Cookie：未取到`（黄） | 没有登录态，按名称搜索会被严格限流；悬浮可看具体原因 |
+
+> 若 CookieCloud 服务端只返回 `encrypted`（未在服务端解密），插件不做本地解密，
+> 此时请在插件配置里**手工粘贴**豆瓣 Cookie 兜底。
+
+### 三类失败提示
+
+`_DoubanClient.failure_hint()` 会区分失败根因，避免用户误操作：
+
+| 触发条件 | 提示常量 | 文案要点 |
+| --- | --- | --- |
+| 未配 Cookie 且 `need_login` | `_NEED_LOGIN_HINT` | 去配 Cookie / 确认 CookieCloud，或直接填人物 ID |
+| 配了 Cookie 仍 `need_login` | `_COOKIE_EXPIRED_HINT` | Cookie 可能已失效，重新登录豆瓣并同步 CookieCloud |
+| 单纯限流（HTTP 403 且非 `need_login`） | `_RATE_LIMIT_HINT` | 稍后自动重试，或直接填人物 ID 跳过搜索 |
 
 ## 兼容性
 

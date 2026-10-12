@@ -35,8 +35,8 @@
       <v-textarea
         v-model="local.actors"
         label="演员列表"
-        placeholder="每行一个：演员名 或 豆瓣人物 ID&#10;例如：&#10;刘德华&#10;1054421"
-        hint="按名称填写的会在刷新时自动搜索解析为豆瓣人物；直接填人物 ID 更精确"
+        placeholder="支持换行、逗号、顿号、分号分隔：&#10;刘德华, 吴京, 张译&#10;也可直接粘贴豆瓣人物主页链接（推荐，最稳）：&#10;https://www.douban.com/personage/37871253/"
+        hint="可用逗号/顿号/分号/换行分隔。填「人物 ID」或直接粘贴人物主页链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。"
         persistent-hint
         rows="4"
         density="comfortable"
@@ -81,6 +81,30 @@
           </v-btn>
         </div>
       </v-card>
+
+      <v-divider class="my-3" />
+
+      <!-- 豆瓣登录态：匿名搜索额度只有个位数，配上 Cookie 才能稳定按名称解析演员 -->
+      <div class="text-subtitle-2 mb-2">
+        <v-icon icon="mdi-cookie-outline" size="18" class="mr-1" />
+        豆瓣 Cookie（提高搜索额度）
+      </div>
+      <v-alert type="info" variant="tonal" density="compact" class="mb-2">
+        默认<b>自动</b>从宿主「系统设置 → CookieCloud」读取豆瓣登录态，这里无需填写。
+        仅当 CookieCloud 没同步豆瓣、或想临时换一个账号时，才在下面手工粘贴覆盖。
+      </v-alert>
+      <v-textarea
+        v-model="local.douban_cookie"
+        label="豆瓣 Cookie（留空 = 自动用宿主 CookieCloud）"
+        placeholder="bid=xxx; dbcl2=xxx; ck=xxx"
+        hint="浏览器登录豆瓣后按 F12 → 网络 → 任意 douban.com 请求 → 请求头 Cookie 整段复制（务必含 dbcl2）。"
+        persistent-hint
+        rows="2"
+        density="comfortable"
+        auto-grow
+        class="mb-2"
+      />
+      <div class="text-caption das-dim mb-3">当前生效来源：{{ cookieStatus }}</div>
 
       <v-divider class="my-3" />
 
@@ -156,7 +180,6 @@
         hide-details
         class="mb-2"
       />
-
       <template v-if="local.auto_subscribe">
         <v-switch
           v-model="local.auto_only_new"
@@ -202,6 +225,20 @@
         </v-row>
       </template>
 
+      <v-divider class="my-3" />
+
+      <!-- 订阅选项：下载保存路径 + 订阅站点，随本页「保存配置」一起持久化 -->
+      <div class="text-subtitle-2 mb-2">
+        <v-icon icon="mdi-tune-variant" size="18" class="mr-1" />
+        订阅选项
+      </div>
+      <SubscribePrefs
+        v-model:save-path="local.subscribe_save_path"
+        v-model:sites="local.subscribe_sites"
+        :api="props.api"
+        :show-save="false"
+      />
+
       <v-alert type="info" variant="tonal" density="compact" class="my-3">
         保存由宿主完成：本组件只向宿主抛出 <code>save</code> 事件，
         宿主会调用 <code>api.put('plugin/{id}', cfg)</code> 持久化并重新初始化插件。
@@ -223,6 +260,7 @@
  * 不要在组件内自行拼接 `api/v1/plugin/...` 路径。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
+import SubscribePrefs from './SubscribePrefs.vue'
 import { API_BASE, PLUGIN_ID, resolveApi, unwrap } from './api'
 import type { ActorCandidate, ApiResult, PluginApi, PluginConfig } from './types'
 
@@ -251,9 +289,27 @@ const defaults: PluginConfig = {
   auto_types: '电影,电视剧',
   auto_max_per_run: 5,
   onlyonce: false,
+  subscribe_save_path: '',
+  subscribe_sites: [],
+  douban_cookie: '',
 }
 
 const local = reactive<PluginConfig>({ ...defaults })
+
+/**
+ * 当前生效的 Cookie 来源。
+ *
+ * 来源由后端快照给出（`douban_cookie_source`），这里只做展示——
+ * 用户最需要知道的是「到底有没有用上登录态」，而不是自己去猜。
+ */
+const cookieStatus = computed<string>(() => {
+  const initial = props.initialConfig as Record<string, unknown> | undefined
+  const source = initial?.douban_cookie_source
+  if (source === 'manual') return '插件内手填的 Cookie'
+  if (source === 'cookiecloud') return '宿主 CookieCloud（自动读取，已生效）'
+  const hint = initial?.douban_cookie_hint
+  return hint ? `未取到，原因：${String(hint)}` : '尚未取到（刷新一次后会显示）'
+})
 
 /** 常用 cron 预设 */
 const cronPresets = [
