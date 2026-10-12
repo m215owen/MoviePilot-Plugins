@@ -61,18 +61,41 @@ _TYPE_ALIASES: Dict[str, str] = {
 # 允许参与自动订阅的媒体类型
 _SUBSCRIBABLE_TYPES = (MediaType.MOVIE.value, MediaType.TV.value)
 
+# 豆瓣部分标题会夹带零宽/双向控制字符（实测「神探之痕迹\u200e」），
+# 这类字符不可见却会污染订阅名与去重比对，统一剔除。
+_INVISIBLE_CHARS = dict.fromkeys(
+    [0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2060, 0xFEFF]
+)
+
+
+def _clean_text(value: Any) -> str:
+    """去掉首尾空白与零宽/双向控制字符。"""
+    return str(value or "").translate(_INVISIBLE_CHARS).strip()
+
 
 class _DoubanClient:
     """豆瓣 Frodo API 的轻量客户端（插件内自持，不依赖宿主内部模块）。
 
     仅使用 ``app.sdk.network.RequestUtils`` 发请求，签名规则与豆瓣移动端一致：
     ``_sig = base64(hmac_sha1(secret, "GET&" + quote(path) + "&" + _ts))``。
+
+    注意：``path`` 必须是**完整请求路径**，即包含 ``/api/v2`` 前缀。
+    豆瓣服务端按全路径校验签名，漏掉前缀会直接返回 400 Bad Request
+    （宿主 ``app.modules.douban.apiv2`` 也是用 ``urlparse(full_url).path`` 取全路径再签名）。
     """
 
     BASE_URL = "https://frodo.douban.com/api/v2"
+    # 签名覆盖的路径前缀，必须与 BASE_URL 的路径部分一致
+    SIGN_BASE_PATH = "/api/v2"
     API_KEY = "0dad551ec0f84ed02907ff5c42e8ec70"
     API_SECRET = "bf7dddc7c9cfe6f7"
     TIMEOUT = 15
+    # 作品集接口单次返回条数上限。实测请求 20/50 同样只回 10 条，
+    # 且任何 start > 0 都会得到 {"total": 0, "works": []}，即**不支持翻页**，
+    # 因此每位演员实际只能取到最近 10 部作品（插件侧的 max_works 也就封顶为 10）。
+    MAX_WORKS_PER_REQUEST = 10
+    # 该接口仅 time / collection 有效；vote 会返回空列表，故做白名单兜底
+    SORT_ORDERS = ("time", "collection")
     USER_AGENTS = (
         "api-client/1 com.douban.frodo/7.22.0.beta9(231) Android/23 product/Mate 40 "
         "vendor/HUAWEI model/Mate 40 brand/HUAWEI  rom/android  network/wifi  platform/AndroidPad",
@@ -85,8 +108,13 @@ class _DoubanClient:
 
     @classmethod
     def _sign(cls, url_path: str, ts: str) -> str:
-        """按豆瓣移动端规则生成 ``_sig``。"""
-        raw = "&".join(["GET", parse.quote(url_path, safe=""), ts])
+        """按豆瓣移动端规则生成 ``_sig``。
+
+        :param url_path: 完整请求路径（含 ``/api/v2`` 前缀）
+        :param ts: ``YYYYMMDD`` 形式的时间戳
+        """
+        path = url_path if url_path.startswith(cls.SIGN_BASE_PATH) else f"{cls.SIGN_BASE_PATH}{url_path}"
+        raw = "&".join(["GET", parse.quote(path, safe=""), ts])
         digest = hmac.new(cls.API_SECRET.encode(), raw.encode(), hashlib.sha1).digest()
         return base64.b64encode(digest).decode()
 
@@ -136,7 +164,7 @@ class _DoubanClient:
                 continue
             target = item.get("target") if isinstance(item.get("target"), dict) else {}
             person_id = str(item.get("target_id") or target.get("id") or "").strip()
-            title = str(target.get("title") or "").strip()
+            title = _clean_text(target.get("title"))
             if not person_id.isdigit() or not title or person_id in seen:
                 continue
             seen.add(person_id)
@@ -160,15 +188,22 @@ class _DoubanClient:
     def person_works(
         self, collection_id: str, start: int = 0, count: int = 20, sort_by: str = "time"
     ) -> List[Dict[str, Any]]:
-        """获取人物「影视」作品集，``sort_by`` 取 time / vote / collection。"""
+        """获取人物「影视」作品集。
+
+        受豆瓣接口限制：单次最多 10 条，且 ``start > 0`` 一律返回空结果，
+        因此这里只取首页（``start`` 参数保留是为了签名外的调用兼容，实际不生效）。
+        ``sort_by`` 仅 time / collection 有效，其余取值回退为 time。
+        """
         if not collection_id:
             return []
+        order = sort_by if sort_by in self.SORT_ORDERS else "time"
+        limit = min(max(1, int(count or self.MAX_WORKS_PER_REQUEST)), self.MAX_WORKS_PER_REQUEST)
         payload = self._get(
             f"/elessar/work_collections/{collection_id}/works",
-            sortby=sort_by or "time",
+            sortby=order,
             collection_title="影视",
-            start=start,
-            count=count,
+            start=0,
+            count=limit,
         )
         return [item for item in (payload or {}).get("works") or [] if isinstance(item, dict)]
 
@@ -177,7 +212,11 @@ class DoubanActorSubscribe(_PluginBase):
     """订阅豆瓣演员，抓取最新作品并一键提交到 MoviePilot 订阅系统。"""
 
     # ─── 插件元数据（需与 package.v3.json 保持一致） ──────────────────
-    plugin_name = PLUGIN_NAME
+    # 注意：这里必须是字符串字面量，不能用 PLUGIN_NAME 常量。
+    # 部分离线安装工具（如 LocalPluginInstall）会用 AST 静态解析插件类，
+    # 只认 ast.Constant 形式的字符串属性，引用变量会被判定为“缺少 plugin_name”。
+    # 与 PLUGIN_NAME 的一致性由 scripts/verify_plugin.py 自动校验。
+    plugin_name = "豆瓣演员订阅"
     plugin_desc = (
         "订阅豆瓣演员，自动抓取其最新影视作品并展示在面板中，"
         "支持一键提交到 MoviePilot 订阅系统，也可按评分/类型阈值自动订阅新作品。"
@@ -199,7 +238,7 @@ class DoubanActorSubscribe(_PluginBase):
     _enabled: bool = False
     _cron: str = "0 8 * * *"
     _actor_entries: List[str] = []
-    _max_works: int = 20
+    _max_works: int = 10
     _sort_by: str = "time"
     _proxy: bool = False
     _notify: bool = False
@@ -232,7 +271,8 @@ class DoubanActorSubscribe(_PluginBase):
         self._enabled = bool(cfg.get("enabled"))
         self._cron = str(cfg.get("cron") or "0 8 * * *").strip()
         self._actor_entries = self._parse_actors(cfg.get("actors"))
-        self._max_works = self._clamp_int(cfg.get("max_works"), 20, 5, 200)
+        # 上限 10：豆瓣作品集接口不支持翻页，取再多也拿不到
+        self._max_works = self._clamp_int(cfg.get("max_works"), 10, 5, 10)
         self._sort_by = str(cfg.get("sort_by") or "time").strip() or "time"
         self._proxy = bool(cfg.get("proxy"))
         self._notify = bool(cfg.get("notify"))
@@ -583,7 +623,8 @@ class DoubanActorSubscribe(_PluginBase):
                 actor["error"] = "未找到该演员的豆瓣影视作品集"
             return actor, []
 
-        fetch_count = min(max(self._max_works * 2, 20), 100)
+        # 豆瓣作品集接口不支持翻页，每位演员最多取到 10 部
+        fetch_count = min(self._max_works, _DoubanClient.MAX_WORKS_PER_REQUEST)
         raw_works = client.person_works(
             collection_id, start=0, count=fetch_count, sort_by=self._sort_by
         )
@@ -635,7 +676,7 @@ class DoubanActorSubscribe(_PluginBase):
         return {
             "key": key,
             "id": str(matched.get("id") or ""),
-            "name": str(matched.get("name") or key),
+            "name": _clean_text(matched.get("name")) or key,
             "avatar": matched.get("avatar"),
             "resolved_from": "search",
             "error": None,
@@ -650,9 +691,9 @@ class DoubanActorSubscribe(_PluginBase):
         return {
             "key": key,
             "id": str(detail.get("id") or actor_id),
-            "name": str(detail.get("title") or key),
+            "name": _clean_text(detail.get("title")) or key,
             "avatar": avatar or None,
-            "biography": str(extra.get("short_info") or "").strip()[:200],
+            "biography": _clean_text(extra.get("short_info"))[:200],
             "error": None,
         }
 
@@ -670,11 +711,15 @@ class DoubanActorSubscribe(_PluginBase):
                 collections.append(payload)
         if not collections:
             return None
+        # 标题实测为「作品集」，旧版可能是「影视」，两种都优先匹配
         preferred = next(
             (
                 item
                 for item in collections
-                if "影视" in str(item.get("title") or item.get("name") or "")
+                if any(
+                    keyword in str(item.get("title") or item.get("name") or "")
+                    for keyword in ("影视", "作品集")
+                )
             ),
             None,
         )
@@ -682,29 +727,33 @@ class DoubanActorSubscribe(_PluginBase):
 
     @classmethod
     def _normalize_work(cls, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """把豆瓣作品条目归一化为前端可直接渲染的结构。"""
+        """把豆瓣作品条目归一化为前端可直接渲染的结构。
+
+        豆瓣作品集接口返回的条目形如 ``{"roles": [...], "subject": {...}}``，
+        其中的字段位置容易踩坑：
+
+        * ``subject.type`` 恒为 ``"subject"``（实体种类），真正的媒体类型在 ``subject.subtype``；
+        * 年份在 ``subject.extra.year``，顶层没有 ``year``；
+        * 评分在 ``subject.extra.rating_group.rating.value``（无评分时 rating 为 null）；
+        * 简介在 ``subject.extra.short_info``。
+        """
         if not isinstance(raw, dict):
             return None
         subject = raw.get("subject") if isinstance(raw.get("subject"), dict) else raw
         media_id = str(subject.get("id") or "").strip()
-        title = str(subject.get("title") or "").strip()
+        title = _clean_text(subject.get("title"))
         if not media_id.isdigit() or not title:
             return None
 
-        raw_type = str(
-            subject.get("type") or subject.get("subtype") or subject.get("type_name") or ""
-        ).strip()
-        mtype = _TYPE_ALIASES.get(raw_type.lower(), "") or _TYPE_ALIASES.get(raw_type, "")
+        extra = subject.get("extra") if isinstance(subject.get("extra"), dict) else {}
 
-        rating = subject.get("rating") if isinstance(subject.get("rating"), dict) else {}
-        try:
-            vote = (
-                round(float(rating.get("value")), 1)
-                if rating.get("value") not in (None, "")
-                else 0.0
-            )
-        except (TypeError, ValueError):
-            vote = 0.0
+        # subtype 才是媒体类型；type 只在没有 subtype 时兜底，且要排除 "subject" 这个占位值
+        raw_type = _clean_text(
+            subject.get("subtype") or subject.get("type_name") or subject.get("type")
+        )
+        if raw_type.lower() == "subject":
+            raw_type = ""
+        mtype = _TYPE_ALIASES.get(raw_type.lower(), "") or _TYPE_ALIASES.get(raw_type, "")
 
         pic = subject.get("pic") if isinstance(subject.get("pic"), dict) else {}
         cover = subject.get("cover") if isinstance(subject.get("cover"), dict) else {}
@@ -716,21 +765,38 @@ class DoubanActorSubscribe(_PluginBase):
             or subject.get("cover_url")
             or ""
         )
+        if isinstance(poster, dict):
+            poster = poster.get("url") or ""
 
         return {
             "media_source": MediaSource.Douban.value,
             "media_id": media_id,
             "title": title,
-            "year": str(subject.get("year") or "").strip(),
+            "year": _clean_text(subject.get("year") or extra.get("year")),
             "type": mtype,
             "raw_type": raw_type,
             "subscribable": mtype in _SUBSCRIBABLE_TYPES,
-            "vote": vote,
+            "vote": cls._extract_vote(subject, extra),
             "poster": str(poster),
-            "subtitle": str(subject.get("card_subtitle") or "").strip(),
+            "subtitle": _clean_text(subject.get("card_subtitle") or extra.get("short_info")),
             "url": f"https://movie.douban.com/subject/{media_id}/",
             "roles": cls._extract_roles(raw.get("roles")),
         }
+
+    @staticmethod
+    def _extract_vote(subject: Dict[str, Any], extra: Dict[str, Any]) -> float:
+        """从作品条目中取评分；兼容顶层 rating 与 extra.rating_group.rating 两种布局。"""
+        value: Any = None
+        rating = subject.get("rating") if isinstance(subject.get("rating"), dict) else {}
+        value = rating.get("value")
+        if value in (None, ""):
+            group = extra.get("rating_group") if isinstance(extra.get("rating_group"), dict) else {}
+            inner = group.get("rating") if isinstance(group.get("rating"), dict) else {}
+            value = inner.get("value")
+        try:
+            return round(float(value), 1) if value not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def _extract_roles(value: Any) -> List[str]:
@@ -982,7 +1048,7 @@ class DoubanActorSubscribe(_PluginBase):
         merged["sort_by"] = str(merged.get("sort_by") or "time").strip() or "time"
         merged["auto_types"] = str(merged.get("auto_types") or "").strip()
         merged["auto_min_vote"] = self._to_float(merged.get("auto_min_vote"), 0.0)
-        merged["max_works"] = self._clamp_int(merged.get("max_works"), 20, 5, 200)
+        merged["max_works"] = self._clamp_int(merged.get("max_works"), 10, 5, 10)
         merged["auto_max_per_run"] = self._clamp_int(merged.get("auto_max_per_run"), 5, 1, 100)
         # run_count 属于运行时统计，不落盘
         merged.pop("run_count", None)
@@ -1083,7 +1149,7 @@ class DoubanActorSubscribe(_PluginBase):
             "enabled": False,
             "cron": "0 8 * * *",
             "actors": "",
-            "max_works": 20,
+            "max_works": 10,
             "sort_by": "time",
             "proxy": False,
             "notify": False,

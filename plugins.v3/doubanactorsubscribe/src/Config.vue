@@ -114,8 +114,10 @@
             v-model.number="local.max_works"
             type="number"
             min="5"
-            max="200"
+            max="10"
             label="每位演员展示作品数"
+            hint="豆瓣作品集接口不支持翻页，最多只能取到 10 部"
+            persistent-hint
             density="comfortable"
           />
         </v-col>
@@ -239,7 +241,7 @@ const defaults: PluginConfig = {
   enabled: false,
   cron: '0 8 * * *',
   actors: '',
-  max_works: 20,
+  max_works: 10,
   sort_by: 'time',
   proxy: false,
   notify: false,
@@ -263,9 +265,8 @@ const cronPresets = [
 ]
 
 const sortOptions = [
-  { label: '按时间（最新）', value: 'time' },
-  { label: '按评分', value: 'vote' },
-  { label: '豆瓣默认', value: 'collection' },
+  { label: '按时间（最新作品优先）', value: 'time' },
+  { label: '豆瓣默认（最受关注优先）', value: 'collection' },
 ]
 
 /** 预设与自定义 cron 的双向绑定 */

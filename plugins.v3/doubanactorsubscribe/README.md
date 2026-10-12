@@ -25,8 +25,8 @@
 | --- | --- | --- | --- |
 | `enabled` | bool | `false` | 启用插件 |
 | `actors` | str | 空 | 演员列表，一行一个，支持名称或豆瓣人物 ID（也支持逗号/分号分隔） |
-| `max_works` | int | `20` | 每位演员保留的作品条数（5–200） |
-| `sort_by` | str | `time` | 豆瓣侧排序：`time` 按时间 / `vote` 按评分 / 默认 |
+| `max_works` | int | `10` | 每位演员保留的作品条数（5–10）。上限 10 是豆瓣接口限制，不是插件限制 |
+| `sort_by` | str | `time` | 豆瓣侧排序：`time` 按时间（最新作品优先）/ `collection` 豆瓣默认；其余取值回退 `time` |
 | `cron` | str | `0 8 * * *` | 刷新周期（cron 表达式） |
 | `proxy` | bool | `false` | 走宿主配置的代理访问豆瓣 |
 | `notify` | bool | `false` | 刷新完成后发送通知 |
@@ -103,6 +103,22 @@ node node_modules/vite/bin/vite.js build
   与官方插件（`doubanrank` / `bangumicoll` / `maoyanrank` 等）一致；写入前用 `chain.exists(meta=meta)` 去重。
 - **`is_new` 语义**：`first_seen` 从上一份快照继承，因此**首次刷新某演员时全部作品都是「新」**
   （面板会显示「新」徽标）；开启 `auto_only_new` 时首次刷新只建立基线，不会批量订阅历史作品。
+
+## 豆瓣 Frodo 接口适配要点
+
+实测（2026-10）豆瓣移动端接口的几个易错点，已在代码中处理：
+
+| 事项 | 结论 |
+| --- | --- |
+| 签名路径 | `_sig` 必须覆盖**完整路径**（含 `/api/v2` 前缀）。只签相对路径会稳定返回 `400 Bad Request` |
+| 媒体类型 | 作品条目里 `subject.type` 恒为 `"subject"`（实体种类），真实类型在 `subject.subtype`（`movie` / `tv`） |
+| 年份 | 顶层无 `year`，位置是 `subject.extra.year` |
+| 评分 | 位置是 `subject.extra.rating_group.rating.value`，无评分时为 `null`（需降级为 0） |
+| 简介 | `subject.extra.short_info`，形如 `2026 / 中国大陆 / 犯罪 / 陈思诚 / 张译 马丽` |
+| 分页 | `/elessar/work_collections/{id}/works` 单次最多 **10 条**，且 `start > 0` 恒返回 `{"total": 0, "works": []}` —— 即**不支持翻页**，每位演员只能取到最近 10 部 |
+| 排序 | `sortby` 仅 `time` / `collection` 有效，`vote` 会返回**空数组**，已做白名单兜底 |
+| 人物搜索 | `/search/subjects?type=person&q=` → `items[].target.{id,title,cover_img}` |
+| 作品集 ID | 人物详情 `modules[].type == "work_collections"` → `payload.id`（标题实测为「作品集」） |
 
 ## 兼容性
 

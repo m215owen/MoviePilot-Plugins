@@ -33,7 +33,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       enabled: false,
       cron: "0 8 * * *",
       actors: "",
-      max_works: 20,
+      max_works: 10,
       sort_by: "time",
       proxy: false,
       notify: false,
@@ -53,9 +53,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       { label: "每周一 08:00", value: "0 8 * * 1" }
     ];
     const sortOptions = [
-      { label: "按时间（最新）", value: "time" },
-      { label: "按评分", value: "vote" },
-      { label: "豆瓣默认", value: "collection" }
+      { label: "按时间（最新作品优先）", value: "time" },
+      { label: "豆瓣默认（最受关注优先）", value: "collection" }
     ];
     const cronPreset = computed({
       get: () => cronPresets.some((item) => item.value === local.cron) ? local.cron : "",
@@ -349,8 +348,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       modelModifiers: { number: true },
                       type: "number",
                       min: "5",
-                      max: "200",
+                      max: "10",
                       label: "每位演员展示作品数",
+                      hint: "豆瓣作品集接口不支持翻页，最多只能取到 10 部",
+                      "persistent-hint": "",
                       density: "comfortable"
                     }, null, 8, ["modelValue"])
                   ]),
@@ -550,6 +551,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-a8f08b95"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-7ca3ad16"]]);
 
 export { Config as default };
