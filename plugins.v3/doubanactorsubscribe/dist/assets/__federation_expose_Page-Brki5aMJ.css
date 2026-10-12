@@ -1,0 +1,18 @@
+
+/* 仅使用 scoped 样式；不要编写会全局生效的选择器（组件库类名、html、body、:root） */
+.das-page[data-v-b6b841d1] {
+  max-width: 100%;
+}
+.das-dim[data-v-b6b841d1] {
+  opacity: 0.75;
+}
+.das-actor-name[data-v-b6b841d1] {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.das-search[data-v-b6b841d1] {
+  max-width: 220px;
+}
+.das-checkbox[data-v-b6b841d1] {
+  max-width: 140px;
+}

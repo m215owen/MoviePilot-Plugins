@@ -1,0 +1,249 @@
+<template>
+  <div class="das-root das-dash">
+    <v-hover>
+      <template #default="{ isHovering, props: hoverProps }">
+        <v-card v-bind="hoverProps" variant="flat" class="das-dash-card">
+          <v-card-title class="d-flex align-center">
+            <v-icon icon="mdi-account-star-outline" size="20" class="mr-2" />
+            <span class="text-body-1">豆瓣演员订阅</span>
+            <v-spacer />
+            <v-btn
+              v-if="allowRefresh"
+              icon="mdi-refresh"
+              variant="text"
+              size="x-small"
+              :loading="refreshing"
+              @click="refresh"
+            />
+          </v-card-title>
+
+          <v-card-text>
+            <div v-if="!enabled" class="text-medium-emphasis text-body-2">
+              插件未启用或尚未配置演员。
+            </div>
+            <template v-else>
+              <div class="d-flex align-center mb-2" style="gap: 12px">
+                <span class="text-caption">演员 <b>{{ stats.actor_count }}</b></span>
+                <span class="text-caption">作品 <b>{{ stats.work_count }}</b></span>
+                <span class="text-caption">
+                  新作品 <b class="das-new">{{ stats.new_count }}</b>
+                </span>
+              </div>
+
+              <div v-if="!latest.length" class="text-caption text-medium-emphasis">
+                暂无作品数据，点击右上角刷新。
+              </div>
+              <div
+                v-for="item in latest"
+                :key="workKey(item.work)"
+                class="d-flex align-center py-1"
+              >
+                <span class="das-dot" :class="item.work.is_new ? 'das-dot-new' : ''" />
+                <span class="das-name" :title="item.work.title">{{ item.work.title }}</span>
+                <span class="text-caption das-dim ml-2">{{ item.work.year || '—' }}</span>
+                <v-spacer />
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  :icon="isSubscribed(item.work) ? 'mdi-check' : 'mdi-plus'"
+                  :color="isSubscribed(item.work) ? 'success' : 'primary'"
+                  :loading="pendingKey === workKey(item.work)"
+                  :title="isSubscribed(item.work) ? '已订阅' : '订阅'"
+                  @click="subscribe(item.work)"
+                />
+              </div>
+
+              <div class="text-caption das-dim mt-2">
+                {{ item0.actor }} 等 {{ stats.actor_count }} 位演员｜{{ formatTime(stats.updated_at) }}
+              </div>
+            </template>
+          </v-card-text>
+
+          <!-- 悬停时显示拖拽提示，与其他仪表板组件保持一致 -->
+          <div v-show="isHovering" class="das-drag-hint">
+            <v-icon icon="mdi-drag" size="18" />
+          </div>
+        </v-card>
+      </template>
+    </v-hover>
+  </div>
+</template>
+
+<script setup lang="ts">
+/**
+ * 仪表板小组件（联邦暴露名 ./Dashboard）。
+ *
+ * 由宿主在仪表板中挂载；Vue 模式下后端 get_dashboard() 只提供卡片元信息，
+ * 内容由本组件渲染。这里聚焦「新作品 + 一键订阅」这一最常用动作。
+ */
+import { computed, inject, onMounted, ref } from 'vue'
+import { API_BASE, PLUGIN_ID, fetchSubscribedKeys, formatTime, resolveApi, submitSubscribe, unwrap, workKey } from './api'
+import type { ActorWork, ApiResult, PluginApi, PluginConfig, WorksPayload } from './types'
+
+interface HostToast {
+  success(message: string): unknown
+  info(message: string): unknown
+  warning(message: string): unknown
+  error(message: string): unknown
+}
+
+const props = defineProps<{
+  /** 插件配置 */
+  config?: Partial<PluginConfig>
+  /** 是否显示刷新按钮 */
+  allowRefresh?: boolean
+  /** 宿主注入的 axios 实例 */
+  api?: PluginApi
+  /** 当前插件实例 ID */
+  pluginId?: string
+}>()
+
+const toast = inject<HostToast | null>('moviepilot:toast', null)
+
+const LIMIT = 4
+
+const loading = ref(false)
+const refreshing = ref(false)
+const pendingKey = ref('')
+const payload = ref<WorksPayload | null>(null)
+const subscribedKeys = ref<string[]>([])
+
+const enabled = computed(() => payload.value?.enabled ?? props.config?.enabled !== false)
+
+const stats = computed(() => ({
+  actor_count: payload.value?.actor_count ?? 0,
+  work_count: payload.value?.work_count ?? 0,
+  new_count: payload.value?.new_count ?? 0,
+  updated_at: payload.value?.updated_at || '',
+}))
+
+/** 展平后的作品：新作品优先，其次按年份倒序 */
+const flattened = computed(() => {
+  const rows: { actor: string; work: ActorWork }[] = []
+  for (const actor of payload.value?.actors || []) {
+    for (const work of actor.works || []) {
+      rows.push({ actor: actor.name, work })
+    }
+  }
+  return rows.sort((a, b) => {
+    const flag = Number(Boolean(b.work.is_new)) - Number(Boolean(a.work.is_new))
+    if (flag) return flag
+    return (Number(b.work.year) || 0) - (Number(a.work.year) || 0)
+  })
+})
+
+const latest = computed(() => flattened.value.slice(0, LIMIT))
+const item0 = computed(() => ({ actor: latest.value[0]?.actor || '未配置演员' }))
+
+function isSubscribed(work: ActorWork): boolean {
+  return subscribedKeys.value.includes(workKey(work))
+}
+
+function notify(type: 'success' | 'error', message: string): void {
+  const handler = toast && (toast as unknown as Record<string, unknown>)[type]
+  if (typeof handler === 'function') {
+    ;(handler as (msg: string) => unknown).call(toast, message)
+    return
+  }
+  console.warn(`[${PLUGIN_ID}] ${message}`)
+}
+
+async function load(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  loading.value = true
+  try {
+    const raw = await api.get(`${API_BASE}/works`)
+    const res = unwrap<ApiResult<WorksPayload>>(raw)
+    if (res?.success && res.data) payload.value = res.data
+    subscribedKeys.value = await fetchSubscribedKeys(api)
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 仪表板加载失败`, err)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refresh(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  refreshing.value = true
+  try {
+    const raw = await api.post(`${API_BASE}/run`)
+    const res = unwrap<ApiResult<WorksPayload>>(raw)
+    if (res?.data) payload.value = res.data
+    subscribedKeys.value = await fetchSubscribedKeys(api)
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 仪表板刷新失败`, err)
+  } finally {
+    refreshing.value = false
+  }
+}
+
+async function subscribe(work: ActorWork): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  const key = workKey(work)
+  pendingKey.value = key
+  try {
+    const res = await submitSubscribe(api, work)
+    if (res.ok) {
+      if (!subscribedKeys.value.includes(key)) subscribedKeys.value.push(key)
+      notify('success', res.message)
+    } else {
+      notify('error', `${work.title} 订阅失败：${res.message}`)
+    }
+  } finally {
+    pendingKey.value = ''
+  }
+}
+
+onMounted(load)
+</script>
+
+<style scoped>
+/* 为绝对定位的拖拽提示提供定位上下文；不要编写全局生效的选择器 */
+.das-root {
+  position: relative;
+}
+
+.das-dash-card {
+  height: 100%;
+}
+
+.das-drag-hint {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  opacity: 0.6;
+  cursor: move;
+}
+
+.das-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: rgba(128, 128, 128, 0.5);
+  margin-right: 8px;
+  flex: 0 0 auto;
+}
+
+.das-dot-new {
+  background-color: rgb(var(--v-theme-error, 244 67 54));
+}
+
+.das-name {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.das-dim {
+  opacity: 0.7;
+}
+
+.das-new {
+  color: rgb(var(--v-theme-error, 244 67 54));
+}
+</style>

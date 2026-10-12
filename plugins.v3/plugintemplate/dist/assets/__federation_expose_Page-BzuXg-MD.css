@@ -1,5 +1,0 @@
-
-/* 仅使用 scoped 样式；不要编写会全局生效的选择器（Vuetify 组件类名、html、body、:root） */
-.pt-page[data-v-0ae43bfb] {
-  max-width: 100%;
-}

@@ -1,0 +1,81 @@
+
+/* 仅使用 scoped 样式；不要编写会全局生效的选择器（组件库类名、html、body、:root） */
+.das-grid[data-v-17a16a7c] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(134px, 1fr));
+  gap: 12px;
+}
+.das-card[data-v-17a16a7c] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.das-poster[data-v-17a16a7c] {
+  position: relative;
+  background-color: rgba(128, 128, 128, 0.08);
+}
+.das-poster-img[data-v-17a16a7c] {
+  width: 100%;
+}
+.das-poster-ph[data-v-17a16a7c] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  opacity: 0.45;
+}
+.das-badge[data-v-17a16a7c] {
+  position: absolute;
+  top: 6px;
+}
+.das-badge-left[data-v-17a16a7c] {
+  left: 6px;
+}
+.das-badge-right[data-v-17a16a7c] {
+  right: 6px;
+}
+.das-body[data-v-17a16a7c] {
+  flex: 1 1 auto;
+}
+.das-title[data-v-17a16a7c] {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.25;
+  min-height: 2.5em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.das-meta[data-v-17a16a7c] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.das-dim[data-v-17a16a7c] {
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+.das-vote[data-v-17a16a7c] {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.das-roles[data-v-17a16a7c] {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.das-actions[data-v-17a16a7c] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.das-sub-btn[data-v-17a16a7c] {
+  flex: 1 1 auto;
+}

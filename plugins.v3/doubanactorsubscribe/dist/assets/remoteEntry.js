@@ -2,20 +2,20 @@ const currentImports = {};
       const exportSet = new Set(['Module', '__esModule', 'default', '_export_sfc']);
       let moduleMap = {
 "./Page":()=>{
-      dynamicLoadingCss(["__federation_expose_Page-BzuXg-MD.css"], false, './Page');
-      return __federation_import('./__federation_expose_Page-rN2K5OvG.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_Page-Brki5aMJ.css","WorkGrid-BvrhSmaz.css"], false, './Page');
+      return __federation_import('./__federation_expose_Page-DJivhqgJ.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Config":()=>{
-      dynamicLoadingCss(["__federation_expose_Config-CAfOWZ2j.css"], false, './Config');
-      return __federation_import('./__federation_expose_Config-BS1bfiKG.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_Config-CvAqX3-u.css"], false, './Config');
+      return __federation_import('./__federation_expose_Config-c0RxInML.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Dashboard":()=>{
-      dynamicLoadingCss(["__federation_expose_Dashboard-BqyGGISE.css"], false, './Dashboard');
-      return __federation_import('./__federation_expose_Dashboard-cI3b7YkT.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_Dashboard-C_sFHL_5.css"], false, './Dashboard');
+      return __federation_import('./__federation_expose_Dashboard-D3ckrRXu.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./AppPage":()=>{
-      dynamicLoadingCss(["__federation_expose_AppPage-CY0VRt9V.css"], false, './AppPage');
-      return __federation_import('./__federation_expose_AppPage-Dn5VYfiA.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_AppPage-BtzA1tA5.css","WorkGrid-BvrhSmaz.css"], false, './AppPage');
+      return __federation_import('./__federation_expose_AppPage-DHw_WdO7.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./AppPageSettings":()=>{
-      dynamicLoadingCss(["__federation_expose_AppPageSettings-DHbbba3W.css"], false, './AppPageSettings');
-      return __federation_import('./__federation_expose_AppPageSettings-BN_Vop-l.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
+      dynamicLoadingCss(["__federation_expose_AppPageSettings-BWZwg2eB.css"], false, './AppPageSettings');
+      return __federation_import('./__federation_expose_AppPageSettings-CQJfD044.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
       const seen = {};
       const dynamicLoadingCss = (cssFilePaths, dontAppendStylesToHead, exposeItemName) => {
         const metaUrl = import.meta.url;
@@ -56,7 +56,7 @@ const currentImports = {};
          }
          
           if (dontAppendStylesToHead) {
-            const key = 'css__PluginTemplate__' + exposeItemName;
+            const key = 'css__DoubanActorSubscribe__' + exposeItemName;
             window[key] = window[key] || [];
             window[key].push(href);
             return;
