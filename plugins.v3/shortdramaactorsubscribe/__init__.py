@@ -1312,8 +1312,8 @@ class ShortDramaActorSubscribe(_PluginBase):
     plugin_name = "短剧演员订阅"
     plugin_desc = (
         "跟着喜欢的演员追短剧：合并 TMDB 与豆瓣的演员作品列表，用剧名直接在站点搜索并按"
-        "「做种数→体积→分辨率」择优下载，自带账本去重与整理入库；全程不依赖宿主识别器，"
-        "因此长尾短剧也能追。"
+        "「做种数→体积→分辨率」择优下载，凭账本去重、全程不依赖宿主识别器，长尾短剧也能追；"
+        "入库交给外部整理器（需要时可在插件内开启自带整理）。"
     )
     plugin_icon = (
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
@@ -1337,7 +1337,10 @@ class ShortDramaActorSubscribe(_PluginBase):
     _library_path = ""
     _transfer_type = "link"
     _interval_hours = 6
-    _organize_enabled = True
+    # ⚠️ 整理入库默认**关闭**：用户已另配外部整理器（shortdramaorganizer）监听同一个
+    # 下载目录并按文件事件入库，两个整理器同时工作会重复入库。本插件只负责「发现 → 下载」，
+    # 入库交给外部整理器；需要本插件自己整理时再把开关打开（代码与验收用例都保留）。
+    _organize_enabled = False
     _organize_interval_minutes = 30
     _notify = True
     _douban_cookie = ""
@@ -1372,7 +1375,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._library_path = config_text(config.get("library_path"))
         self._transfer_type = config_text(config.get("transfer_type")) or "link"
         self._interval_hours = max(1, _to_int(config.get("interval_hours")) or 6)
-        self._organize_enabled = bool(config.get("organize_enabled", True))
+        self._organize_enabled = bool(config.get("organize_enabled", False))
         self._organize_interval_minutes = max(5, _to_int(config.get("organize_interval_minutes")) or 30)
         self._notify = bool(config.get("notify", True))
         self._douban_cookie = str(config.get("douban_cookie") or "").strip()
@@ -1458,7 +1461,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "library_path": "",
             "transfer_type": "link",
             "interval_hours": 6,
-            "organize_enabled": True,
+            "organize_enabled": False,
             "organize_interval_minutes": 30,
             "notify": True,
             "douban_cookie": "",
@@ -1552,7 +1555,10 @@ class ShortDramaActorSubscribe(_PluginBase):
     # ── 后台能力 ──
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """注册两个定时服务：订阅轮询与整理扫描。
+        """注册定时服务：订阅轮询；整理扫描仅在「启用整理入库」时注册。
+
+        整理默认关闭（入库交给外部整理器），此时**不注册**整理服务 ——
+        既不会空转，也不会在日志里留下无意义的扫描记录。
 
         ⚠️ 传给被调函数的参数必须写在 ``func_kwargs`` 里。宿主注册时会把
         ``service["kwargs"]`` **原样展开给** ``scheduler.add_job()``，而 ``trigger``
@@ -1738,7 +1744,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         merged["proxy"] = bool(merged.get("proxy"))
         merged["sidebar_nav"] = bool(merged.get("sidebar_nav", True))
         merged["prefer_short_drama_category"] = bool(merged.get("prefer_short_drama_category", True))
-        merged["organize_enabled"] = bool(merged.get("organize_enabled", True))
+        merged["organize_enabled"] = bool(merged.get("organize_enabled", False))
         merged["actors"] = str(merged.get("actors") or "").strip()
         merged["sites"] = [
             _to_int(item) for item in (merged.get("sites") or []) if str(item).strip().lstrip("-").isdigit()
@@ -1762,13 +1768,24 @@ class ShortDramaActorSubscribe(_PluginBase):
         return {"success": True, "message": "", "data": self._options_payload()}
 
     def api_organize(self) -> Dict[str, Any]:
-        """立即整理一次（整理条目通常很少，允许同步执行）。"""
+        """立即整理一次（整理条目通常很少，允许同步执行）。
+
+        整理默认关闭（入库交给外部整理器），因此这里显式给出可读原因，
+        而不是让它走到 ``organize_once`` 里静默返回 False。
+        """
         if not self.get_state():
             return {"success": False, "message": "插件未启用", "data": None}
+        if not self._organize_enabled:
+            return {
+                "success": False,
+                "message": "整理入库已关闭（本插件只负责下载，入库交给外部整理器）；"
+                           "如确需本插件整理，请先在配置页打开「启用整理入库」",
+                "data": None,
+            }
         ok = self.organize_once(trigger="api")
         return {
             "success": ok,
-            "message": "已执行整理扫描" if ok else "整理未执行（需启用整理、配置目录且账本非空）",
+            "message": "已执行整理扫描" if ok else "整理未执行（需配置下载目录与媒体库目录，且账本非空）",
             "data": None,
         }
 

@@ -296,44 +296,52 @@ const _hoisted_17 = {
 };
 const _hoisted_18 = { class: "d-flex align-center flex-wrap mt-2 sdas-toolbar" };
 const _hoisted_19 = { class: "text-caption sdas-dim sdas-count" };
-const _hoisted_20 = { class: "px-3 pb-3" };
+const _hoisted_20 = {
+  key: 0,
+  class: "text-caption sdas-dim"
+};
 const _hoisted_21 = {
+  key: 1,
+  class: "text-caption sdas-dim"
+};
+const _hoisted_22 = { class: "px-3 pb-3" };
+const _hoisted_23 = {
   key: 1,
   class: "d-flex align-center justify-center mt-3 ga-2"
 };
-const _hoisted_22 = { class: "sdas-page-info" };
-const _hoisted_23 = {
+const _hoisted_24 = { class: "sdas-page-info" };
+const _hoisted_25 = {
   class: "d-flex align-center pa-3 pb-1 flex-wrap",
   style: { "gap": "8px" }
 };
-const _hoisted_24 = { class: "text-subtitle-2" };
-const _hoisted_25 = ["title"];
-const _hoisted_26 = { class: "text-caption" };
-const _hoisted_27 = { class: "text-caption" };
+const _hoisted_26 = { class: "text-subtitle-2" };
+const _hoisted_27 = ["title"];
 const _hoisted_28 = { class: "text-caption" };
 const _hoisted_29 = { class: "text-caption" };
-const _hoisted_30 = {
+const _hoisted_30 = { class: "text-caption" };
+const _hoisted_31 = { class: "text-caption" };
+const _hoisted_32 = {
   key: 0,
   class: "text-caption sdas-dim ml-1",
   title: "同剧命中多个资源，已择优"
 };
-const _hoisted_31 = { class: "text-end text-no-wrap" };
-const _hoisted_32 = { key: 0 };
-const _hoisted_33 = {
+const _hoisted_33 = { class: "text-end text-no-wrap" };
+const _hoisted_34 = { key: 0 };
+const _hoisted_35 = {
   colspan: "7",
   class: "text-center text-caption sdas-dim py-3"
 };
-const _hoisted_34 = { class: "d-flex align-center pa-3 pb-1" };
-const _hoisted_35 = { class: "text-subtitle-2" };
-const _hoisted_36 = { class: "px-3 pb-3" };
-const _hoisted_37 = {
+const _hoisted_36 = { class: "d-flex align-center pa-3 pb-1" };
+const _hoisted_37 = { class: "text-subtitle-2" };
+const _hoisted_38 = { class: "px-3 pb-3" };
+const _hoisted_39 = {
   class: "d-flex flex-wrap",
   style: { "gap": "6px" }
 };
-const _hoisted_38 = { class: "sdas-dim ml-1" };
-const _hoisted_39 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_40 = { class: "d-flex" };
-const _hoisted_41 = { class: "d-flex" };
+const _hoisted_40 = { class: "sdas-dim ml-1" };
+const _hoisted_41 = { class: "text-subtitle-2 mb-2" };
+const _hoisted_42 = { class: "d-flex" };
+const _hoisted_43 = { class: "d-flex" };
 const {computed,onMounted,ref,watch} = await importShared('vue');
 const WORK_PAGE_SIZE = 20;
 const ALL_ACTORS = "all";
@@ -478,10 +486,14 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       if (source === "cookiecloud") return "宿主 CookieCloud（自动读取）";
       return "未取到（豆瓣匿名搜索额度极低）";
     }
+    const organizeEnabled = computed(() => {
+      const cfg = { ...props.config || {}, ...remoteConfig.value };
+      return cfg.organize_enabled === true;
+    });
     const configRows = computed(() => {
       const config = { ...props.config || {}, ...remoteConfig.value };
       const sites = config.sites || [];
-      return [
+      const rows = [
         {
           label: "搜索站点",
           value: sites.length ? sites.map((id) => siteName(Number(id))).join("，") : "未配置（无法搜索）"
@@ -491,18 +503,25 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           value: config.prefer_short_drama_category === false ? "全站搜索" : "优先站点「短剧」分类"
         },
         { label: "下载器", value: String(config.downloader || "跟随宿主默认") },
-        { label: "下载目录", value: String(config.download_path || "未配置") },
-        { label: "媒体库目录", value: String(config.library_path || "未配置") },
-        {
-          label: "整理方式",
-          value: `${transferLabel(config.transfer_type)}${config.organize_enabled === false ? "（整理已关闭）" : ""}`
-        },
-        {
-          label: "运行间隔",
-          value: `${config.interval_hours || 6} 小时轮询 / ${config.organize_interval_minutes || 30} 分钟整理`
-        },
-        { label: "豆瓣登录态", value: cookieLabel(config.douban_cookie_source) }
+        { label: "下载目录", value: String(config.download_path || "未配置") }
       ];
+      if (organizeEnabled.value) {
+        rows.push(
+          { label: "媒体库目录", value: String(config.library_path || "未配置") },
+          { label: "整理方式", value: transferLabel(config.transfer_type) },
+          {
+            label: "运行间隔",
+            value: `${config.interval_hours || 6} 小时轮询 / ${config.organize_interval_minutes || 30} 分钟整理`
+          }
+        );
+      } else {
+        rows.push(
+          { label: "整理", value: "由外部整理器负责（本插件不参与）" },
+          { label: "运行间隔", value: `${config.interval_hours || 6} 小时轮询` }
+        );
+      }
+      rows.push({ label: "豆瓣登录态", value: cookieLabel(config.douban_cookie_source) });
+      return rows;
     });
     const visibleLedger = computed(() => {
       const text = keyword.value.trim().toLowerCase();
@@ -754,7 +773,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             loading: loading.value,
             onClick: _cache[1] || (_cache[1] = ($event) => load(false))
           }, null, 8, ["loading"]),
-          isMain.value ? (_openBlock(), _createBlock(_component_v_btn, {
+          isMain.value && organizeEnabled.value ? (_openBlock(), _createBlock(_component_v_btn, {
             key: 3,
             size: "small",
             variant: "tonal",
@@ -1090,11 +1109,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             }, {
               default: _withCtx(() => [
                 _createTextVNode(_toDisplayString(workMessage.value) + " ", 1),
-                _cache[27] || (_cache[27] = _createElementVNode("div", { class: "text-caption sdas-dim" }, "下载完成后由「整理入库」搬到媒体库，可在下方账本查看。", -1))
+                organizeEnabled.value ? (_openBlock(), _createElementBlock("div", _hoisted_20, " 下载完成后由「整理入库」搬到媒体库，可在下方账本查看。 ")) : (_openBlock(), _createElementBlock("div", _hoisted_21, " 下载完成后由外部整理器入库（本插件不参与整理），可在下方账本查看。 "))
               ]),
               _: 1
             })) : _createCommentVNode("", true),
-            _createElementVNode("div", _hoisted_20, [
+            _createElementVNode("div", _hoisted_22, [
               works.value.running || refreshingWorks.value ? (_openBlock(), _createBlock(_component_v_progress_linear, {
                 key: 0,
                 indeterminate: "",
@@ -1108,7 +1127,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 "empty-text": worksEmptyHint.value,
                 onSubscribe: doSubscribe
               }, null, 8, ["works", "pending-key", "sites", "empty-text"]),
-              workPageCount.value > 1 ? (_openBlock(), _createElementBlock("div", _hoisted_21, [
+              workPageCount.value > 1 ? (_openBlock(), _createElementBlock("div", _hoisted_23, [
                 _createVNode(_component_v_btn, {
                   size: "small",
                   variant: "tonal",
@@ -1116,7 +1135,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   disabled: workPage.value <= 1,
                   onClick: _cache[6] || (_cache[6] = ($event) => workPage.value = Math.max(1, workPage.value - 1))
                 }, null, 8, ["disabled"]),
-                _createElementVNode("span", _hoisted_22, "第 " + _toDisplayString(workPage.value) + " / " + _toDisplayString(workPageCount.value) + " 页", 1),
+                _createElementVNode("span", _hoisted_24, "第 " + _toDisplayString(workPage.value) + " / " + _toDisplayString(workPageCount.value) + " 页", 1),
                 _createVNode(_component_v_btn, {
                   size: "small",
                   variant: "tonal",
@@ -1135,13 +1154,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           class: "mb-3"
         }, {
           default: _withCtx(() => [
-            _createElementVNode("div", _hoisted_23, [
+            _createElementVNode("div", _hoisted_25, [
               _createVNode(_component_v_icon, {
                 icon: "mdi-book-check-outline",
                 size: "18",
                 class: "mr-2"
               }),
-              _createElementVNode("span", _hoisted_24, "已下载账本（" + _toDisplayString(ledger.value.length) + "）", 1),
+              _createElementVNode("span", _hoisted_26, "已下载账本（" + _toDisplayString(ledger.value.length) + "）", 1),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_text_field, {
                 modelValue: keyword.value,
@@ -1160,7 +1179,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 disabled: !ledger.value.length,
                 onClick: _cache[9] || (_cache[9] = ($event) => confirmClear.value = true)
               }, {
-                default: _withCtx(() => [..._cache[28] || (_cache[28] = [
+                default: _withCtx(() => [..._cache[27] || (_cache[27] = [
                   _createTextVNode(" 清空账本 ", -1)
                 ])]),
                 _: 1
@@ -1172,7 +1191,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               class: "sdas-table"
             }, {
               default: _withCtx(() => [
-                _cache[29] || (_cache[29] = _createElementVNode("thead", null, [
+                _cache[28] || (_cache[28] = _createElementVNode("thead", null, [
                   _createElementVNode("tr", null, [
                     _createElementVNode("th", { class: "text-start" }, "剧名"),
                     _createElementVNode("th", { class: "text-start" }, "年份"),
@@ -1192,12 +1211,12 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         _createElementVNode("div", {
                           class: "sdas-title",
                           title: row.torrent_title || row.title
-                        }, _toDisplayString(row.title), 9, _hoisted_25)
+                        }, _toDisplayString(row.title), 9, _hoisted_27)
                       ]),
-                      _createElementVNode("td", _hoisted_26, _toDisplayString(row.year || "—"), 1),
-                      _createElementVNode("td", _hoisted_27, _toDisplayString(row.episodes ? `全${row.episodes}集` : "—"), 1),
-                      _createElementVNode("td", _hoisted_28, _toDisplayString(row.site_name || "—"), 1),
-                      _createElementVNode("td", _hoisted_29, _toDisplayString(row.actor || "—"), 1),
+                      _createElementVNode("td", _hoisted_28, _toDisplayString(row.year || "—"), 1),
+                      _createElementVNode("td", _hoisted_29, _toDisplayString(row.episodes ? `全${row.episodes}集` : "—"), 1),
+                      _createElementVNode("td", _hoisted_30, _toDisplayString(row.site_name || "—"), 1),
+                      _createElementVNode("td", _hoisted_31, _toDisplayString(row.actor || "—"), 1),
                       _createElementVNode("td", null, [
                         _createVNode(_component_v_chip, {
                           size: "x-small",
@@ -1210,9 +1229,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                           ]),
                           _: 2
                         }, 1032, ["color", "title"]),
-                        (row.alternatives || 0) > 1 ? (_openBlock(), _createElementBlock("span", _hoisted_30, _toDisplayString(row.alternatives) + " 选 1 ", 1)) : _createCommentVNode("", true)
+                        (row.alternatives || 0) > 1 ? (_openBlock(), _createElementBlock("span", _hoisted_32, _toDisplayString(row.alternatives) + " 选 1 ", 1)) : _createCommentVNode("", true)
                       ]),
-                      _createElementVNode("td", _hoisted_31, [
+                      _createElementVNode("td", _hoisted_33, [
                         _createVNode(_component_v_btn, {
                           size: "x-small",
                           variant: "text",
@@ -1233,8 +1252,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       ])
                     ]);
                   }), 128)),
-                  !visibleLedger.value.length ? (_openBlock(), _createElementBlock("tr", _hoisted_32, [
-                    _createElementVNode("td", _hoisted_33, _toDisplayString(ledger.value.length ? "没有匹配的记录" : "暂无记录，运行一轮后这里会出现已下载的剧"), 1)
+                  !visibleLedger.value.length ? (_openBlock(), _createElementBlock("tr", _hoisted_34, [
+                    _createElementVNode("td", _hoisted_35, _toDisplayString(ledger.value.length ? "没有匹配的记录" : "暂无记录，运行一轮后这里会出现已下载的剧"), 1)
                   ])) : _createCommentVNode("", true)
                 ])
               ]),
@@ -1249,27 +1268,27 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           class: "mb-3"
         }, {
           default: _withCtx(() => [
-            _createElementVNode("div", _hoisted_34, [
+            _createElementVNode("div", _hoisted_36, [
               _createVNode(_component_v_icon, {
                 icon: "mdi-timer-sand",
                 size: "18",
                 class: "mr-2"
               }),
-              _createElementVNode("span", _hoisted_35, "未命中冷却（" + _toDisplayString(cooldown.value.length) + "）", 1),
+              _createElementVNode("span", _hoisted_37, "未命中冷却（" + _toDisplayString(cooldown.value.length) + "）", 1),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_btn, {
                 size: "small",
                 variant: "text",
                 onClick: doClearCooldown
               }, {
-                default: _withCtx(() => [..._cache[30] || (_cache[30] = [
+                default: _withCtx(() => [..._cache[29] || (_cache[29] = [
                   _createTextVNode("清空冷却", -1)
                 ])]),
                 _: 1
               })
             ]),
-            _createElementVNode("div", _hoisted_36, [
-              _createElementVNode("div", _hoisted_37, [
+            _createElementVNode("div", _hoisted_38, [
+              _createElementVNode("div", _hoisted_39, [
                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(cooldown.value, (row) => {
                   return _openBlock(), _createBlock(_component_v_chip, {
                     key: row.key,
@@ -1280,13 +1299,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   }, {
                     default: _withCtx(() => [
                       _createTextVNode(_toDisplayString(row.title) + " ", 1),
-                      _createElementVNode("span", _hoisted_38, _toDisplayString(_unref(formatCooldown)(row.remaining_minutes)), 1)
+                      _createElementVNode("span", _hoisted_40, _toDisplayString(_unref(formatCooldown)(row.remaining_minutes)), 1)
                     ]),
                     _: 2
                   }, 1032, ["title"]);
                 }), 128))
               ]),
-              _cache[31] || (_cache[31] = _createElementVNode("div", { class: "text-caption sdas-dim mt-2" }, " 这些剧在站点上暂时搜不到资源，24 小时内不再重复搜索（成功下载或手动清空后恢复）。 ", -1))
+              _cache[30] || (_cache[30] = _createElementVNode("div", { class: "text-caption sdas-dim mt-2" }, " 这些剧在站点上暂时搜不到资源，24 小时内不再重复搜索（成功下载或手动清空后恢复）。 ", -1))
             ])
           ]),
           _: 1
@@ -1299,15 +1318,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           default: _withCtx(() => [
             _createVNode(_component_v_card, { class: "pa-4" }, {
               default: _withCtx(() => [
-                _createElementVNode("div", _hoisted_39, "从账本移除「" + _toDisplayString(removeTarget.value?.title) + "」？", 1),
-                _cache[34] || (_cache[34] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 移除后这部剧会在下一轮轮询时重新搜索并下载，已下载的文件不会被删除。 ", -1)),
-                _createElementVNode("div", _hoisted_40, [
+                _createElementVNode("div", _hoisted_41, "从账本移除「" + _toDisplayString(removeTarget.value?.title) + "」？", 1),
+                _cache[33] || (_cache[33] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 移除后这部剧会在下一轮轮询时重新搜索并下载，已下载的文件不会被删除。 ", -1)),
+                _createElementVNode("div", _hoisted_42, [
                   _createVNode(_component_v_spacer),
                   _createVNode(_component_v_btn, {
                     variant: "text",
                     onClick: _cache[10] || (_cache[10] = ($event) => removeDialog.value = false)
                   }, {
-                    default: _withCtx(() => [..._cache[32] || (_cache[32] = [
+                    default: _withCtx(() => [..._cache[31] || (_cache[31] = [
                       _createTextVNode("取消", -1)
                     ])]),
                     _: 1
@@ -1318,7 +1337,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     loading: removing.value,
                     onClick: doRemove
                   }, {
-                    default: _withCtx(() => [..._cache[33] || (_cache[33] = [
+                    default: _withCtx(() => [..._cache[32] || (_cache[32] = [
                       _createTextVNode("移除", -1)
                     ])]),
                     _: 1
@@ -1338,15 +1357,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           default: _withCtx(() => [
             _createVNode(_component_v_card, { class: "pa-4" }, {
               default: _withCtx(() => [
-                _cache[37] || (_cache[37] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "清空全部账本记录？", -1)),
-                _cache[38] || (_cache[38] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 账本用于去重：清空后所有剧都会被当作未下载，下一轮会重新搜索并下载（已下载文件不受影响）。 同时会清空未命中冷却。 ", -1)),
-                _createElementVNode("div", _hoisted_41, [
+                _cache[36] || (_cache[36] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "清空全部账本记录？", -1)),
+                _cache[37] || (_cache[37] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 账本用于去重：清空后所有剧都会被当作未下载，下一轮会重新搜索并下载（已下载文件不受影响）。 同时会清空未命中冷却。 ", -1)),
+                _createElementVNode("div", _hoisted_43, [
                   _createVNode(_component_v_spacer),
                   _createVNode(_component_v_btn, {
                     variant: "text",
                     onClick: _cache[12] || (_cache[12] = ($event) => confirmClear.value = false)
                   }, {
-                    default: _withCtx(() => [..._cache[35] || (_cache[35] = [
+                    default: _withCtx(() => [..._cache[34] || (_cache[34] = [
                       _createTextVNode("取消", -1)
                     ])]),
                     _: 1
@@ -1357,7 +1376,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     loading: clearing.value,
                     onClick: doClear
                   }, {
-                    default: _withCtx(() => [..._cache[36] || (_cache[36] = [
+                    default: _withCtx(() => [..._cache[35] || (_cache[35] = [
                       _createTextVNode("清空", -1)
                     ])]),
                     _: 1
@@ -1374,6 +1393,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Panel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-e601e80c"]]);
+const Panel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-919cf77e"]]);
 
 export { Panel as default };

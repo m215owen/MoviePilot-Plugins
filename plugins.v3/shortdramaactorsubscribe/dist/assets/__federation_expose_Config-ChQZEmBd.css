@@ -1,14 +1,14 @@
 
 /* 只使用 scoped 样式；不要编写会全局生效的选择器（组件库类名、html、body、:root） */
-.sdas-dim[data-v-ce522d92] {
+.sdas-dim[data-v-166b336a] {
   opacity: 0.75;
 }
 
 /* 演员再多也不会把配置页撑长 */
-.sdas-actor-textarea[data-v-ce522d92] {
+.sdas-actor-textarea[data-v-166b336a] {
   max-height: 200px;
 }
-.sdas-actor-input[data-v-ce522d92] {
+.sdas-actor-input[data-v-166b336a] {
   flex: 1 1 260px;
   min-width: 220px;
 }

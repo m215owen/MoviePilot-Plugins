@@ -179,11 +179,11 @@
 
       <v-divider class="my-3" />
 
-      <!-- 整理入库 -->
+      <!-- 下载与入库 -->
       <div class="d-flex align-center mb-2 flex-wrap" style="gap: 8px">
         <span class="text-subtitle-2">
-          <v-icon icon="mdi-folder-move-outline" size="18" class="mr-1" />
-          整理入库
+          <v-icon icon="mdi-download-outline" size="18" class="mr-1" />
+          下载与入库
         </span>
         <v-chip v-if="shortDramaDirectory" size="x-small" variant="tonal" color="primary">
           检测到系统「短剧」目录
@@ -201,14 +201,17 @@
       </div>
       <v-switch
         v-model="local.organize_enabled"
-        label="启用整理入库"
+        label="由本插件整理入库"
         color="primary"
         hide-details
         density="compact"
-        class="mb-2"
       />
+      <div class="text-caption sdas-dim mb-3">
+        默认<b>关闭</b>：本插件只负责「发现 → 下载」，入库交给外部整理器
+        （如 shortdramaorganizer）。同一台机器上跑两个整理器会重复入库；确实没有外部整理器时再打开。
+      </div>
       <v-row dense>
-        <v-col cols="12" md="6">
+        <v-col cols="12" :md="local.organize_enabled ? 6 : 8">
           <v-combobox
             v-model="local.download_path"
             :items="directoryItems"
@@ -221,7 +224,7 @@
             @update:model-value="onPickDirectory"
           />
         </v-col>
-        <v-col cols="12" md="6">
+        <v-col v-if="local.organize_enabled" cols="12" md="6">
           <v-combobox
             v-model="local.library_path"
             :items="libraryItems"
@@ -232,15 +235,7 @@
             @update:model-value="onPickLibrary"
           />
         </v-col>
-        <v-col cols="12" sm="6" md="4">
-          <v-select
-            v-model="local.transfer_type"
-            :items="options.transfer_types"
-            label="整理方式"
-            density="comfortable"
-          />
-        </v-col>
-        <v-col cols="6" sm="3" md="4">
+        <v-col cols="6" md="4">
           <v-text-field
             v-model.number="local.interval_hours"
             type="number"
@@ -250,7 +245,15 @@
             density="comfortable"
           />
         </v-col>
-        <v-col cols="6" sm="3" md="4">
+        <v-col v-if="local.organize_enabled" cols="6" md="4">
+          <v-select
+            v-model="local.transfer_type"
+            :items="options.transfer_types"
+            label="整理方式"
+            density="comfortable"
+          />
+        </v-col>
+        <v-col v-if="local.organize_enabled" cols="6" md="4">
           <v-text-field
             v-model.number="local.organize_interval_minutes"
             type="number"
@@ -342,7 +345,7 @@ const defaults: PluginConfig = {
   library_path: '',
   transfer_type: 'link',
   interval_hours: 6,
-  organize_enabled: true,
+  organize_enabled: false,
   organize_interval_minutes: 30,
   notify: true,
   douban_cookie: '',

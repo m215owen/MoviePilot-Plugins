@@ -59,7 +59,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       library_path: "",
       transfer_type: "link",
       interval_hours: 6,
-      organize_enabled: true,
+      organize_enabled: false,
       organize_interval_minutes: 30,
       notify: true,
       douban_cookie: "",
@@ -577,11 +577,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createElementVNode("div", _hoisted_11, [
               _createElementVNode("span", _hoisted_12, [
                 _createVNode(_component_v_icon, {
-                  icon: "mdi-folder-move-outline",
+                  icon: "mdi-download-outline",
                   size: "18",
                   class: "mr-1"
                 }),
-                _cache[27] || (_cache[27] = _createTextVNode(" 整理入库 ", -1))
+                _cache[27] || (_cache[27] = _createTextVNode(" 下载与入库 ", -1))
               ]),
               shortDramaDirectory.value ? (_openBlock(), _createBlock(_component_v_chip, {
                 key: 0,
@@ -611,17 +611,21 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createVNode(_component_v_switch, {
               modelValue: local.organize_enabled,
               "onUpdate:modelValue": _cache[11] || (_cache[11] = ($event) => local.organize_enabled = $event),
-              label: "启用整理入库",
+              label: "由本插件整理入库",
               color: "primary",
               "hide-details": "",
-              density: "compact",
-              class: "mb-2"
+              density: "compact"
             }, null, 8, ["modelValue"]),
+            _cache[36] || (_cache[36] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, [
+              _createTextVNode(" 默认"),
+              _createElementVNode("b", null, "关闭"),
+              _createTextVNode("：本插件只负责「发现 → 下载」，入库交给外部整理器 （如 shortdramaorganizer）。同一台机器上跑两个整理器会重复入库；确实没有外部整理器时再打开。 ")
+            ], -1)),
             _createVNode(_component_v_row, { dense: "" }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_col, {
                   cols: "12",
-                  md: "6"
+                  md: local.organize_enabled ? 6 : 8
                 }, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_combobox, {
@@ -640,8 +644,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     }, null, 8, ["modelValue", "items", "hint"])
                   ]),
                   _: 1
-                }),
-                _createVNode(_component_v_col, {
+                }, 8, ["md"]),
+                local.organize_enabled ? (_openBlock(), _createBlock(_component_v_col, {
+                  key: 0,
                   cols: "12",
                   md: "6"
                 }, {
@@ -660,32 +665,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     }, null, 8, ["modelValue", "items"])
                   ]),
                   _: 1
-                }),
-                _createVNode(_component_v_col, {
-                  cols: "12",
-                  sm: "6",
-                  md: "4"
-                }, {
-                  default: _withCtx(() => [
-                    _createVNode(_component_v_select, {
-                      modelValue: local.transfer_type,
-                      "onUpdate:modelValue": _cache[14] || (_cache[14] = ($event) => local.transfer_type = $event),
-                      items: options.transfer_types,
-                      label: "整理方式",
-                      density: "comfortable"
-                    }, null, 8, ["modelValue", "items"])
-                  ]),
-                  _: 1
-                }),
+                })) : _createCommentVNode("", true),
                 _createVNode(_component_v_col, {
                   cols: "6",
-                  sm: "3",
                   md: "4"
                 }, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_text_field, {
                       modelValue: local.interval_hours,
-                      "onUpdate:modelValue": _cache[15] || (_cache[15] = ($event) => local.interval_hours = $event),
+                      "onUpdate:modelValue": _cache[14] || (_cache[14] = ($event) => local.interval_hours = $event),
                       modelModifiers: { number: true },
                       type: "number",
                       min: "1",
@@ -696,9 +684,25 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   ]),
                   _: 1
                 }),
-                _createVNode(_component_v_col, {
+                local.organize_enabled ? (_openBlock(), _createBlock(_component_v_col, {
+                  key: 1,
                   cols: "6",
-                  sm: "3",
+                  md: "4"
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_select, {
+                      modelValue: local.transfer_type,
+                      "onUpdate:modelValue": _cache[15] || (_cache[15] = ($event) => local.transfer_type = $event),
+                      items: options.transfer_types,
+                      label: "整理方式",
+                      density: "comfortable"
+                    }, null, 8, ["modelValue", "items"])
+                  ]),
+                  _: 1
+                })) : _createCommentVNode("", true),
+                local.organize_enabled ? (_openBlock(), _createBlock(_component_v_col, {
+                  key: 2,
+                  cols: "6",
                   md: "4"
                 }, {
                   default: _withCtx(() => [
@@ -714,7 +718,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     }, null, 8, ["modelValue"])
                   ]),
                   _: 1
-                })
+                })) : _createCommentVNode("", true)
               ]),
               _: 1
             }),
@@ -783,6 +787,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-ce522d92"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-166b336a"]]);
 
 export { Config as default };

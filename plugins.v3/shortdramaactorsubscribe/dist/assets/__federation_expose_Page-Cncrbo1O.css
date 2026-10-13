@@ -99,59 +99,59 @@
 }
 
 /* 只使用 scoped 样式 */
-.sdas-dim[data-v-e601e80c] {
+.sdas-dim[data-v-919cf77e] {
   opacity: 0.75;
 }
-.sdas-switch[data-v-e601e80c] {
+.sdas-switch[data-v-919cf77e] {
   flex: 0 0 auto;
   margin-right: 4px;
 }
-.sdas-filter[data-v-e601e80c] {
+.sdas-filter[data-v-919cf77e] {
   max-width: 220px;
   flex: 1 1 180px;
 }
 
 /* 作品墙标题栏与工具条（与豆瓣插件同一套间距，视觉保持一致） */
-.sdas-titlebar[data-v-e601e80c] {
+.sdas-titlebar[data-v-919cf77e] {
   flex-wrap: wrap;
   gap: 8px;
   row-gap: 4px;
 }
-.sdas-toolbar[data-v-e601e80c] {
+.sdas-toolbar[data-v-919cf77e] {
   gap: 12px;
 }
 
 /* 演员 chip 区：flex 换行 + 纵向滚动（不能用 v-chip-group——那是横向滑动容器） */
-.sdas-chips[data-v-e601e80c] {
+.sdas-chips[data-v-919cf77e] {
   max-height: 96px;
   overflow-y: auto;
 }
-.sdas-actor-chips[data-v-e601e80c] {
+.sdas-actor-chips[data-v-919cf77e] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 /* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
-.sdas-chips-expanded[data-v-e601e80c] {
+.sdas-chips-expanded[data-v-919cf77e] {
   max-height: 60vh;
 }
-.sdas-page-info[data-v-e601e80c] {
+.sdas-page-info[data-v-919cf77e] {
   font-size: 0.82rem;
   opacity: 0.85;
   white-space: nowrap;
 }
-.sdas-count[data-v-e601e80c] {
+.sdas-count[data-v-919cf77e] {
   white-space: nowrap;
 }
-.sdas-label[data-v-e601e80c] {
+.sdas-label[data-v-919cf77e] {
   min-width: 96px;
   flex: 0 0 auto;
 }
-.sdas-table[data-v-e601e80c] {
+.sdas-table[data-v-919cf77e] {
   table-layout: auto;
 }
-.sdas-title[data-v-e601e80c] {
+.sdas-title[data-v-919cf77e] {
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;

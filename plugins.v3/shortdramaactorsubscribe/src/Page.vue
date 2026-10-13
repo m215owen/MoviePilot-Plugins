@@ -48,7 +48,7 @@
         @click="load(false)"
       />
       <v-btn
-        v-if="isMain"
+        v-if="isMain && organizeEnabled"
         size="small"
         variant="tonal"
         icon="mdi-folder-move-outline"
@@ -251,7 +251,12 @@
         class="mx-3 mb-2"
       >
         {{ workMessage }}
-        <div class="text-caption sdas-dim">下载完成后由「整理入库」搬到媒体库，可在下方账本查看。</div>
+        <div v-if="organizeEnabled" class="text-caption sdas-dim">
+          下载完成后由「整理入库」搬到媒体库，可在下方账本查看。
+        </div>
+        <div v-else class="text-caption sdas-dim">
+          下载完成后由外部整理器入库（本插件不参与整理），可在下方账本查看。
+        </div>
       </v-alert>
 
       <div class="px-3 pb-3">
@@ -672,11 +677,22 @@ function cookieLabel(source?: string): string {
   return '未取到（豆瓣匿名搜索额度极低）'
 }
 
+/** 是否由本插件负责整理入库。
+ *
+ * 默认**关闭**：本插件只做「发现 → 下载」，入库交给外部整理器
+ * （宿主上另有 shortdramaorganizer 监听同一个下载目录）。
+ * 关闭时页面不再显示「立即整理」入口，概览里的媒体库/整理项也一并让位。
+ */
+const organizeEnabled = computed<boolean>(() => {
+  const cfg = { ...(props.config || {}), ...remoteConfig.value } as Partial<PluginConfig>
+  return cfg.organize_enabled === true
+})
+
 /** 只读概览模式下的配置摘要行 */
 const configRows = computed(() => {
   const config: Partial<PluginConfig> = { ...(props.config || {}), ...remoteConfig.value }
   const sites = (config.sites || []) as number[]
-  return [
+  const rows = [
     {
       label: '搜索站点',
       value: sites.length
@@ -689,21 +705,26 @@ const configRows = computed(() => {
     },
     { label: '下载器', value: String(config.downloader || '跟随宿主默认') },
     { label: '下载目录', value: String(config.download_path || '未配置') },
-    { label: '媒体库目录', value: String(config.library_path || '未配置') },
-    {
-      label: '整理方式',
-      value: `${transferLabel(config.transfer_type)}${
-        config.organize_enabled === false ? '（整理已关闭）' : ''
-      }`,
-    },
-    {
-      label: '运行间隔',
-      value: `${config.interval_hours || 6} 小时轮询 / ${
-        config.organize_interval_minutes || 30
-      } 分钟整理`,
-    },
-    { label: '豆瓣登录态', value: cookieLabel(config.douban_cookie_source) },
   ]
+  if (organizeEnabled.value) {
+    rows.push(
+      { label: '媒体库目录', value: String(config.library_path || '未配置') },
+      { label: '整理方式', value: transferLabel(config.transfer_type) },
+      {
+        label: '运行间隔',
+        value: `${config.interval_hours || 6} 小时轮询 / ${
+          config.organize_interval_minutes || 30
+        } 分钟整理`,
+      }
+    )
+  } else {
+    rows.push(
+      { label: '整理', value: '由外部整理器负责（本插件不参与）' },
+      { label: '运行间隔', value: `${config.interval_hours || 6} 小时轮询` }
+    )
+  }
+  rows.push({ label: '豆瓣登录态', value: cookieLabel(config.douban_cookie_source) })
+  return rows
 })
 
 /** 账本筛选：剧名 / 演员 / 站点 任一命中 */

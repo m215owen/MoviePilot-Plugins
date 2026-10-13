@@ -1,11 +1,11 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import Panel from './__federation_expose_Page-BovxzJyG.js';
+import Panel from './__federation_expose_Page-CUpvBUgD.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
 const {openBlock:_openBlock,createBlock:_createBlock} = await importShared('vue');
 const _sfc_main = /* @__PURE__ */ _defineComponent({
-  __name: "AppPage",
+  __name: "AppPageSettings",
   props: {
     api: {},
     config: {},
@@ -20,7 +20,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         config: props.config,
         "plugin-id": props.pluginId,
         "nav-key": props.navKey,
-        mode: "main",
+        mode: "status",
         full: ""
       }, null, 8, ["api", "config", "plugin-id", "nav-key"]);
     };
