@@ -28,6 +28,12 @@
         >
           搜索冷却 {{ cooldownCount }}
         </v-chip>
+        <IgnoredManager
+          :api="props.api"
+          :ignored="payload?.ignored || []"
+          :count="payload?.ignored_count || 0"
+          @changed="load(false)"
+        />
         <v-spacer />
         <v-btn
           size="small"
@@ -95,13 +101,8 @@
       </v-card-text>
     </v-card>
 
-    <!-- 订阅选项：下载保存路径 + 订阅站点 -->
-    <SubscribePrefs
-      v-model:save-path="subscribeSavePath"
-      v-model:sites="subscribeSites"
-      :api="props.api"
-      @saved="onPrefsSaved"
-    />
+    <!-- 订阅选项（下载保存路径 / 订阅站点）已收进插件配置页，面板不再重复展示；
+         这里提交订阅时直接沿用后端下发的默认值，无需用户每次再选一遍 -->
 
     <!-- 筛选工具条 -->
     <v-card variant="outlined" class="mb-3">
@@ -203,6 +204,7 @@
       :busy="busy"
       empty-text="没有符合条件的作品"
       @subscribe="subscribe"
+      @ignore="ignore"
     />
   </div>
 </template>
@@ -221,13 +223,14 @@
  */
 import { computed, inject, onMounted, ref } from 'vue'
 import ErrorAlerts from './ErrorAlerts.vue'
-import SubscribePrefs from './SubscribePrefs.vue'
+import IgnoredManager from './IgnoredManager.vue'
 import WorkGrid from './WorkGrid.vue'
 import {
   API_BASE,
   PLUGIN_ID,
   fetchSubscribedKeys,
   formatTime,
+  ignoreWork,
   mergeWorks,
   resolveApi,
   sortWorks,
@@ -391,9 +394,13 @@ function applyPayload(data: WorksPayload): void {
   subscribeSites.value = data.subscribe_sites || []
 }
 
-/** 订阅选项保存回调 */
-function onPrefsSaved(ok: boolean, message: string): void {
-  notify(ok ? 'success' : 'error', message)
+/** 忽略一部作品：后端持久化后重新拉取快照，顶部会多出「已忽略 N 部」恢复入口 */
+async function ignore(work: ActorWork): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  const res = await ignoreWork(api, work)
+  notify(res.ok ? 'success' : 'error', res.message)
+  if (res.ok) await load(false)
 }
 
 /** 读取作品快照与已有订阅 */

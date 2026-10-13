@@ -465,7 +465,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.2.0"
+    plugin_version = "1.3.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -476,6 +476,8 @@ class DoubanActorSubscribe(_PluginBase):
 
     # ─── 运行时状态（统一由 init_plugin 重建，保证可重复初始化） ──────
     _enabled: bool = False
+    # 是否在 MoviePilot 主界面侧栏展示插件入口（关闭后插件本身照常运行）
+    _sidebar_nav: bool = True
     _cron: str = "0 8 * * *"
     _actor_entries: List[str] = []
     _max_works: int = 10
@@ -523,6 +525,8 @@ class DoubanActorSubscribe(_PluginBase):
     _DATA_CONFIGURED = "configured_actors"
     # 每位演员「最近一次成功发起名称搜索」的时间戳，用于 24 小时搜索冷却
     _DATA_SEARCH_LOG = "search_log"
+    # 被用户手动忽略的作品（键为 media_source:media_id）：面板不展示，自动订阅也跳过
+    _DATA_IGNORED = "ignored_works"
 
     # 一次性任务标识
     _ONCE_JOB_ID = "refresh_once"
@@ -540,6 +544,8 @@ class DoubanActorSubscribe(_PluginBase):
 
         cfg: Dict[str, Any] = dict(config or {})
         self._enabled = bool(cfg.get("enabled"))
+        # 默认开启：老配置里没有这个键时不应把侧栏入口弄丢
+        self._sidebar_nav = bool(cfg.get("sidebar_nav", True))
         self._cron = str(cfg.get("cron") or "0 8 * * *").strip()
         self._actor_entries = self._parse_actors(cfg.get("actors"))
         # 上限 10：豆瓣作品集接口不支持翻页，取再多也拿不到
@@ -701,7 +707,7 @@ class DoubanActorSubscribe(_PluginBase):
         ``section`` 仅接受 start / discovery / subscribe / organize / system；
         ``permission`` 仅接受 subscribe / discovery / search / manage / admin。
         """
-        if not self.get_state():
+        if not self.get_state() or not self._sidebar_nav:
             return []
         return [
             {
@@ -805,6 +811,20 @@ class DoubanActorSubscribe(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "按名称搜索豆瓣演员",
+            },
+            {
+                "path": "/ignore",
+                "endpoint": self.api_ignore,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "忽略某部作品（不再展示、自动订阅也跳过）",
+            },
+            {
+                "path": "/unignore",
+                "endpoint": self.api_unignore,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "恢复被忽略的作品",
             },
             {
                 "path": "/clear",
@@ -1041,12 +1061,18 @@ class DoubanActorSubscribe(_PluginBase):
     def get_works_payload(self) -> Dict[str, Any]:
         """组装面板所需的完整数据（演员 + 作品 + 统计）。"""
         snapshot = self._load_works()
+        ignored = self._load_ignored()
         actors: List[Dict[str, Any]] = []
         for group in snapshot.values():
             if not isinstance(group, dict):
                 continue
             actor = dict(group.get("actor") or {})
-            actor["works"] = list(group.get("works") or [])
+            # 被忽略的作品不参与展示与统计；数据仍留在快照里，随时可以恢复
+            actor["works"] = [
+                work
+                for work in (group.get("works") or [])
+                if self._work_unique(work) not in ignored
+            ]
             actors.append(actor)
         actors.sort(key=lambda item: str(item.get("name") or ""))
         total = sum(len(item["works"]) for item in actors)
@@ -1078,6 +1104,9 @@ class DoubanActorSubscribe(_PluginBase):
             "search_cooldown_count": sum(
                 1 for key in self._actor_entries if search_log.get(key)
             ),
+            # 被用户忽略的作品：面板据此显示「已忽略 N 部」并提供恢复入口
+            "ignored_count": len(ignored),
+            "ignored": self._ignored_list(ignored),
         }
 
     # ─── 业务逻辑：演员解析与作品抓取 ────────────────────────────
@@ -1379,6 +1408,8 @@ class DoubanActorSubscribe(_PluginBase):
     ) -> List[Dict[str, Any]]:
         """对新出现且满足筛选条件的作品调用订阅链落库。"""
         seen = set(self.get_data(self._DATA_SEEN) or [])
+        # 被用户忽略的作品不自动订阅：忽略的语义就是「别再管它」
+        ignored = self._load_ignored()
         history = self._load_sub_history()
         subscribed: List[Dict[str, Any]] = []
         budget = self._auto_max_per_run
@@ -1392,7 +1423,7 @@ class DoubanActorSubscribe(_PluginBase):
                 if budget <= 0:
                     break
                 unique = f"{work.get('media_source')}:{work.get('media_id')}"
-                if unique in seen:
+                if unique in seen or unique in ignored:
                     continue
                 if not work.get("is_new"):
                     continue
@@ -1508,6 +1539,33 @@ class DoubanActorSubscribe(_PluginBase):
         data = self.get_data(self._DATA_SUBS)
         return list(data) if isinstance(data, list) else []
 
+    # ─── 被忽略作品 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _work_unique(work: Dict[str, Any]) -> str:
+        """作品的唯一键，必须与前端 ``workKey()`` 完全一致。"""
+        return f"{work.get('media_source')}:{work.get('media_id')}"
+
+    def _load_ignored(self) -> Dict[str, Any]:
+        """读取「被忽略作品」记账表，键为 ``media_source:media_id``。"""
+        data = self.get_data(self._DATA_IGNORED)
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _ignored_list(ignored: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """把忽略记账整理成列表（按忽略时间倒序），供面板展示与恢复。"""
+        rows: List[Dict[str, Any]] = []
+        for key, value in ignored.items():
+            item = dict(value) if isinstance(value, dict) else {}
+            item["key"] = key
+            if ":" in str(key):
+                source, _, media_id = str(key).partition(":")
+                item.setdefault("media_source", source)
+                item.setdefault("media_id", media_id)
+            rows.append(item)
+        rows.sort(key=lambda row: str(row.get("time") or ""), reverse=True)
+        return rows[:200]
+
     def _load_errors(self) -> List[str]:
         snapshot = self._load_works()
         errors: List[str] = []
@@ -1596,6 +1654,7 @@ class DoubanActorSubscribe(_PluginBase):
         """
         return {
             "enabled": self._enabled,
+            "sidebar_nav": self._sidebar_nav,
             "cron": self._cron,
             "actors": "\n".join(self._actor_entries),
             "max_works": self._max_works,
@@ -1628,6 +1687,7 @@ class DoubanActorSubscribe(_PluginBase):
 
         merged = {**self._config_snapshot(), **config}
         merged["enabled"] = bool(merged.get("enabled"))
+        merged["sidebar_nav"] = bool(merged.get("sidebar_nav", True))
         merged["notify"] = bool(merged.get("notify"))
         merged["proxy"] = bool(merged.get("proxy"))
         merged["auto_subscribe"] = bool(merged.get("auto_subscribe"))
@@ -1720,6 +1780,61 @@ class DoubanActorSubscribe(_PluginBase):
             if client.last_error:
                 return {"success": False, "message": f"搜索失败：{client.last_error}"}
         return {"success": True, "data": results}
+
+    def api_ignore(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """忽略一部作品：面板不再展示，自动订阅也会跳过它。
+
+        只记「作品身份」而不是从快照里删除数据 —— 这样随时可以恢复，
+        下次刷新也不会因为作品重新出现而把忽略状态丢掉。
+        """
+        data = payload if isinstance(payload, dict) else {}
+        media_id = str(data.get("media_id") or "").strip()
+        if not media_id:
+            return {"success": False, "message": "缺少 media_id"}
+        source = str(data.get("media_source") or "douban").strip() or "douban"
+        key = f"{source}:{media_id}"
+        ignored = self._load_ignored()
+        ignored[key] = {
+            "title": str(data.get("title") or "").strip(),
+            "year": str(data.get("year") or "").strip(),
+            "type": str(data.get("type") or "").strip(),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self.save_data(self._DATA_IGNORED, ignored)
+        title = ignored[key]["title"] or media_id
+        logger.info(f"{self.plugin_name} 已忽略作品：{title}")
+        return {
+            "success": True,
+            "message": f"已忽略「{title}」，可在面板顶部恢复",
+            "data": {"ignored_count": len(ignored)},
+        }
+
+    def api_unignore(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """恢复被忽略的作品；传 ``all=true`` 时清空整份忽略列表。"""
+        data = payload if isinstance(payload, dict) else {}
+        ignored = self._load_ignored()
+        if data.get("all"):
+            count = len(ignored)
+            self.save_data(self._DATA_IGNORED, {})
+            return {
+                "success": True,
+                "message": f"已恢复全部 {count} 部被忽略的作品",
+                "data": {"ignored_count": 0},
+            }
+        key = str(data.get("key") or "").strip()
+        if not key and data.get("media_id"):
+            source = str(data.get("media_source") or "douban").strip() or "douban"
+            key = f"{source}:{data['media_id']}"
+        if not key or key not in ignored:
+            return {"success": False, "message": "该作品不在忽略列表中"}
+        removed = ignored.pop(key) or {}
+        self.save_data(self._DATA_IGNORED, ignored)
+        title = str(removed.get("title") or key)
+        return {
+            "success": True,
+            "message": f"已恢复「{title}」",
+            "data": {"ignored_count": len(ignored)},
+        }
 
     def api_clear(self) -> Dict[str, Any]:
         """清空作品快照与自动订阅记录（配置不受影响）。
@@ -1820,6 +1935,7 @@ class DoubanActorSubscribe(_PluginBase):
         """返回配置页默认值。"""
         return {
             "enabled": False,
+            "sidebar_nav": True,
             "cron": "0 8 * * *",
             "actors": "",
             "max_works": 10,

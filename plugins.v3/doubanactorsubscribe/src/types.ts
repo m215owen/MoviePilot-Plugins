@@ -8,6 +8,12 @@
 export interface PluginConfig {
   /** 是否启用插件 */
   enabled: boolean
+  /**
+   * 是否在 MoviePilot 主界面侧栏展示插件入口。
+   *
+   * 关闭后插件本身照常运行（定时刷新、自动订阅都继续），只是不再占用侧栏位置。
+   */
+  sidebar_nav: boolean
   /** 定时刷新 cron 表达式 */
   cron: string
   /** 演员列表：每行一个「演员名」或「豆瓣人物 ID」 */
@@ -156,10 +162,27 @@ export interface WorksPayload {
    * 这个数字用于解释面板上「这批演员为什么还是未解析状态」。
    */
   search_cooldown_count?: number
+  /** 被用户忽略的作品数量；面板据此显示「已忽略 N 部」入口 */
+  ignored_count?: number
+  /** 被忽略的作品明细，用于在面板上恢复 */
+  ignored?: IgnoredWork[]
   /** 是否正在等待后台补刷新 */
   pending_refresh: boolean
   /** 后台刷新是否正在进行（演员多时一次刷新会持续较久） */
   refreshing: boolean
+}
+
+/** 被用户忽略的作品（不再展示、也不参与自动订阅） */
+export interface IgnoredWork {
+  /** 唯一键，格式 `media_source:media_id` */
+  key: string
+  media_source?: string
+  media_id?: string
+  title?: string
+  year?: string
+  type?: string
+  /** 忽略时间，用于按时间倒序展示 */
+  time?: string
 }
 
 /** 可选的订阅站点（只保留展示所需字段，凭据不进前端状态） */

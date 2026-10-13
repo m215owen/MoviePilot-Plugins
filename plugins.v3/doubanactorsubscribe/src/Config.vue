@@ -8,14 +8,26 @@
         <v-btn icon="mdi-close" variant="text" size="small" title="关闭" @click="emit('close')" />
       </div>
 
+      <!-- 运行异常：与面板保持一致的「先展示、5 秒后自动收起为小标签」行为，
+           避免一大串限流提示常驻配置页 -->
+      <ErrorAlerts :errors="runtimeErrors" class="mb-3" />
+
       <v-row dense>
-        <v-col cols="12" sm="4">
+        <v-col cols="12" sm="6" md="3">
           <v-switch v-model="local.enabled" label="启用插件" color="primary" hide-details />
         </v-col>
-        <v-col cols="12" sm="4">
+        <v-col cols="12" sm="6" md="3">
+          <v-switch
+            v-model="local.sidebar_nav"
+            label="在 MP 侧栏显示入口"
+            color="primary"
+            hide-details
+          />
+        </v-col>
+        <v-col cols="12" sm="6" md="3">
           <v-switch v-model="local.proxy" label="使用代理服务器" color="primary" hide-details />
         </v-col>
-        <v-col cols="12" sm="4">
+        <v-col cols="12" sm="6" md="3">
           <v-switch
             v-model="local.onlyonce"
             label="保存后立即刷新一次"
@@ -27,22 +39,52 @@
 
       <v-divider class="my-3" />
 
-      <!-- 演员配置 -->
+      <!-- 演员配置：行式列表。演员多时靠内部滚动收住高度，不会再把页面撑长 -->
       <div class="text-subtitle-2 mb-2">
         <v-icon icon="mdi-account-multiple-outline" size="18" class="mr-1" />
         订阅的演员
+        <span class="text-caption das-dim ml-2">共 {{ actorItems.length }} 位</span>
       </div>
-      <v-textarea
-        v-model="local.actors"
-        label="演员列表"
-        placeholder="支持换行、逗号、顿号、分号分隔：&#10;刘德华, 吴京, 张译&#10;也可直接粘贴豆瓣人物主页链接（推荐，最稳）：&#10;https://www.douban.com/personage/37871253/"
-        hint="可用逗号/顿号/分号/换行分隔。填「人物 ID」或直接粘贴人物主页链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。"
-        persistent-hint
-        rows="4"
-        density="comfortable"
-        auto-grow
-        class="mb-3"
-      />
+
+      <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+        <v-text-field
+          v-model="actorDraft"
+          density="compact"
+          variant="outlined"
+          hide-details
+          prepend-inner-icon="mdi-account-plus-outline"
+          placeholder="输入演员名 / 人物 ID / 主页链接后回车添加（可一次粘贴多个）"
+          class="das-actor-input"
+          @keyup.enter="addActorDraft"
+        />
+        <v-btn
+          size="small"
+          variant="tonal"
+          color="primary"
+          :disabled="!actorDraft.trim()"
+          @click="addActorDraft"
+        >
+          添加
+        </v-btn>
+      </div>
+
+      <v-card variant="outlined" class="das-actor-list mb-2">
+        <div v-if="!actorItems.length" class="text-caption das-dim pa-3 text-center">
+          还没有演员：在上面添加，或从下方搜索结果点「添加 ID」。
+        </div>
+        <div v-for="(item, index) in actorItems" :key="`${index}-${item}`" class="das-actor-row">
+          <span class="das-actor-index">{{ index + 1 }}</span>
+          <span class="das-actor-text" :title="item">{{ item }}</span>
+          <v-chip v-if="isDirectId(item)" size="x-small" variant="tonal" color="success" label>
+            免搜索
+          </v-chip>
+          <v-spacer />
+          <v-btn size="x-small" variant="text" icon="mdi-close" title="移除" @click="removeActor(index)" />
+        </div>
+      </v-card>
+      <div class="text-caption das-dim mb-3">
+        填「人物 ID」或人物主页链接可跳过搜索——豆瓣搜索限流很紧，演员多时优先填 ID。
+      </div>
 
       <v-text-field
         v-model="searchName"
@@ -61,8 +103,10 @@
       </v-text-field>
 
       <v-card v-if="candidates.length || searched" variant="tonal" class="pa-2 mb-3">
-        <div v-if="!candidates.length" class="text-caption das-dim">
-          未搜索到匹配的演员，换一个名字或直接填写人物 ID。
+        <div v-if="!candidates.length" class="d-flex align-center text-caption das-dim" style="gap: 8px">
+          <span>{{ searchMessage || '未搜索到匹配的演员，换一个名字或直接填写人物 ID。' }}</span>
+          <v-spacer />
+          <v-btn size="x-small" variant="text" icon="mdi-close" title="关闭提示" @click="searched = false" />
         </div>
         <div
           v-for="item in candidates"
@@ -104,7 +148,10 @@
         auto-grow
         class="mb-2"
       />
-      <div class="text-caption das-dim mb-3">当前生效来源：{{ cookieStatus }}</div>
+      <div class="text-caption das-dim mb-3" :title="cookieHint">
+        当前生效来源：{{ cookieStatus }}
+        <v-icon v-if="cookieHint" icon="mdi-information-outline" size="13" class="ml-1" />
+      </div>
 
       <v-divider class="my-3" />
 
@@ -260,9 +307,16 @@
  * 不要在组件内自行拼接 `api/v1/plugin/...` 路径。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
+import ErrorAlerts from './ErrorAlerts.vue'
 import SubscribePrefs from './SubscribePrefs.vue'
 import { API_BASE, PLUGIN_ID, resolveApi, unwrap } from './api'
-import type { ActorCandidate, ApiResult, PluginApi, PluginConfig } from './types'
+import type {
+  ActorCandidate,
+  ApiResult,
+  PluginApi,
+  PluginConfig,
+  WorksPayload,
+} from './types'
 
 const props = defineProps<{
   /** 宿主传入的初始配置 */
@@ -277,6 +331,7 @@ const saving = ref(false)
 
 const defaults: PluginConfig = {
   enabled: false,
+  sidebar_nav: true,
   cron: '0 8 * * *',
   actors: '',
   max_works: 10,
@@ -302,13 +357,29 @@ const local = reactive<PluginConfig>({ ...defaults })
  * 来源由后端快照给出（`douban_cookie_source`），这里只做展示——
  * 用户最需要知道的是「到底有没有用上登录态」，而不是自己去猜。
  */
-const cookieStatus = computed<string>(() => {
+const cookieSource = computed<string>(() => {
   const initial = props.initialConfig as Record<string, unknown> | undefined
-  const source = initial?.douban_cookie_source
-  if (source === 'manual') return '插件内手填的 Cookie'
-  if (source === 'cookiecloud') return '宿主 CookieCloud（自动读取，已生效）'
+  return String(initial?.douban_cookie_source || 'none')
+})
+
+/**
+ * Cookie 状态只保留一句短文案，完整失败原因收进 hover 提示。
+ *
+ * 之前把整段错误原文直接挂在页面上，只要没配好就一直在，既占位置又容易被
+ * 误读成「插件坏了」。
+ */
+const cookieStatus = computed<string>(() => {
+  if (cookieSource.value === 'manual') return '插件内手填的 Cookie'
+  if (cookieSource.value === 'cookiecloud') return '宿主 CookieCloud（自动读取，已生效）'
+  return '未取到登录态（悬停查看原因）'
+})
+
+/** 未取到 Cookie 时的原因，仅在悬停时展示 */
+const cookieHint = computed<string>(() => {
+  if (cookieSource.value === 'manual' || cookieSource.value === 'cookiecloud') return ''
+  const initial = props.initialConfig as Record<string, unknown> | undefined
   const hint = initial?.douban_cookie_hint
-  return hint ? `未取到，原因：${String(hint)}` : '尚未取到（刷新一次后会显示）'
+  return hint ? String(hint) : '尚未取到：刷新一次后会显示原因'
 })
 
 /** 常用 cron 预设 */
@@ -345,11 +416,68 @@ const autoTypes = computed<string[]>({
   },
 })
 
+// ─── 演员列表（行式） ─────────────────────────────────────────
+
+/** 输入框草稿：回车或点「添加」后追加进列表 */
+const actorDraft = ref('')
+
+/**
+ * 演员列表以换行分隔的字符串存储，这里拆成数组渲染。
+ *
+ * 原先是一个 auto-grow 文本框，112 位演员会把页面撑得很长；
+ * 改成固定高度的行式列表后高度可控，每一行还能单独删除。
+ */
+const actorItems = computed<string[]>(() =>
+  String(local.actors || '')
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+)
+
+/** 判断是否「人物 ID / 主页链接」——这类写法会跳过豆瓣搜索 */
+function isDirectId(item: string): boolean {
+  const value = String(item || '').trim()
+  return /^\d+$/.test(value) || /douban\.com\/personage\//.test(value)
+}
+
+/** 统一写回演员列表：去重且保持顺序 */
+function commitActorItems(items: string[]): void {
+  const seen = new Set<string>()
+  const next: string[] = []
+  for (const item of items) {
+    const value = String(item || '').trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    next.push(value)
+  }
+  local.actors = next.join('\n')
+}
+
+/** 追加草稿内容（支持一次粘贴多个：逗号 / 顿号 / 分号 / 换行分隔） */
+function addActorDraft(): void {
+  const parts = String(actorDraft.value || '')
+    .split(/[\r\n,，、;；]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!parts.length) return
+  commitActorItems([...actorItems.value, ...parts])
+  actorDraft.value = ''
+}
+
+/** 移除第 index 位演员 */
+function removeActor(index: number): void {
+  const next = [...actorItems.value]
+  next.splice(index, 1)
+  commitActorItems(next)
+}
+
 // ─── 演员搜索辅助 ─────────────────────────────────────────────
 
 const searchName = ref('')
 const searching = ref(false)
 const searched = ref(false)
+/** 搜索失败原因（限流 / need_login / 查无此人），在结果区给出可读说明 */
+const searchMessage = ref('')
 const candidates = ref<ActorCandidate[]>([])
 
 /** 搜索豆瓣演员，便于拿到准确的人物 ID */
@@ -363,9 +491,16 @@ async function searchActor(): Promise<void> {
     const res = unwrap<ApiResult<ActorCandidate[]>>(raw)
     candidates.value = res?.success ? res.data || [] : []
     searched.value = true
+    // 失败原因（限流 / need_login）必须说清楚，否则用户会以为是自己名字写错了
+    searchMessage.value = res?.success
+      ? candidates.value.length
+        ? ''
+        : '未搜索到匹配的演员，换一个名字或直接填写人物 ID。'
+      : res?.message || '搜索失败，请稍后重试。'
   } catch (err) {
     candidates.value = []
     searched.value = true
+    searchMessage.value = '搜索失败，请稍后重试。'
     console.warn(`[${PLUGIN_ID}] 搜索演员失败`, err)
   } finally {
     searching.value = false
@@ -374,12 +509,7 @@ async function searchActor(): Promise<void> {
 
 /** 把搜索结果的人物 ID 追加到演员列表 */
 function appendActor(id: string): void {
-  const lines = String(local.actors || '')
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-  if (!lines.includes(id)) lines.push(id)
-  local.actors = lines.join('\n')
+  commitActorItems([...actorItems.value, id])
 }
 
 /** 提交保存：交给宿主持久化 */
@@ -389,6 +519,23 @@ function saveConfig(): void {
   window.setTimeout(() => {
     saving.value = false
   }, 600)
+}
+
+// ─── 运行异常（与面板一致：先展示，5 秒后自动收起为小标签） ──
+
+const runtimeErrors = ref<string[]>([])
+
+/** 读取刷新快照里的演员解析异常；失败不影响配置页编辑 */
+async function loadRuntimeErrors(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  try {
+    const raw = await api.get(`${API_BASE}/works`)
+    const res = unwrap<ApiResult<WorksPayload>>(raw)
+    runtimeErrors.value = res?.success ? res.data?.errors || [] : []
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 读取运行异常失败`, err)
+  }
 }
 
 onMounted(() => {
@@ -401,6 +548,7 @@ onMounted(() => {
       }
     })
   }
+  void loadRuntimeErrors()
 })
 </script>
 
@@ -408,5 +556,45 @@ onMounted(() => {
 /* 仅使用 scoped 样式；不要编写会全局生效的选择器（组件库类名、html、body、:root） */
 .das-dim {
   opacity: 0.75;
+}
+
+.das-actor-input {
+  flex: 1 1 260px;
+  min-width: 220px;
+}
+
+/* 固定高度 + 内部滚动：演员再多也不会把配置页撑长 */
+.das-actor-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.das-actor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+}
+
+.das-actor-row:last-child {
+  border-bottom: none;
+}
+
+.das-actor-index {
+  flex: 0 0 auto;
+  min-width: 22px;
+  font-size: 0.72rem;
+  opacity: 0.55;
+  text-align: right;
+}
+
+.das-actor-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
 }
 </style>

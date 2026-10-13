@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { m as mergeWorks, s as sortWorks, w as workKey, c as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, _ as _export_sfc } from './api-BbaK2SUr.js';
+import { m as mergeWorks, s as sortWorks, w as workKey, c as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, i as ignoreWork, _ as _export_sfc } from './api-WVyoRzoO.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -126,6 +126,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         pendingKey.value = "";
       }
     }
+    async function ignore(work) {
+      const api = resolveApi(props);
+      if (!api) return;
+      const res = await ignoreWork(api, work);
+      notify(res.ok ? "success" : "error", res.message);
+      if (res.ok) await load();
+    }
     onMounted(load);
     return (_ctx, _cache) => {
       const _component_v_icon = _resolveComponent("v-icon");
@@ -203,7 +210,14 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                             loading: pendingKey.value === _unref(workKey)(item.work),
                             title: isSubscribed(item.work) ? "已订阅" : "订阅",
                             onClick: ($event) => subscribe(item.work)
-                          }, null, 8, ["icon", "color", "loading", "title", "onClick"])
+                          }, null, 8, ["icon", "color", "loading", "title", "onClick"]),
+                          _createVNode(_component_v_btn, {
+                            size: "x-small",
+                            variant: "text",
+                            icon: "mdi-eye-off-outline",
+                            title: "忽略这部作品：不再展示，也不会被自动订阅",
+                            onClick: ($event) => ignore(item.work)
+                          }, null, 8, ["onClick"])
                         ]);
                       }), 128)),
                       _createElementVNode("div", _hoisted_11, _toDisplayString(item0.value.actor) + " 等 " + _toDisplayString(stats.value.actor_count) + " 位演员｜" + _toDisplayString(_unref(formatTime)(stats.value.updated_at)), 1)
@@ -230,6 +244,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-b2a309a9"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-bddd93be"]]);
 
 export { Dashboard as default };

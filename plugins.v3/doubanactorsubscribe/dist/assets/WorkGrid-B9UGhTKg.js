@@ -1,90 +1,200 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, w as workKey, p as proxyImage } from './api-BbaK2SUr.js';
+import { r as resolveApi, g as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage } from './api-WVyoRzoO.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 
-const {renderList:_renderList$1,Fragment:_Fragment$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1} = await importShared('vue');
+const {toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createCommentVNode:_createCommentVNode$1,renderList:_renderList$1,Fragment:_Fragment$1,createBlock:_createBlock$1} = await importShared('vue');
 
-const _hoisted_1$1 = {
+const _hoisted_1$1 = { key: 0 };
+const _hoisted_2$1 = {
   key: 0,
-  class: "das-errors"
+  class: "text-medium-emphasis text-body-2 py-4 text-center"
 };
-const {onBeforeUnmount,ref,watch} = await importShared('vue');
-
+const _hoisted_3$1 = ["title"];
+const _hoisted_4$1 = {
+  key: 0,
+  class: "text-caption das-dim mx-2"
+};
+const {computed,inject,ref} = await importShared('vue');
 const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
-  __name: "ErrorAlerts",
+  __name: "IgnoredManager",
   props: {
-    errors: { default: () => [] },
-    duration: { default: 5e3 }
+    api: {},
+    ignored: {},
+    count: {}
   },
-  setup(__props) {
+  emits: ["changed"],
+  setup(__props, { emit: __emit }) {
     const props = __props;
-    const visible = ref(true);
-    let timer;
-    function clearTimer() {
-      if (timer !== void 0) {
-        window.clearTimeout(timer);
-        timer = void 0;
+    const emit = __emit;
+    const toast = inject("moviepilot:toast", null);
+    const open = ref(false);
+    const busyKey = ref("");
+    const busyAll = ref(false);
+    const list = computed(() => props.ignored || []);
+    function notify(type, message) {
+      const handler = toast && toast[type];
+      if (typeof handler === "function") {
+        handler.call(toast, message);
+        return;
+      }
+      console[type === "error" ? "warn" : "info"](`[${PLUGIN_ID}] ${message}`);
+    }
+    async function restore(item) {
+      const api = resolveApi(props);
+      if (!api) return;
+      busyKey.value = item.key;
+      try {
+        const res = await unignoreWork(api, item.key);
+        notify(res.ok ? "success" : "error", res.message);
+        if (res.ok) emit("changed");
+      } finally {
+        busyKey.value = "";
       }
     }
-    function show() {
-      clearTimer();
-      visible.value = true;
-      if (props.duration > 0) {
-        timer = window.setTimeout(() => {
-          visible.value = false;
-        }, props.duration);
+    async function restoreAll() {
+      const api = resolveApi(props);
+      if (!api) return;
+      busyAll.value = true;
+      try {
+        const res = await unignoreWork(api, "", true);
+        notify(res.ok ? "success" : "error", res.message);
+        if (res.ok) emit("changed");
+      } finally {
+        busyAll.value = false;
       }
     }
-    watch(
-      () => (props.errors || []).join("\n"),
-      () => {
-        if (!props.errors || !props.errors.length) {
-          clearTimer();
-          visible.value = true;
-          return;
-        }
-        show();
-      },
-      { immediate: true }
-    );
-    onBeforeUnmount(clearTimer);
     return (_ctx, _cache) => {
-      const _component_v_alert = _resolveComponent$1("v-alert");
       const _component_v_chip = _resolveComponent$1("v-chip");
-      return __props.errors.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_1$1, [
-        visible.value ? (_openBlock$1(true), _createElementBlock$1(_Fragment$1, { key: 0 }, _renderList$1(__props.errors, (item, index) => {
-          return _openBlock$1(), _createBlock$1(_component_v_alert, {
-            key: `${index}-${item}`,
-            type: "warning",
-            variant: "tonal",
-            density: "compact",
-            class: "mb-2"
-          }, {
-            default: _withCtx$1(() => [
-              _createTextVNode$1(_toDisplayString$1(item), 1)
-            ]),
-            _: 2
-          }, 1024);
-        }), 128)) : (_openBlock$1(), _createBlock$1(_component_v_chip, {
-          key: 1,
+      const _component_v_icon = _resolveComponent$1("v-icon");
+      const _component_v_spacer = _resolveComponent$1("v-spacer");
+      const _component_v_btn = _resolveComponent$1("v-btn");
+      const _component_v_card_title = _resolveComponent$1("v-card-title");
+      const _component_v_divider = _resolveComponent$1("v-divider");
+      const _component_v_card_text = _resolveComponent$1("v-card-text");
+      const _component_v_card_actions = _resolveComponent$1("v-card-actions");
+      const _component_v_card = _resolveComponent$1("v-card");
+      const _component_v_dialog = _resolveComponent$1("v-dialog");
+      return __props.count ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_1$1, [
+        _createVNode$1(_component_v_chip, {
           size: "small",
           variant: "tonal",
-          color: "warning",
-          "prepend-icon": "mdi-alert-outline",
-          onClick: show
+          "prepend-icon": "mdi-eye-off-outline",
+          title: "查看并恢复被忽略的作品",
+          onClick: _cache[0] || (_cache[0] = ($event) => open.value = true)
         }, {
           default: _withCtx$1(() => [
-            _createTextVNode$1(_toDisplayString$1(__props.errors.length) + " 项异常（点击查看） ", 1)
+            _createTextVNode$1(" 已忽略 " + _toDisplayString$1(__props.count) + " 部 ", 1)
           ]),
           _: 1
-        }))
+        }),
+        _createVNode$1(_component_v_dialog, {
+          modelValue: open.value,
+          "onUpdate:modelValue": _cache[2] || (_cache[2] = ($event) => open.value = $event),
+          "max-width": "640"
+        }, {
+          default: _withCtx$1(() => [
+            _createVNode$1(_component_v_card, null, {
+              default: _withCtx$1(() => [
+                _createVNode$1(_component_v_card_title, { class: "d-flex align-center" }, {
+                  default: _withCtx$1(() => [
+                    _createVNode$1(_component_v_icon, {
+                      icon: "mdi-eye-off-outline",
+                      class: "mr-2"
+                    }),
+                    _cache[4] || (_cache[4] = _createElementVNode$1("span", { class: "text-body-1" }, "已忽略的作品", -1)),
+                    _createVNode$1(_component_v_spacer),
+                    _createVNode$1(_component_v_btn, {
+                      size: "small",
+                      variant: "text",
+                      onClick: _cache[1] || (_cache[1] = ($event) => open.value = false)
+                    }, {
+                      default: _withCtx$1(() => [..._cache[3] || (_cache[3] = [
+                        _createTextVNode$1("关闭", -1)
+                      ])]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                }),
+                _createVNode$1(_component_v_divider),
+                _createVNode$1(_component_v_card_text, { class: "das-scroll" }, {
+                  default: _withCtx$1(() => [
+                    !list.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_2$1, " 还没有忽略任何作品。 ")) : _createCommentVNode$1("", true),
+                    (_openBlock$1(true), _createElementBlock$1(_Fragment$1, null, _renderList$1(list.value, (item) => {
+                      return _openBlock$1(), _createElementBlock$1("div", {
+                        key: item.key,
+                        class: "d-flex align-center py-1"
+                      }, [
+                        _createElementVNode$1("span", {
+                          class: "text-body-2 das-ellipsis",
+                          title: item.title || item.key
+                        }, _toDisplayString$1(item.title || item.media_id || item.key), 9, _hoisted_3$1),
+                        item.year ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_4$1, _toDisplayString$1(item.year), 1)) : _createCommentVNode$1("", true),
+                        item.type ? (_openBlock$1(), _createBlock$1(_component_v_chip, {
+                          key: 1,
+                          size: "x-small",
+                          variant: "tonal",
+                          label: "",
+                          class: "mr-2"
+                        }, {
+                          default: _withCtx$1(() => [
+                            _createTextVNode$1(_toDisplayString$1(item.type), 1)
+                          ]),
+                          _: 2
+                        }, 1024)) : _createCommentVNode$1("", true),
+                        _createVNode$1(_component_v_spacer),
+                        _createVNode$1(_component_v_btn, {
+                          size: "x-small",
+                          variant: "text",
+                          color: "primary",
+                          loading: busyKey.value === item.key,
+                          disabled: busyAll.value,
+                          onClick: ($event) => restore(item)
+                        }, {
+                          default: _withCtx$1(() => [..._cache[5] || (_cache[5] = [
+                            _createTextVNode$1(" 恢复 ", -1)
+                          ])]),
+                          _: 1
+                        }, 8, ["loading", "disabled", "onClick"])
+                      ]);
+                    }), 128))
+                  ]),
+                  _: 1
+                }),
+                _createVNode$1(_component_v_divider),
+                _createVNode$1(_component_v_card_actions, null, {
+                  default: _withCtx$1(() => [
+                    _cache[7] || (_cache[7] = _createElementVNode$1("span", { class: "text-caption das-dim ml-2" }, "恢复后下次刷新即会重新出现", -1)),
+                    _createVNode$1(_component_v_spacer),
+                    _createVNode$1(_component_v_btn, {
+                      size: "small",
+                      variant: "text",
+                      color: "warning",
+                      loading: busyAll.value,
+                      disabled: !list.value.length,
+                      onClick: restoreAll
+                    }, {
+                      default: _withCtx$1(() => [..._cache[6] || (_cache[6] = [
+                        _createTextVNode$1(" 全部恢复 ", -1)
+                      ])]),
+                      _: 1
+                    }, 8, ["loading", "disabled"])
+                  ]),
+                  _: 1
+                })
+              ]),
+              _: 1
+            })
+          ]),
+          _: 1
+        }, 8, ["modelValue"])
       ])) : _createCommentVNode$1("", true);
     };
   }
 });
 
-const ErrorAlerts = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-df55bed5"]]);
+const IgnoredManager = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-2bf044f5"]]);
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -127,7 +237,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     emptyText: {},
     showActors: { type: Boolean, default: true }
   },
-  emits: ["subscribe"],
+  emits: ["subscribe", "ignore"],
   setup(__props, { emit: __emit }) {
     const props = __props;
     const emit = __emit;
@@ -268,7 +378,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       title: "打开豆瓣条目",
                       href: work.url,
                       target: "_blank"
-                    }, null, 8, ["href"])) : _createCommentVNode("", true)
+                    }, null, 8, ["href"])) : _createCommentVNode("", true),
+                    _createVNode(_component_v_btn, {
+                      size: "small",
+                      variant: "text",
+                      icon: "mdi-eye-off-outline",
+                      title: "忽略这部作品：不再展示，也不会被自动订阅",
+                      disabled: __props.busy,
+                      onClick: ($event) => emit("ignore", work)
+                    }, null, 8, ["disabled", "onClick"])
                   ]),
                   _: 2
                 }, 1024)
@@ -282,6 +400,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-c4f10d20"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-3da403a7"]]);
 
-export { ErrorAlerts as E, WorkGrid as W };
+export { IgnoredManager as I, WorkGrid as W };

@@ -51,6 +51,13 @@
                   :title="isSubscribed(item.work) ? '已订阅' : '订阅'"
                   @click="subscribe(item.work)"
                 />
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  icon="mdi-eye-off-outline"
+                  title="忽略这部作品：不再展示，也不会被自动订阅"
+                  @click="ignore(item.work)"
+                />
               </div>
 
               <div class="text-caption das-dim mt-2">
@@ -82,6 +89,7 @@ import {
   PLUGIN_ID,
   fetchSubscribedKeys,
   formatTime,
+  ignoreWork,
   mergeWorks,
   resolveApi,
   sortWorks,
@@ -212,6 +220,15 @@ async function subscribe(work: ActorWork): Promise<void> {
   } finally {
     pendingKey.value = ''
   }
+}
+
+/** 忽略一部作品：与详情页/侧栏一致，忽略状态由后端持久化 */
+async function ignore(work: ActorWork): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  const res = await ignoreWork(api, work)
+  notify(res.ok ? 'success' : 'error', res.message)
+  if (res.ok) await load()
 }
 
 onMounted(load)

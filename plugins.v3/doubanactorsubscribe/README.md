@@ -11,12 +11,13 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| 演员配置 | 支持**豆瓣人物主页链接**（推荐，最稳，直接解析出 ID，不消耗搜索配额）、**演员名称**（自动搜索并缓存豆瓣人物 ID）或直接填**豆瓣人物 ID**（纯数字） |
+| 演员配置 | 支持**豆瓣人物主页链接**（推荐，最稳，直接解析出 ID，不消耗搜索配额）、**演员名称**（自动搜索并缓存豆瓣人物 ID）或直接填**豆瓣人物 ID**（纯数字）。配置页为**固定高度的行式列表**：逐行可删、内部滚动，演员再多也不撑长页面 |
 | 作品抓取 | 豆瓣 Frodo API：人物详情 → 影视作品集 → 作品列表，归一化标题/年份/类型/评分/海报/职务 |
 | 面板展示 | **统一作品墙**（跨演员按时/新作品排序，卡片标出**出演演员**，演员以 chip 筛选代替分组）+ 完整筛选 + 批量订阅 |
-| 异常提示 | 面板异常**显示 5 秒后自动收起**为「N 项异常（点击查看）」小标签，内容变化会重新计时 |
-| 一键订阅 | 前端调用宿主 `subscribe/` 接口，携带 `media_source=douban` + `media_id`，归属当前登录用户 |
-| 自动订阅 | 定时刷新后按「只订阅新作品 / 类型白名单 / 最低评分 / 每次上限」自动调用订阅链落库 |
+| 忽略作品 | 每张作品卡片带「忽略」按钮；被忽略的作品不再展示、也不会被自动订阅（数据保留，面板顶部「已忽略 N 部」可随时恢复） |
+| 异常提示 | 面板与配置页异常**显示 5 秒后自动收起**为「N 项异常（点击查看）」小标签，内容变化会重新计时 |
+| 一键订阅 | 前端调用宿主 `subscribe/` 接口，携带 `media_source=douban` + `media_id`，归属当前登录用户；订阅偏好（下载路径 / 站点）在配置页统一维护，面板沿用 |
+| 自动订阅 | 定时刷新后按「只订阅新作品 / 类型白名单 / 最低评分 / 每次上限」自动调用订阅链落库；被忽略的作品一律跳过 |
 | 通知 | 可通过宿主通知渠道推送刷新结果与自动订阅明细 |
 | 智能体工具 | `douban_actor_latest_works`：让 AI 查询已跟踪演员的最新作品 |
 
@@ -25,6 +26,7 @@
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | bool | `false` | 启用插件 |
+| `sidebar_nav` | bool | `true` | 是否在 MoviePilot 主界面侧栏显示插件入口。关闭后插件**照常运行**（定时刷新、自动订阅都不受影响），只是不再占用侧栏位置 |
 | `actors` | str | 空 | 演员列表，一行一个；**推荐直接粘贴豆瓣人物主页链接**（如 `https://www.douban.com/personage/37871253/`），也支持人物 ID 或名称（分隔符可用逗号/顿号/分号/换行） |
 | `subscribe_save_path` | str | 空 | 面板订阅时默认保存路径（透传给宿主 `subscribe/`） |
 | `subscribe_sites` | list | `[]` | 面板订阅时默认站点白名单（留空表示全部站点） |
@@ -52,16 +54,23 @@
 | GET | `/works` | 演员 + 作品快照 + 统计（面板数据源），含 `refreshing` 标记 |
 | POST | `/run` | 立即刷新一次。**异步**：立即返回并置 `refreshing=true`；重复调用返回「刷新已在进行中」 |
 | GET | `/search_actor?name=` | 解析演员：可传**主页链接 / 人物 ID / 名称**。链接与 ID 直接命中，不消耗搜索配额 |
+| POST | `/ignore` | 忽略一部作品（body：`media_source`/`media_id`/`title`/`year`/`type`）。忽略后在快照中**过滤**，但原始数据保留，且自动订阅会跳过它 |
+| POST | `/unignore` | 恢复被忽略的作品（body：`key="douban:123"`，或 `{"all": true}` 清空整份忽略列表） |
 | POST | `/clear` | 清空作品快照与自动订阅记录（不动配置） |
 
 > 插件动态路由**不套宿主的 `Response[T]` 外壳**，因此插件接口一律自行返回 `{success, data}`。
+>
+> 宿主是用 `router.add_api_route(**api)` 注册这些路由的，参数由 **FastAPI 注入**：
+> `Optional[Dict[str, Any]] = None` 会被识别成 **requestBody**（`anyOf: [object, null]`，参数名随意），
+> `name: str = ""` 则是 **query** 参数。可在实例的 `/openapi.json` 里直接核对归属。
 
 ## 其他扩展点
 
 - **定时服务**：`get_service()` 注册 `<类名>.Refresh`，cron 由配置决定；未启用或未配置演员时不注册。
 - **远程命令**：`/doubanactor` → `EventType.PluginAction` → `on_plugin_action`。
 - **工作流动作**：`doubanactorsubscribe_refresh`。
-- **侧栏入口**：`nav_key=main`（作品面板）与 `nav_key=settings`（运行状态），`section=subscribe`。
+- **侧栏入口**：`nav_key=main`（作品面板）与 `nav_key=settings`（运行状态），`section=subscribe`；
+  受配置项 `sidebar_nav` 与 `enabled` 双重控制（任一为关则不注册）。
 - **仪表板**：`key=works`，`cols/sm/md = 12/6/4`，刷新间隔 300s。
 
 ## 前端（Vue 模块联邦）
@@ -72,7 +81,8 @@
 src/
 ├── api.ts                 # 接口封装：插件 API + 宿主 subscribe/ 接口 + 图片代理 + 时间格式化
 ├── types.ts               # 与后端 payload 对齐的 TS 类型
-├── WorkGrid.vue           # 作品海报墙（Page / AppPage 复用，带出演演员行与订阅按钮）
+├── WorkGrid.vue           # 作品海报墙（Page / AppPage 复用，带出演演员行 + 订阅 / 打开 / 忽略按钮）
+├── IgnoredManager.vue     # 「已忽略的作品」入口与恢复弹窗
 ├── ErrorAlerts.vue        # 异常提示条：5s 后自动收起，可点击小标签再展开
 ├── SubscribePrefs.vue     # 订阅偏好（保存路径 / 站点），Config 与运行状态页共用
 ├── Page.vue               # 插件详情页（顶部固定操作条：刷新 / 配置插件 / 通知宿主刷新 / 关闭）

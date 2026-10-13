@@ -84,6 +84,14 @@
             :href="work.url"
             target="_blank"
           />
+          <v-btn
+            size="small"
+            variant="text"
+            icon="mdi-eye-off-outline"
+            title="忽略这部作品：不再展示，也不会被自动订阅"
+            :disabled="busy"
+            @click="emit('ignore', work)"
+          />
         </v-card-actions>
       </v-card>
     </div>
@@ -119,7 +127,10 @@ const props = withDefaults(
   { subscribedKeys: () => [], showActors: true }
 )
 
-const emit = defineEmits<{ (e: 'subscribe', work: ActorWork): void }>()
+const emit = defineEmits<{
+  (e: 'subscribe', work: ActorWork): void
+  (e: 'ignore', work: ActorWork): void
+}>()
 
 /** 该作品是否已在订阅系统中 */
 function isSubscribed(work: ActorWork): boolean {

@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { r as resolveApi, d as fetchPathOptions, e as fetchSiteOptions, A as API_BASE, n as normalizeResult, _ as _export_sfc } from './api-BbaK2SUr.js';
+import { r as resolveApi, d as fetchPathOptions, e as fetchSiteOptions, A as API_BASE, n as normalizeResult, _ as _export_sfc } from './api-WVyoRzoO.js';
 
 const {useModel:_useModel,mergeModels:_mergeModels,defineComponent:_defineComponent} = await importShared('vue');
 

@@ -251,6 +251,52 @@ export async function submitSubscribe(
 }
 
 /**
+ * 忽略一部作品：面板不再展示它，自动订阅也会跳过。
+ *
+ * 忽略状态由后端持久化（键为 `media_source:media_id`），因此刷新后依然生效；
+ * 数据不会从快照里删除，随时可以通过 `unignoreWork` 恢复。
+ */
+export async function ignoreWork(
+  api: PluginApi,
+  work: ActorWork
+): Promise<SubscribeOutcome> {
+  try {
+    const raw = await api.post(`${API_BASE}/ignore`, {
+      media_source: work.media_source,
+      media_id: work.media_id,
+      title: work.title,
+      year: work.year,
+      type: work.type,
+    })
+    const res = unwrap<{ success?: boolean; message?: string }>(raw)
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || '忽略失败' }
+    }
+    return { ok: true, message: res?.message || `已忽略「${work.title}」` }
+  } catch (err) {
+    return { ok: false, message: extractError(err) }
+  }
+}
+
+/** 恢复被忽略的作品；`all` 为真时清空整份忽略列表 */
+export async function unignoreWork(
+  api: PluginApi,
+  key = '',
+  all = false
+): Promise<SubscribeOutcome> {
+  try {
+    const raw = await api.post(`${API_BASE}/unignore`, all ? { all: true } : { key })
+    const res = unwrap<{ success?: boolean; message?: string }>(raw)
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || '恢复失败' }
+    }
+    return { ok: true, message: res?.message || '已恢复' }
+  } catch (err) {
+    return { ok: false, message: extractError(err) }
+  }
+}
+
+/**
  * 读取宿主现有订阅的媒体身份集合，用于在面板上标记「已订阅」。
  *
  * 必须分页：宿主对 `count` 做了 `le=200` 校验，历史上直接请求 `count=500`

@@ -118,6 +118,36 @@ async function submitSubscribe(api, work, extras = {}) {
     return { ok: false, message: extractError(err) };
   }
 }
+async function ignoreWork(api, work) {
+  try {
+    const raw = await api.post(`${API_BASE}/ignore`, {
+      media_source: work.media_source,
+      media_id: work.media_id,
+      title: work.title,
+      year: work.year,
+      type: work.type
+    });
+    const res = unwrap(raw);
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || "忽略失败" };
+    }
+    return { ok: true, message: res?.message || `已忽略「${work.title}」` };
+  } catch (err) {
+    return { ok: false, message: extractError(err) };
+  }
+}
+async function unignoreWork(api, key = "", all = false) {
+  try {
+    const raw = await api.post(`${API_BASE}/unignore`, all ? { all: true } : { key });
+    const res = unwrap(raw);
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || "恢复失败" };
+    }
+    return { ok: true, message: res?.message || "已恢复" };
+  } catch (err) {
+    return { ok: false, message: extractError(err) };
+  }
+}
 async function fetchSubscribedKeys(api) {
   const keys = [];
   try {
@@ -241,4 +271,4 @@ function waitForRefresh(api, apply, tries = 72, intervalMs = 2500) {
   void tick();
 }
 
-export { API_BASE as A, PLUGIN_ID as P, _export_sfc as _, waitForRefresh as a, submitSubscribe as b, formatTime as c, fetchPathOptions as d, fetchSiteOptions as e, fetchSubscribedKeys as f, mergeWorks as m, normalizeResult as n, proxyImage as p, resolveApi as r, sortWorks as s, unwrap as u, workKey as w };
+export { API_BASE as A, PLUGIN_ID as P, _export_sfc as _, waitForRefresh as a, submitSubscribe as b, formatTime as c, fetchPathOptions as d, fetchSiteOptions as e, fetchSubscribedKeys as f, unignoreWork as g, ignoreWork as i, mergeWorks as m, normalizeResult as n, proxyImage as p, resolveApi as r, sortWorks as s, unwrap as u, workKey as w };
