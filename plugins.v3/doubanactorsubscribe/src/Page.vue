@@ -425,11 +425,20 @@ const unresolvedCount = computed(
   () => payload.value?.unresolved_count ?? actors.value.filter((actor) => !actor.id).length
 )
 
+/**
+ * 「新作品」的口径（首次发现距今几天内）由后端下发，跟着一起展示。
+ * 只写「新作品」的话，用户看到 0 或一个很大的数时无从判断是坏了还是口径如此。
+ */
+const newWindowLabel = computed(() => {
+  const days = Number(payload.value?.new_window_days || 0)
+  return days > 0 ? `近 ${days} 天新作品` : '新作品'
+})
+
 const statCards = computed(() => {
   const rows = [
     { label: '演员', value: actors.value.length },
     { label: '作品', value: payload.value?.work_count ?? 0 },
-    { label: '新作品', value: payload.value?.new_count ?? 0 },
+    { label: newWindowLabel.value, value: payload.value?.new_count ?? 0 },
   ]
   // 有未解析演员时优先暴露这个数：它才是「为什么作品这么少」的真正原因
   if (unresolvedCount.value) {

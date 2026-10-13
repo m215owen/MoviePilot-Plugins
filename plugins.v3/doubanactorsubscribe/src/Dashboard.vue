@@ -26,7 +26,7 @@
                 <span class="text-caption">演员 <b>{{ stats.actor_count }}</b></span>
                 <span class="text-caption">作品 <b>{{ stats.work_count }}</b></span>
                 <span class="text-caption">
-                  新作品 <b class="das-new">{{ stats.new_count }}</b>
+                  {{ stats.new_label }} <b class="das-new">{{ stats.new_count }}</b>
                 </span>
               </div>
 
@@ -133,11 +133,18 @@ const subscribedKeys = ref<string[]>([])
 
 const enabled = computed(() => payload.value?.enabled ?? props.config?.enabled !== false)
 
+/** 「新作品」的口径（首次发现距今几天内）由后端下发，跟着一起展示，避免误判成坏了 */
+const newWindowLabel = computed(() => {
+  const days = Number(payload.value?.new_window_days || 0)
+  return days > 0 ? `近 ${days} 天新作品` : '新作品'
+})
+
 const stats = computed(() => ({
   actor_count: payload.value?.actor_count ?? 0,
   work_count: payload.value?.work_count ?? 0,
   new_count: payload.value?.new_count ?? 0,
   updated_at: payload.value?.updated_at || '',
+  new_label: newWindowLabel.value,
 }))
 
 /** 展平后的作品：按作品去重（同一部作品可能挂在多位演员名下），新作品优先 */

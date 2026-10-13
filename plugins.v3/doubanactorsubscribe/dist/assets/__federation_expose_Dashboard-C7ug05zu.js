@@ -46,11 +46,16 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     const payload = ref(null);
     const subscribedKeys = ref([]);
     const enabled = computed(() => payload.value?.enabled ?? props.config?.enabled !== false);
+    const newWindowLabel = computed(() => {
+      const days = Number(payload.value?.new_window_days || 0);
+      return days > 0 ? `近 ${days} 天新作品` : "新作品";
+    });
     const stats = computed(() => ({
       actor_count: payload.value?.actor_count ?? 0,
       work_count: payload.value?.work_count ?? 0,
       new_count: payload.value?.new_count ?? 0,
-      updated_at: payload.value?.updated_at || ""
+      updated_at: payload.value?.updated_at || "",
+      new_label: newWindowLabel.value
     }));
     const flattened = computed(() => {
       const works = mergeWorks(payload.value?.actors || []);
@@ -202,7 +207,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                           _createElementVNode("b", null, _toDisplayString(stats.value.work_count), 1)
                         ]),
                         _createElementVNode("span", _hoisted_6, [
-                          _cache[3] || (_cache[3] = _createTextVNode(" 新作品 ", -1)),
+                          _createTextVNode(_toDisplayString(stats.value.new_label) + " ", 1),
                           _createElementVNode("b", _hoisted_7, _toDisplayString(stats.value.new_count), 1)
                         ])
                       ]),
@@ -269,6 +274,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-06b0071f"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-95ecf32f"]]);
 
 export { Dashboard as default };

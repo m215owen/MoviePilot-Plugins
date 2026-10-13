@@ -73,10 +73,14 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         local.actors = String(value || "");
       }
     });
+    const newWindowLabel = computed(() => {
+      const days = Number(payload.value?.new_window_days || 0);
+      return days > 0 ? `近 ${days} 天新作品` : "新作品";
+    });
     const statCards = computed(() => [
       { label: "演员", value: payload.value?.actor_count ?? 0 },
       { label: "作品", value: payload.value?.work_count ?? 0 },
-      { label: "新作品", value: payload.value?.new_count ?? 0 },
+      { label: newWindowLabel.value, value: payload.value?.new_count ?? 0 },
       { label: "上次刷新", value: formatTime(payload.value?.updated_at) }
     ]);
     function notify(type, message) {
@@ -526,6 +530,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-7a2495be"]]);
+const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-6969d4fc"]]);
 
 export { AppPageSettings as default };

@@ -176,7 +176,7 @@ node node_modules/vite/bin/vite.js build
   ```
 
   与官方插件（`doubanrank` / `bangumicoll` / `maoyanrank` 等）一致；写入前用 `chain.exists(meta=meta)` 去重。
-- **`is_new` 语义**：按 **`first_seen` 距今是否在时间窗内**（`_NEW_WINDOW_SECONDS`，默认 7 天）现算，
+- **`is_new` 语义**：按 **`first_seen` 距今是否在时间窗内**（`_NEW_WINDOW_SECONDS`，默认 3 天）现算，
   面板载荷与仪表板统计都走这一手。
 
   ⚠️ 不要改回「相对上一轮快照新增」的口径。旧口径只活到下一次刷新为止：抓完新作品后随手点一次
@@ -186,6 +186,10 @@ node node_modules/vite/bin/vite.js build
   通知文案里的「本次新发现 N 部」是**另一个口径**（只统计真正第一次见到的作品，由
   `_refresh_actor` 的第 4 个返回值给出），不能与面板共用，否则通知会天天报「新增 88 部」。
   开启 `auto_only_new` 时首次刷新只建立基线，不会批量订阅历史作品。
+
+  天数由 `_NEW_WINDOW_DAYS` 决定，会随面板载荷下发（`new_window_days`）并显示在统计卡上
+  （「近 3 天新作品」），避免用户看到 0 或很大的数时无从判断是坏了还是口径如此。
+  不宜调得太大：一次性导入上百位演员时全部作品都会落在窗口内，标成「新」的会糊成一片。
 - **名称解析的模糊命中**：豆瓣人物搜索是模糊匹配，配置「宋星颐」实际返回的是
   「宋星翰 / 宋星成 / 宋星辰…」。找不到**同名**候选时插件会退回第一个结果（否则这项配置
   直接报废），但会把这次退回记为 `fuzzy=True` 并带上 `candidates`（前 5 个候选名）：

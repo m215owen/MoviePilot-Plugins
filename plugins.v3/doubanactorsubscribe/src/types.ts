@@ -152,6 +152,8 @@ export interface WorksPayload {
   actor_count: number
   work_count: number
   new_count: number
+  /** 「新作品」的口径：首次发现距今不超过这个天数（后端下发，面板据此标注口径） */
+  new_window_days?: number
   auto_subscribe: boolean
   auto_only_new: boolean
   auto_min_vote: number

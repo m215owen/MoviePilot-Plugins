@@ -153,13 +153,18 @@ _COOKIE_EXPIRED_HINT = (
 # 其作品与详情仍按 cron / 手动刷新照常抓取，不受此冷却影响。
 _SEARCH_COOLDOWN_SECONDS = 24 * 3600
 
-# 「新作品」的时间窗：一部作品自首次被发现起 7 天内都算「新」。
+# 「新作品」的时间窗：一部作品自首次被发现起 N 天内都算「新」。
 #
 # 这里不能用「相对上一轮快照新增」来判定 —— 那个口径只活到下一次刷新为止：
 # 抓完新作品后随手点一次刷新、插件被重载、或定时任务跑一轮，标记就全被清零了，
 # 于是「新作品」计数长期是 0、勾上「只看新作品」一片空白，看起来就像插件没抓到东西。
 # 按 first_seen 的时间窗判定则天然稳定：只要作品是最近发现的，就一直显示「新」。
-_NEW_WINDOW_SECONDS = 7 * 24 * 3600
+#
+# 天数不宜太长：刚把上百位演员一次性导进来时，全部作品都会落在窗口内，
+# 标成「新」的会糊成一片（实测 98 位演员 = 844 部全中）。3 天足够跨过一个周末、
+# 又能让批量导入的噪声在一周内自行消散。面板会把天数写在统计卡上，口径对用户可见。
+_NEW_WINDOW_DAYS = 3
+_NEW_WINDOW_SECONDS = _NEW_WINDOW_DAYS * 24 * 3600
 
 # 作品 first_seen 的落盘格式（与 strftime 保持一致）
 _TS_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -768,7 +773,7 @@ class DoubanActorSubscribe(_PluginBase):
             {
                 "title": f"{self.plugin_name} · 最新作品",
                 "subtitle": f"{len(self._actor_entries)} 位演员｜{total} 部作品"
-                + (f"｜{new_count} 部新作品" if new_count else ""),
+                + (f"｜近 {_NEW_WINDOW_DAYS} 天新增 {new_count} 部" if new_count else ""),
                 "refresh": 300,
                 "border": True,
             },
@@ -1204,6 +1209,9 @@ class DoubanActorSubscribe(_PluginBase):
             "actor_count": len(self._actor_entries),
             "work_count": total,
             "new_count": new_count,
+            # 「新作品」的口径：首次发现距今不超过这个天数。面板据此把口径写进统计卡，
+            # 免得用户看到 0 或一个很大的数时无从判断是不是坏了。
+            "new_window_days": _NEW_WINDOW_DAYS,
             "auto_subscribe": self._auto_subscribe,
             "auto_only_new": self._auto_only_new,
             "auto_min_vote": self._auto_min_vote,
