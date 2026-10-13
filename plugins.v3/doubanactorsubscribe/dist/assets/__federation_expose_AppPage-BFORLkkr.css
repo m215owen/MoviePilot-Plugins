@@ -1,27 +1,27 @@
 
 /* 仅使用 scoped 样式 */
-.das-root[data-v-5e3563d8] {
+.das-root[data-v-cbe93c29] {
   max-width: 1600px;
 }
-.das-titlebar[data-v-5e3563d8] {
+.das-titlebar[data-v-cbe93c29] {
   gap: 12px;
   row-gap: 4px;
 }
 
 /* 演员 chip 区：flex 换行 + 纵向滚动。
    不能用 v-chip-group——它是横向滑动容器，会带左右箭头且展开看不出效果。 */
-.das-chips[data-v-5e3563d8] {
+.das-chips[data-v-cbe93c29] {
   max-height: 96px;
   overflow-y: auto;
 }
-.das-actor-chips[data-v-5e3563d8] {
+.das-actor-chips[data-v-cbe93c29] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 /* 演员 chip 上的「新」：作品墙不再逐张标新，最近加入的演员靠这里才一眼可辨 */
-.das-chip-new[data-v-5e3563d8] {
+.das-chip-new[data-v-cbe93c29] {
   display: inline-flex;
   align-items: center;
   height: 14px;
@@ -36,22 +36,22 @@
 }
 
 /* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
-.das-chips-expanded[data-v-5e3563d8] {
+.das-chips-expanded[data-v-cbe93c29] {
   max-height: 60vh;
 }
-.das-toolbar[data-v-5e3563d8] {
+.das-toolbar[data-v-cbe93c29] {
   gap: 12px;
 }
-.das-dim[data-v-5e3563d8] {
+.das-dim[data-v-cbe93c29] {
   opacity: 0.75;
 }
-.das-search[data-v-5e3563d8] {
+.das-search[data-v-cbe93c29] {
   max-width: 240px;
 }
-.das-checkbox[data-v-5e3563d8] {
+.das-checkbox[data-v-cbe93c29] {
   max-width: 130px;
 }
-.das-page-info[data-v-5e3563d8] {
+.das-page-info[data-v-cbe93c29] {
   font-size: 0.82rem;
   opacity: 0.85;
   white-space: nowrap;

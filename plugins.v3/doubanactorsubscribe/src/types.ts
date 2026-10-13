@@ -89,7 +89,7 @@ export interface ActorWork {
   roles?: string[]
   /** 出演该作品的演员名（作品墙合并去重后聚合而来） */
   actorNames?: string[]
-  /** 首次出现的时间（同一轮刷新里写入基线的作品，其 first_seen == 演员 added_at） */
+  /** 首次出现的时间（同一轮刷新写入基线的作品，其 first_seen == 演员 baseline_at） */
   first_seen?: string
   /**
    * 是否是「后来才出现的新作品」。
@@ -125,9 +125,14 @@ export interface ActorBrief {
   fuzzy?: boolean
   /** fuzzy 为真时的前几个候选名，供用户判断该改成哪个名字或改填人物 ID */
   candidates?: string[]
-  /** 演员的「加入时间」（本插件第一次看到他/她的时刻），用于判定「新演员」与基线作品 */
-  added_at?: string
-  /** 是否是「最近加入」的演员（added_at 在 new_window_days 天以内），chip 上标「新」 */
+  /**
+   * 演员的「加入时间」：**只有真正新加入的演员才有值**（本次刷新之前解析缓存里查无此人）。
+   *
+   * 升级前就在订阅列表里的老演员查不到加入时间，字段留空、chip 不标「新」——
+   * 一次性给上百位演员补一个「现在」当加入时间，会让他们全被标成新演员。
+   */
+  joined_at?: string
+  /** 是否是「最近加入」的演员（joined_at 在 new_window_days 天以内），chip 上标「新」 */
   is_new?: boolean
   /** 解析或抓取错误 */
   error?: string | null

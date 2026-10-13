@@ -505,7 +505,7 @@ function actorTitle(actor: ActorGroup): string {
   // 新加入的演员把「加入时间」写进提示：chip 上的「新」只说明是最近加的，
   // 具体哪天加的看着这个日期才没有歧义
   const prefix =
-    actor.is_new && actor.added_at ? `最近加入（${actor.added_at}）｜` : ''
+    actor.is_new && actor.joined_at ? `最近加入（${actor.joined_at}）｜` : ''
   if (actor.error) return `${prefix}${actor.error}${suffix}`
   if (isFuzzyActor(actor)) {
     const candidates = (actor.candidates || []).filter(Boolean)
