@@ -199,6 +199,8 @@ export interface IgnoredWork {
 export interface SiteOption {
   id: number
   name: string
+  /** 站点域名，仅用于搜索站点选择框里做去重辨认，可缺省 */
+  domain?: string
 }
 
 /** 可选的下载保存路径 */

@@ -6,6 +6,8 @@ const HOST_DOWNLOAD_PATHS = "download/paths";
 const HOST_DOWNLOAD_CLIENTS = "download/clients";
 const HOST_MEDIA_PAGE = "/media";
 const HOST_RESOURCE_PAGE = "/resource";
+const HOST_SITE_MEDIA = "site/media/";
+const HOST_DEFAULT_SEARCH_SITES = "system/setting/public/IndexerSites";
 const SUBSCRIBE_PAGE_SIZE = 100;
 const SUBSCRIBE_MAX_PAGES = 20;
 let lastApi = null;
@@ -58,7 +60,7 @@ function mediaPageUrl(work) {
   }
   return `${appBaseUrl()}#${HOST_MEDIA_PAGE}?${params.toString()}`;
 }
-function resourceSearchUrl(work) {
+function resourceSearchUrl(work, sites) {
   const mediaId = String(work?.media_id ?? "").trim();
   const title = String(work?.title ?? "").trim();
   if (!mediaId && !title) return "";
@@ -72,7 +74,28 @@ function resourceSearchUrl(work) {
     const value = String(work?.[key] ?? "").trim();
     if (value) params.set(key, value);
   }
+  const siteText = normalizeSiteIds(sites);
+  if (siteText) params.set("sites", siteText);
   return `${appBaseUrl()}#${HOST_RESOURCE_PAGE}?${params.toString()}`;
+}
+function normalizeSiteIds(sites) {
+  if (sites == null) return "";
+  const list = Array.isArray(sites) ? sites : String(sites).split(",");
+  const ids = [];
+  for (const item of list) {
+    const text = String(item ?? "").trim();
+    if (!text) continue;
+    const value = Number(text);
+    if (!Number.isFinite(value)) continue;
+    ids.push(String(value));
+  }
+  return ids.join(",");
+}
+function searchSiteKind(type) {
+  const value = String(type || "").trim();
+  if (value === "电视剧") return "tv";
+  if (value === "音乐") return "music";
+  return "movie";
 }
 function appBaseUrl() {
   if (typeof window === "undefined") return "";
@@ -298,6 +321,45 @@ async function fetchSiteOptions(api) {
     return [];
   }
 }
+async function fetchSearchSites(api, type) {
+  try {
+    const raw = await api.get(`${HOST_SITE_MEDIA}${searchSiteKind(type)}`);
+    const list = unwrapList(raw);
+    if (!list.length) return [];
+    const options = [];
+    for (const row of list) {
+      if (row?.id == null) continue;
+      if (row.is_active === false) continue;
+      options.push({
+        id: Number(row.id),
+        name: String(row.name || `站点 ${row.id}`),
+        domain: String(row.domain || "")
+      });
+    }
+    return options;
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 读取搜索站点列表失败`, err);
+    return [];
+  }
+}
+async function fetchDefaultSearchSites(api) {
+  try {
+    const raw = await api.get(HOST_DEFAULT_SEARCH_SITES);
+    const holder = unwrap(raw) || {};
+    const inner = (holder.data ?? holder) || {};
+    const value = inner.value;
+    if (!Array.isArray(value)) return [];
+    const ids = [];
+    for (const item of value) {
+      const id = Number(item);
+      if (Number.isFinite(id)) ids.push(id);
+    }
+    return ids;
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 读取默认搜索站点设置失败`, err);
+    return [];
+  }
+}
 async function fetchPathOptions(api) {
   try {
     const raw = await api.get(HOST_DOWNLOAD_PATHS);
@@ -408,4 +470,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { API_BASE as A, PLUGIN_ID as P, _export_sfc as _, waitForRefresh as a, submitSubscribe as b, unsubscribeWork as c, removeActor as d, formatTime as e, fetchSubscribedKeys as f, mediaPageUrl as g, fetchPathOptions as h, ignoreWork as i, fetchDownloaderOptions as j, fetchSiteOptions as k, resourceSearchUrl as l, mergeWorks as m, normalizeResult as n, unignoreWork as o, proxyImage as p, resolveApi as r, sortWorks as s, unwrap as u, workKey as w };
+export { API_BASE as A, PLUGIN_ID as P, _export_sfc as _, waitForRefresh as a, submitSubscribe as b, unsubscribeWork as c, removeActor as d, formatTime as e, fetchSubscribedKeys as f, mediaPageUrl as g, fetchPathOptions as h, ignoreWork as i, fetchDownloaderOptions as j, fetchSiteOptions as k, unignoreWork as l, mergeWorks as m, normalizeResult as n, resourceSearchUrl as o, proxyImage as p, searchSiteKind as q, resolveApi as r, sortWorks as s, fetchSearchSites as t, unwrap as u, fetchDefaultSearchSites as v, workKey as w };

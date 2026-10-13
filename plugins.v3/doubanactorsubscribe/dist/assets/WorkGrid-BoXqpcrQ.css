@@ -15,24 +15,24 @@
 }
 
 /* 仅使用 scoped 样式；不要编写会全局生效的选择器（组件库类名、html、body、:root） */
-.das-grid[data-v-9aca08ea] {
+.das-grid[data-v-b1a24f85] {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(134px, 1fr));
   gap: 12px;
 }
-.das-card[data-v-9aca08ea] {
+.das-card[data-v-b1a24f85] {
   display: flex;
   flex-direction: column;
   height: 100%;
 }
-.das-poster[data-v-9aca08ea] {
+.das-poster[data-v-b1a24f85] {
   position: relative;
   background-color: rgba(128, 128, 128, 0.08);
 }
-.das-poster-img[data-v-9aca08ea] {
+.das-poster-img[data-v-b1a24f85] {
   width: 100%;
 }
-.das-poster-ph[data-v-9aca08ea] {
+.das-poster-ph[data-v-b1a24f85] {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -40,20 +40,20 @@
   height: 100%;
   opacity: 0.45;
 }
-.das-badge[data-v-9aca08ea] {
+.das-badge[data-v-b1a24f85] {
   position: absolute;
   top: 6px;
 }
-.das-badge-left[data-v-9aca08ea] {
+.das-badge-left[data-v-b1a24f85] {
   left: 6px;
 }
-.das-badge-right[data-v-9aca08ea] {
+.das-badge-right[data-v-b1a24f85] {
   right: 6px;
 }
-.das-body[data-v-9aca08ea] {
+.das-body[data-v-b1a24f85] {
   flex: 1 1 auto;
 }
-.das-title[data-v-9aca08ea] {
+.das-title[data-v-b1a24f85] {
   font-size: 0.85rem;
   font-weight: 600;
   line-height: 1.25;
@@ -64,23 +64,23 @@
   overflow: hidden;
   word-break: break-word;
 }
-.das-meta[data-v-9aca08ea] {
+.das-meta[data-v-b1a24f85] {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-top: 6px;
   flex-wrap: wrap;
 }
-.das-dim[data-v-9aca08ea] {
+.das-dim[data-v-b1a24f85] {
   font-size: 0.72rem;
   opacity: 0.75;
 }
-.das-vote[data-v-9aca08ea] {
+.das-vote[data-v-b1a24f85] {
   display: inline-flex;
   align-items: center;
   gap: 2px;
 }
-.das-roles[data-v-9aca08ea] {
+.das-roles[data-v-b1a24f85] {
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -88,7 +88,7 @@
 }
 
 /* 出演演员：合并视图下替代按演员分组，因此需要能一眼看到 */
-.das-actors[data-v-9aca08ea] {
+.das-actors[data-v-b1a24f85] {
   display: flex;
   align-items: center;
   gap: 3px;
@@ -97,16 +97,16 @@
   opacity: 0.85;
   min-width: 0;
 }
-.das-actors-text[data-v-9aca08ea] {
+.das-actors-text[data-v-b1a24f85] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.das-actions[data-v-9aca08ea] {
+.das-actions[data-v-b1a24f85] {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-.das-sub-btn[data-v-9aca08ea] {
+.das-sub-btn[data-v-b1a24f85] {
   flex: 1 1 auto;
 }

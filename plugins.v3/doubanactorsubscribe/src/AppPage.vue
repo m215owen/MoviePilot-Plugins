@@ -245,6 +245,7 @@
       :subscribed-keys="subscribedKeys"
       :pending-key="pendingKey"
       :busy="busy"
+      :api="props.api"
       empty-text="没有符合条件的作品"
       @subscribe="subscribe"
       @unsubscribe="unsubscribe"

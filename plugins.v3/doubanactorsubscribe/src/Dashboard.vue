@@ -51,16 +51,7 @@
                   :title="isSubscribed(item.work) ? '取消订阅' : '订阅'"
                   @click="isSubscribed(item.work) ? unsubscribe(item.work) : subscribe(item.work)"
                 />
-                <v-btn
-                  v-if="searchHref(item.work)"
-                  size="x-small"
-                  variant="text"
-                  icon="mdi-magnify"
-                  :href="searchHref(item.work)"
-                  target="_blank"
-                  rel="noopener"
-                  title="在 MoviePilot 中搜索这部作品的资源（新标签页）"
-                />
+                <SearchResourceButton :api="api" :work="item.work" size="x-small" variant="text" />
                 <v-btn
                   size="x-small"
                   variant="text"
@@ -94,6 +85,7 @@
  * 内容由本组件渲染。这里聚焦「新作品 + 一键订阅」这一最常用动作。
  */
 import { computed, inject, onMounted, ref } from 'vue'
+import SearchResourceButton from './SearchResourceButton.vue'
 import {
   API_BASE,
   PLUGIN_ID,
@@ -102,7 +94,6 @@ import {
   ignoreWork,
   mergeWorks,
   resolveApi,
-  resourceSearchUrl,
   sortWorks,
   submitSubscribe,
   unsubscribeWork,
@@ -262,11 +253,6 @@ async function ignore(work: ActorWork): Promise<void> {
   const res = await ignoreWork(api, work)
   notify(res.ok ? 'success' : 'error', res.message)
   if (res.ok) await load()
-}
-
-/** 「搜索资源」的去向：宿主自带的资源搜索页，打开即按这部作品搜一遍站点 */
-function searchHref(work: ActorWork): string {
-  return resourceSearchUrl(work)
 }
 
 onMounted(load)

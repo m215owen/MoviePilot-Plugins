@@ -1,0 +1,10 @@
+
+/* 站点多时弹窗内部滚动；不要编写全局生效的选择器 */
+.das-site-list[data-v-e2d8e002] {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.das-site-item[data-v-e2d8e002] {
+  margin-bottom: -4px;
+}

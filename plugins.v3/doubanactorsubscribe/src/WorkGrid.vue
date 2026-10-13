@@ -85,16 +85,7 @@
             target="_blank"
             rel="noopener"
           />
-          <v-btn
-            v-if="searchHref(work)"
-            size="small"
-            variant="text"
-            icon="mdi-magnify"
-            title="在 MoviePilot 中搜索这部作品的资源（新标签页）"
-            :href="searchHref(work)"
-            target="_blank"
-            rel="noopener"
-          />
+          <SearchResourceButton :api="api" :work="work" size="small" variant="text" />
           <v-btn
             size="small"
             variant="text"
@@ -116,10 +107,12 @@
  * 只负责渲染与事件抛出，订阅的后端交互由父组件完成，
  * 这样详情页 / 侧栏全页 / 仪表板可以复用同一套视觉与交互。
  * 海报统一经宿主图片代理加载，绕开豆瓣 CDN 的 Referer 防盗链。
- * 卡片上的「详情」按钮跳宿主自带的媒体详情页（见 `mediaPageUrl`），不再外链豆瓣。
+ * 卡片上的「详情」按钮跳宿主自带的媒体详情页（见 `mediaPageUrl`），不再外链豆瓣；
+ * 「搜索资源」按钮自带站点选择框（见 `SearchResourceButton`）。
  */
-import { mediaPageUrl, proxyImage, resourceSearchUrl, workKey } from './api'
-import type { ActorWork } from './types'
+import SearchResourceButton from './SearchResourceButton.vue'
+import { mediaPageUrl, proxyImage, workKey } from './api'
+import type { ActorWork, PluginApi } from './types'
 
 const props = withDefaults(
   defineProps<{
@@ -135,6 +128,8 @@ const props = withDefaults(
     emptyText?: string
     /** 是否在卡片上显示「出演演员」，合并视图下用它替代按演员分组 */
     showActors?: boolean
+    /** 宿主注入的 axios 实例，供「搜索资源」读取站点清单 */
+    api?: PluginApi
   }>(),
   { subscribedKeys: () => [], showActors: true }
 )
@@ -167,16 +162,6 @@ function detailTitle(work: ActorWork): string {
   return String(work.type || '').trim()
     ? '在 MoviePilot 中打开媒体详情（新标签页）'
     : '宿主未识别出媒体类型，改为打开豆瓣条目（新标签页）'
-}
-
-/**
- * 「搜索资源」按钮的去向：宿主自带的资源搜索页，打开就按这部作品搜一遍站点。
- *
- * 与「详情」不同，这里不需要类型也能用：搜索页拿豆瓣身份做精确匹配，
- * 匹配不上就退回用片名模糊搜索，所以只要作品有 ID 或标题就一定会给出结果。
- */
-function searchHref(work: ActorWork): string {
-  return resourceSearchUrl(work)
 }
 </script>
 

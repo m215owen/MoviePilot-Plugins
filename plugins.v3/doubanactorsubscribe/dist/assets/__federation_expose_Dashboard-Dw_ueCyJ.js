@@ -1,5 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { m as mergeWorks, s as sortWorks, w as workKey, e as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, c as unsubscribeWork, i as ignoreWork, l as resourceSearchUrl, _ as _export_sfc } from './_plugin-vue_export-helper-DkqlrLa1.js';
+import { _ as _sfc_main$1 } from './SearchResourceButton.vue_vue_type_script_setup_true_lang-BvAsOj-z.js';
+import { m as mergeWorks, s as sortWorks, w as workKey, e as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, c as unsubscribeWork, i as ignoreWork, _ as _export_sfc } from './_plugin-vue_export-helper-DpVJBdwh.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -151,9 +152,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       notify(res.ok ? "success" : "error", res.message);
       if (res.ok) await load();
     }
-    function searchHref(work) {
-      return resourceSearchUrl(work);
-    }
     onMounted(load);
     return (_ctx, _cache) => {
       const _component_v_icon = _resolveComponent("v-icon");
@@ -232,16 +230,12 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                             title: isSubscribed(item.work) ? "取消订阅" : "订阅",
                             onClick: ($event) => isSubscribed(item.work) ? unsubscribe(item.work) : subscribe(item.work)
                           }, null, 8, ["icon", "color", "loading", "title", "onClick"]),
-                          searchHref(item.work) ? (_openBlock(), _createBlock(_component_v_btn, {
-                            key: 0,
+                          _createVNode(_sfc_main$1, {
+                            api: __props.api,
+                            work: item.work,
                             size: "x-small",
-                            variant: "text",
-                            icon: "mdi-magnify",
-                            href: searchHref(item.work),
-                            target: "_blank",
-                            rel: "noopener",
-                            title: "在 MoviePilot 中搜索这部作品的资源（新标签页）"
-                          }, null, 8, ["href"])) : _createCommentVNode("", true),
+                            variant: "text"
+                          }, null, 8, ["api", "work"]),
                           _createVNode(_component_v_btn, {
                             size: "x-small",
                             variant: "text",
@@ -275,6 +269,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-1b04855d"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-06b0071f"]]);
 
 export { Dashboard as default };

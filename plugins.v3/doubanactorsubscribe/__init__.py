@@ -514,7 +514,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.9.0"
+    plugin_version = "1.10.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
