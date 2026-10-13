@@ -157,16 +157,21 @@
       </div>
     </v-card>
 
-    <!-- 演员作品墙 -->
+    <!-- 演员作品墙（与「豆瓣演员订阅」同形：筛选工具条 + 海报卡片墙 + 分页） -->
     <v-card v-if="isMain" variant="outlined" class="mb-3">
-      <div class="d-flex align-center pa-3 pb-1 flex-wrap" style="gap: 8px">
-        <v-icon icon="mdi-movie-open-star-outline" size="18" class="mr-2" />
-        <span class="text-subtitle-2">演员作品（{{ worksSummary.total }}）</span>
-        <v-chip size="x-small" variant="tonal" color="primary">待订阅 {{ worksSummary.pending }}</v-chip>
-        <v-chip v-if="worksSummary.cooling" size="x-small" variant="tonal" color="warning">
+      <v-card-title class="d-flex align-center flex-wrap sdas-titlebar">
+        <v-icon icon="mdi-movie-open-star-outline" class="mr-1" />
+        <span>演员作品</span>
+        <v-chip size="small" variant="tonal">{{ worksSummary.total }} 部</v-chip>
+        <v-chip v-if="worksSummary.pending" size="small" variant="tonal" color="primary">
+          待订阅 {{ worksSummary.pending }}
+        </v-chip>
+        <v-chip v-if="worksSummary.cooling" size="small" variant="tonal" color="warning">
           冷却 {{ worksSummary.cooling }}
         </v-chip>
-        <v-chip size="x-small" variant="tonal" color="success">已下载 {{ worksSummary.downloaded }}</v-chip>
+        <v-chip v-if="worksSummary.downloaded" size="small" variant="tonal" color="info">
+          已下载 {{ worksSummary.downloaded }}
+        </v-chip>
         <v-spacer />
         <span class="text-caption sdas-dim">
           快照 {{ works.refreshed_at ? formatTime(works.refreshed_at) : '未刷新' }}
@@ -182,35 +187,71 @@
         >
           刷新作品
         </v-btn>
-      </div>
+      </v-card-title>
 
-      <div class="d-flex align-center flex-wrap px-3 pb-2" style="gap: 8px">
-        <v-text-field
-          v-model="workKeyword"
-          density="compact"
-          variant="outlined"
-          hide-details
-          prepend-inner-icon="mdi-magnify"
-          placeholder="筛选剧名 / 演员"
-          class="sdas-filter"
-        />
-        <v-select
-          v-model="workState"
-          :items="stateFilters"
-          density="compact"
-          variant="outlined"
-          hide-details
-          class="sdas-state-filter"
-        />
-        <v-select
-          v-model="workActor"
-          :items="actorFilters"
-          density="compact"
-          variant="outlined"
-          hide-details
-          class="sdas-state-filter"
-        />
-      </div>
+      <v-card-text class="pt-0">
+        <!-- 演员筛选：与豆瓣插件一致，用可换行的 chip 行。
+             刻意**不用 v-chip-group**：它是横向滑动容器（自带左右箭头，
+             多出来的演员只能靠点箭头翻，展开也看不出效果）。 -->
+        <div class="sdas-chips" :class="{ 'sdas-chips-expanded': actorsExpanded }">
+          <div class="sdas-actor-chips">
+            <v-chip
+              size="small"
+              variant="tonal"
+              :color="workActor === ALL_ACTORS ? 'primary' : undefined"
+              @click="workActor = ALL_ACTORS"
+            >
+              全部演员
+            </v-chip>
+            <v-chip
+              v-for="item in visibleActorFilters"
+              :key="item.value"
+              size="small"
+              variant="tonal"
+              :color="workActor === item.value ? 'primary' : undefined"
+              :title="`只看「${item.value}」的作品`"
+              @click="workActor = item.value"
+            >
+              {{ item.value }}
+              <span class="ml-1 sdas-dim">{{ item.count }}</span>
+            </v-chip>
+          </div>
+        </div>
+        <div v-if="actorFilters.length > ACTOR_COLLAPSE_LIMIT" class="mt-1">
+          <v-btn
+            size="x-small"
+            variant="text"
+            color="primary"
+            :append-icon="actorsExpanded ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+            @click="actorsExpanded = !actorsExpanded"
+          >
+            {{ actorsExpanded ? '收起' : `展开全部（共 ${actorFilters.length} 位）` }}
+          </v-btn>
+        </div>
+
+        <div class="d-flex align-center flex-wrap mt-2 sdas-toolbar">
+          <v-btn-toggle v-model="workState" density="compact" variant="outlined" divided>
+            <v-btn size="small" value="all">全部</v-btn>
+            <v-btn size="small" value="pending">待订阅</v-btn>
+            <v-btn size="small" value="cooling">冷却中</v-btn>
+            <v-btn size="small" value="downloaded">已下载</v-btn>
+          </v-btn-toggle>
+          <v-text-field
+            v-model="workKeyword"
+            density="compact"
+            variant="outlined"
+            hide-details
+            clearable
+            prepend-inner-icon="mdi-magnify"
+            placeholder="搜索剧名 / 演员"
+            class="sdas-filter"
+          />
+          <v-spacer />
+          <span class="text-caption sdas-dim sdas-count">
+            筛出 {{ filteredWorks.length }} 部
+          </span>
+        </div>
+      </v-card-text>
 
       <v-alert
         v-if="workMessage"
@@ -223,76 +264,43 @@
         <div class="text-caption sdas-dim">下载完成后由「整理入库」搬到媒体库，可在下方账本查看。</div>
       </v-alert>
 
-      <v-table density="compact" hover class="sdas-table">
-        <thead>
-          <tr>
-            <th class="text-start">剧名</th>
-            <th class="text-start">年份</th>
-            <th class="text-start">演员</th>
-            <th class="text-start">发现</th>
-            <th class="text-start">状态</th>
-            <th class="text-end">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in visibleWorks" :key="row.key">
-            <td>
-              <div class="sdas-title" :title="row.alt_title || row.title">{{ row.title }}</div>
-            </td>
-            <td class="text-caption">{{ row.year || '—' }}</td>
-            <td class="text-caption">{{ row.actor || '—' }}</td>
-            <td class="text-caption text-no-wrap">
-              <v-chip size="x-small" variant="tonal">{{ sourceLabel(row.source) }}</v-chip>
-              <span v-if="row.type" class="sdas-dim ml-1">{{ row.type }}</span>
-            </td>
-            <td>
-              <v-chip
-                size="x-small"
-                variant="tonal"
-                :color="stateColor(row.state)"
-                :title="row.torrent_title || ''"
-              >
-                {{ stateLabel(row) }}
-              </v-chip>
-            </td>
-            <td class="text-end text-no-wrap">
-              <v-btn
-                v-if="row.state === 'pending' || row.state === 'cooling'"
-                size="x-small"
-                variant="tonal"
-                color="primary"
-                prepend-icon="mdi-plus"
-                :loading="subscribingKey === row.key"
-                @click="doSubscribe(row)"
-              >
-                订阅
-              </v-btn>
-              <v-btn
-                size="x-small"
-                variant="text"
-                icon="mdi-magnify"
-                title="到宿主的资源搜索页按剧名搜一遍（人工复核）"
-                :href="workResourceUrl(row)"
-                target="_blank"
-              />
-            </td>
-          </tr>
-          <tr v-if="!visibleWorks.length">
-            <td colspan="6" class="text-center text-caption sdas-dim py-3">
-              {{ worksEmptyHint }}
-            </td>
-          </tr>
-        </tbody>
-      </v-table>
+      <div class="px-3 pb-3">
+        <v-progress-linear
+          v-if="works.running || refreshingWorks"
+          indeterminate
+          color="primary"
+          class="mb-3"
+        />
 
-      <div v-if="visibleWorks.length < filteredWorks.length" class="pa-2 text-center">
-        <v-btn size="small" variant="text" @click="workLimit += 50">
-          显示更多（还有 {{ filteredWorks.length - visibleWorks.length }} 部）
-        </v-btn>
-      </div>
+        <!-- 作品卡片墙：海报 + 状态徽标 + 一键订阅，与「豆瓣演员订阅」同形 -->
+        <WorkGrid
+          :works="pagedWorks"
+          :pending-key="subscribingKey"
+          :sites="searchSites"
+          :empty-text="worksEmptyHint"
+          @subscribe="doSubscribe"
+        />
 
-      <div v-else-if="works.running" class="px-3 pb-2 text-caption sdas-dim">
-        后台任务执行中，作品列表随后会自动更新…
+        <!-- 分页：作品多时每页只渲染 20 张，避免长列表拖垮渲染。
+             用 v-btn 手写而非 v-pagination：卡片墙在联邦组件里，
+             手写按钮不依赖任何外部组件的注册情况。 -->
+        <div v-if="workPageCount > 1" class="d-flex align-center justify-center mt-3 ga-2">
+          <v-btn
+            size="small"
+            variant="tonal"
+            icon="mdi-chevron-left"
+            :disabled="workPage <= 1"
+            @click="workPage = Math.max(1, workPage - 1)"
+          />
+          <span class="sdas-page-info">第 {{ workPage }} / {{ workPageCount }} 页</span>
+          <v-btn
+            size="small"
+            variant="tonal"
+            icon="mdi-chevron-right"
+            :disabled="workPage >= workPageCount"
+            @click="workPage = Math.min(workPageCount, workPage + 1)"
+          />
+        </div>
       </div>
     </v-card>
 
@@ -454,7 +462,8 @@
  * 本插件不走宿主订阅系统，因此这里没有任何订阅按钮 —— 面板的核心动作是
  * 「立即运行」「整理入库」「移出账本」与「人工到站点复核」。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import WorkGrid from './WorkGrid.vue'
 import {
   API_BASE,
   clearCooldown,
@@ -542,30 +551,43 @@ const works = ref<WorksPayload>({
   actor_count: 0,
 })
 const workKeyword = ref('')
+/** 状态筛选（v-btn-toggle 的取值，与卡片墙的状态徽标同口径） */
 const workState = ref('all')
 const workActor = ref('all')
-/** 一次最多渲染多少行（作品可能上百条，用「显示更多」分批） */
-const workLimit = ref(40)
+/** 一次最多渲染多少张卡片（作品可能上百条，用分页而非无限拉长页面） */
+const WORK_PAGE_SIZE = 20
+const workPage = ref(1)
 const refreshingWorks = ref(false)
 const subscribingKey = ref('')
 const workMessage = ref('')
 
+/** 演员筛选的「全部」哨兵值（与豆瓣插件同一套写法） */
+const ALL_ACTORS = 'all'
+/** 演员筛选区超过这个数量就默认折叠，避免筛选区占掉大半屏 */
+const ACTOR_COLLAPSE_LIMIT = 12
+const actorsExpanded = ref(false)
+
 const worksSummary = computed(() => works.value.summary)
 
-const stateFilters = [
-  { title: '全部状态', value: 'all' },
-  { title: '待订阅', value: 'pending' },
-  { title: '冷却中', value: 'cooling' },
-  { title: '已下载', value: 'downloaded' },
-]
-
 /** 演员筛选项：由作品数据自身推导，避免与配置里的写法不一致 */
-const actorFilters = computed(() => [
-  { title: '全部演员', value: 'all' },
-  ...Array.from(new Set(works.value.items.map((item) => String(item.actor || '')).filter(Boolean))).map(
-    (name) => ({ title: name, value: name })
-  ),
-])
+const actorFilters = computed(() =>
+  Array.from(new Set(works.value.items.map((item) => String(item.actor || '')).filter(Boolean))).map(
+    (name) => ({
+      value: name,
+      count: works.value.items.filter((item) => String(item.actor || '') === name).length,
+    })
+  )
+)
+
+/** 折叠时只列前若干位；当前选中的演员强制保留，否则会看不到自己选中了什么 */
+const visibleActorFilters = computed(() => {
+  const all = actorFilters.value
+  if (actorsExpanded.value || all.length <= ACTOR_COLLAPSE_LIMIT) return all
+  const head = all.slice(0, ACTOR_COLLAPSE_LIMIT)
+  const current = all.find((item) => item.value === workActor.value)
+  if (current && !head.includes(current)) return [current, ...head]
+  return head
+})
 
 const filteredWorks = computed<WorkItem[]>(() => {
   const text = workKeyword.value.trim().toLowerCase()
@@ -577,7 +599,7 @@ const filteredWorks = computed<WorkItem[]>(() => {
     } else if (state !== 'all' && row.state !== state) {
       return false
     }
-    if (actor !== 'all' && String(row.actor || '') !== actor) return false
+    if (actor !== ALL_ACTORS && String(row.actor || '') !== actor) return false
     if (text) {
       const haystack = `${row.title || ''} ${row.actor || ''} ${row.year || ''} ${row.alt_title || ''}`
       if (!haystack.toLowerCase().includes(text)) return false
@@ -586,7 +608,19 @@ const filteredWorks = computed<WorkItem[]>(() => {
   })
 })
 
-const visibleWorks = computed<WorkItem[]>(() => filteredWorks.value.slice(0, workLimit.value))
+/** 作品墙分页 */
+const workPageCount = computed(() =>
+  Math.max(1, Math.ceil(filteredWorks.value.length / WORK_PAGE_SIZE))
+)
+const pagedWorks = computed<WorkItem[]>(() => {
+  const start = (workPage.value - 1) * WORK_PAGE_SIZE
+  return filteredWorks.value.slice(start, start + WORK_PAGE_SIZE)
+})
+
+/** 任何筛选条件变化都回到第一页，避免停留在越界 / 过时页 */
+watch([workKeyword, workState, workActor], () => {
+  workPage.value = 1
+})
 
 const worksEmptyHint = computed(() => {
   if (!works.value.configured) {
@@ -721,33 +755,10 @@ function resourceUrl(row: LedgerEntry): string {
 }
 
 // ─── 作品墙 ─────────────────────────────────────────────────────
-
-/** 状态 → 颜色（红涨绿跌不适用，这里用语义色：成功/信息/警告/主色） */
-function stateColor(state: string): string {
-  if (state === 'organized') return 'success'
-  if (state === 'downloaded') return 'info'
-  if (state === 'cooling') return 'warning'
-  return 'primary'
-}
-
-function stateLabel(row: WorkItem): string {
-  if (row.state === 'organized') return '已整理'
-  if (row.state === 'downloaded') return '已下载'
-  if (row.state === 'cooling') return `冷却 ${row.remaining_minutes || 0} 分`
-  return '待订阅'
-}
-
-/** 发现来源 → 展示名 */
-function sourceLabel(source?: string): string {
-  if (source === 'tmdb') return 'TMDB'
-  if (source === 'douban') return '豆瓣'
-  return '未知'
-}
-
-/** 作品行的人工复核深链（带插件配置的站点） */
-function workResourceUrl(row: WorkItem): string {
-  return resourceSearchUrl(row.title, searchSites.value)
-}
+//
+// 卡片本身的渲染（海报、状态徽标、订阅按钮、「详情」与「搜索资源」入口）
+// 全部收在 WorkGrid.vue 里，与「豆瓣演员订阅」的作品墙同形；
+// 这里只负责取数、筛选与把订阅动作转给后端。
 
 function applyWorks(data: WorksPayload): void {
   works.value = data
@@ -943,10 +954,42 @@ void API_BASE
   flex: 1 1 180px;
 }
 
-/* 作品墙的状态 / 演员筛选框（窄一点，别把工具条撑开） */
-.sdas-state-filter {
-  max-width: 150px;
-  flex: 0 0 auto;
+/* 作品墙标题栏与工具条（与豆瓣插件同一套间距，视觉保持一致） */
+.sdas-titlebar {
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 4px;
+}
+
+.sdas-toolbar {
+  gap: 12px;
+}
+
+/* 演员 chip 区：flex 换行 + 纵向滚动（不能用 v-chip-group——那是横向滑动容器） */
+.sdas-chips {
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.sdas-actor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
+.sdas-chips-expanded {
+  max-height: 60vh;
+}
+
+.sdas-page-info {
+  font-size: 0.82rem;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.sdas-count {
+  white-space: nowrap;
 }
 
 .sdas-label {

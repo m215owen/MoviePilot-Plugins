@@ -1,6 +1,7 @@
 const PLUGIN_ID = "ShortDramaActorSubscribe";
 const API_BASE = `plugin/${PLUGIN_ID}`;
 const HOST_RESOURCE_PAGE = "/resource";
+const HOST_MEDIA_PAGE = "/media";
 let lastApi = null;
 function resolveApi(props) {
   if (props && props.api) {
@@ -14,16 +15,34 @@ function resolveApi(props) {
 function rememberApi(api) {
   lastApi = api;
   const base = api.defaults?.baseURL;
-  if (typeof base === "string" && base) normalizeApiBase(base);
+  if (typeof base === "string" && base) apiBase = normalizeApiBase(base);
 }
 function normalizeApiBase(base) {
   const marker = "api/v1/";
   const index = base.indexOf(marker);
   return index >= 0 ? base.slice(0, index + marker.length) : base;
 }
+let apiBase = "api/v1/";
+function apiPrefix() {
+  const fallback = apiBase.endsWith("/") ? apiBase : `${apiBase}/`;
+  try {
+    const href = typeof window !== "undefined" ? window.location.href : "http://127.0.0.1/";
+    const resolved = new URL(apiBase, href).toString();
+    return resolved.endsWith("/") ? resolved : `${resolved}/`;
+  } catch {
+    return fallback;
+  }
+}
 function appBaseUrl() {
   if (typeof window === "undefined") return "";
   return window.location.href.split("#")[0];
+}
+function proxyImage(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  if (raw.includes("/system/img/")) return raw;
+  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`;
 }
 function resourceSearchUrl(keyword, sites) {
   const text = String(keyword || "").trim();
@@ -34,6 +53,18 @@ function resourceSearchUrl(keyword, sites) {
   const siteText = normalizeSiteIds(sites);
   if (siteText) params.set("sites", siteText);
   return `${appBaseUrl()}#${HOST_RESOURCE_PAGE}?${params.toString()}`;
+}
+function mediaPageUrl(work) {
+  const mediaId = String(work?.media_id ?? "").trim();
+  if (!mediaId) return "";
+  const params = new URLSearchParams();
+  params.set("media_source", String(work?.source ?? "").trim() || "douban");
+  params.set("media_id", mediaId);
+  for (const key of ["title", "year", "type"]) {
+    const value = String(work?.[key] ?? "").trim();
+    if (value) params.set(key, value);
+  }
+  return `${appBaseUrl()}#${HOST_MEDIA_PAGE}?${params.toString()}`;
 }
 function normalizeSiteIds(sites) {
   if (sites == null) return "";
@@ -221,4 +252,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { PLUGIN_ID as P, _export_sfc as _, saveConfig as a, formatTime as b, fetchStatus as c, runOnce as d, formatCooldown as e, fetchOptions as f, resourceSearchUrl as g, fetchWorks as h, refreshWorks as i, subscribeWork as j, fetchConfig as k, removeLedgerEntry as l, clearLedger as m, clearCooldown as n, organizeNow as o, resolveApi as r, searchActor as s };
+export { PLUGIN_ID as P, _export_sfc as _, saveConfig as a, formatTime as b, fetchStatus as c, runOnce as d, resourceSearchUrl as e, fetchOptions as f, formatCooldown as g, fetchWorks as h, refreshWorks as i, subscribeWork as j, fetchConfig as k, removeLedgerEntry as l, mediaPageUrl as m, clearLedger as n, organizeNow as o, proxyImage as p, clearCooldown as q, resolveApi as r, searchActor as s };

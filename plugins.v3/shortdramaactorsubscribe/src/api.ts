@@ -37,6 +37,12 @@ export const API_BASE = `plugin/${PLUGIN_ID}`
  */
 export const HOST_RESOURCE_PAGE = '/resource'
 
+/**
+ * MoviePilot 自带的「媒体详情」页路由（探索页点进某部作品打开的那个页面）。
+ * 与 `HOST_RESOURCE_PAGE` 同理，必须走 hash 路由：`<应用基址>#/media?…`。
+ */
+export const HOST_MEDIA_PAGE = '/media'
+
 /** 最近一次可用的宿主 axios 实例，供图片代理等非 props 场景推导接口前缀 */
 let lastApi: PluginApi | null = null
 
@@ -127,6 +133,36 @@ export function resourceSearchUrl(keyword: string, sites?: number[] | string): s
   const siteText = normalizeSiteIds(sites)
   if (siteText) params.set('sites', siteText)
   return `${appBaseUrl()}#${HOST_RESOURCE_PAGE}?${params.toString()}`
+}
+
+/**
+ * 组装 MoviePilot「媒体详情」页地址（与探索页点进媒体是同一个页面）。
+ *
+ * 两个易错点：① 必须走 hash 路由（`<应用基址>#/media?…`），直接拼 `/media?…`
+ * 只会落到站点根路径并被 SPA 兜底成首页；② 宿主详情页**强依赖 `type`**（取中文的
+ * 电影 / 电视剧），缺它会渲染成空壳 —— 所以调用方在拿不到类型时应当不显示这个入口。
+ *
+ * `media_source` 用发现来源（douban / tmdb），宿主据此解析媒体身份。
+ *
+ * @returns 可直接放进 `<a href>` 的地址；缺少 `media_id` 时返回空串
+ */
+export function mediaPageUrl(work: {
+  source?: string
+  media_id?: string
+  title?: string
+  year?: string
+  type?: string
+}): string {
+  const mediaId = String(work?.media_id ?? '').trim()
+  if (!mediaId) return ''
+  const params = new URLSearchParams()
+  params.set('media_source', String(work?.source ?? '').trim() || 'douban')
+  params.set('media_id', mediaId)
+  for (const key of ['title', 'year', 'type'] as const) {
+    const value = String(work?.[key] ?? '').trim()
+    if (value) params.set(key, value)
+  }
+  return `${appBaseUrl()}#${HOST_MEDIA_PAGE}?${params.toString()}`
 }
 
 /** 把站点 ID 归一化成宿主认识的 `1,2,3` 形态；无效输入返回空串 */

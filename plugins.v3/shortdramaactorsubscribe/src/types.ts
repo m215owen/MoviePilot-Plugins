@@ -99,6 +99,10 @@ export interface ActorWork {
   type?: string
   /** 归属演员名（由快照聚合而来） */
   actor?: string
+  /** 海报地址（豆瓣为 cover.large.url，TMDB 为 image.tmdb.org 的 w300 地址） */
+  poster?: string
+  /** 评分（豆瓣 0-10 / TMDB 0-10），0 表示无评分 */
+  vote?: number
 }
 
 /** 演员快照 */
@@ -235,6 +239,10 @@ export interface WorkItem {
   media_id?: string
   /** 归属演员名 */
   actor?: string
+  /** 海报地址；旧快照没有该字段，卡片显示占位图 */
+  poster?: string
+  /** 评分，0 表示无评分（卡片上不展示） */
+  vote?: number
   state: WorkState
   /** 冷却剩余分钟（state = cooling 时有意义） */
   remaining_minutes?: number

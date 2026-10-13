@@ -135,6 +135,10 @@ _MIN_TITLE_FOR_LOOSE_MATCH = 4
 # 保证并集不丢近期作品（尤其短剧演员的产出集中在近一两年）。
 _TMDB_CREDITS_LIMIT = 40
 
+# TMDB 海报 CDN 前缀。combined_credits 只给 `poster_path`（形如 `/abc.jpg`），
+# 尺寸段固定 w300 —— 作品墙卡片宽度约 134px，2:3 海报取 w300 已足够清晰。
+_TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w300"
+
 # 全角 ASCII → 半角（用于剧名归一化；0x3000 是全角空格）
 _FULLWIDTH_MAP = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)}
 _FULLWIDTH_MAP[0x3000] = 0x20
@@ -697,8 +701,9 @@ class _DoubanClient:
 
 
 def douban_work_to_candidate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """把豆瓣作品条目转成统一的候选结构 ``{title, year, alt_title, source, media_id}``。
+    """把豆瓣作品条目转成统一的候选结构。
 
+    结构：``{title, year, alt_title, source, media_id, type, poster, vote}``。
     豆瓣作品条目的媒体类型在 ``subject.subtype``（``subject.type`` 恒为占位的 ``"subject"``），
     这里只保留电影/电视剧两类，其余（书、音乐、综艺等）跳过。
     """
@@ -714,13 +719,13 @@ def douban_work_to_candidate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     title = _clean_text(subject.get("title") or raw.get("title"))
     if not title:
         return None
+    extra = subject.get("extra") if isinstance(subject.get("extra"), dict) else {}
     year = _clean_text(subject.get("year") or raw.get("year"))
     if not year:
         # 豆瓣部分条目把年份写在 card_subtitle 里，如 "2024 / 中国大陆 / 剧情"
         year = extract_year(subject.get("card_subtitle") or raw.get("card_subtitle") or "")
     if not year:
         # 当前版本把年份放在 extra.year（并冗余在 extra.short_info 里）
-        extra = subject.get("extra") if isinstance(subject.get("extra"), dict) else {}
         year = _clean_text(extra.get("year")) or extract_year(extra.get("short_info") or "")
     media_id = str(subject.get("id") or raw.get("id") or "").strip()
     return {
@@ -731,7 +736,52 @@ def douban_work_to_candidate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "media_id": media_id,
         # subtype 是英文（movie / tv），统一译成宿主那套中文媒体类型，便于前端展示
         "type": {"movie": "电影", "tv": "电视剧", "series": "电视剧"}.get(raw_type.lower(), raw_type),
+        # 作品墙卡片用的海报与评分（取不到就是空，前端会显示占位图）
+        "poster": douban_poster_url(subject),
+        "vote": douban_vote(subject, extra),
     }
+
+
+def douban_poster_url(subject: Dict[str, Any]) -> str:
+    """从豆瓣条目里取海报地址。
+
+    实测字段有 ``pic.{large,normal}``、``cover.{large,normal}`` 与扁平的 ``cover_url``，
+    不同接口（作品集内嵌 / 单条详情）给的形状不一样，因此这里逐个兜底。
+    豆瓣图片 CDN 有防盗链，取到的地址必须经宿主 ``system/img`` 代理才能显示（见前端）。
+    """
+    pic = subject.get("pic") if isinstance(subject.get("pic"), dict) else {}
+    cover = subject.get("cover") if isinstance(subject.get("cover"), dict) else {}
+    for candidate in (
+        pic.get("large"),
+        pic.get("normal"),
+        cover.get("large"),
+        cover.get("normal"),
+        subject.get("cover_url"),
+    ):
+        # 个别版本把地址包成 {"url": ...}
+        url = candidate.get("url") if isinstance(candidate, dict) else candidate
+        text = _clean_text(url)
+        if text.startswith("http"):
+            return text
+    return ""
+
+
+def douban_vote(subject: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> float:
+    """取豆瓣评分；无评分时返回 0（卡片上不展示）。
+
+    位置是 ``extra.rating_group.rating.value``，实测无评分时为 ``None``。
+    """
+    extra = extra if isinstance(extra, dict) else subject.get("extra")
+    extra = extra if isinstance(extra, dict) else {}
+    group = extra.get("rating_group") if isinstance(extra.get("rating_group"), dict) else {}
+    rating = group.get("rating") if isinstance(group.get("rating"), dict) else {}
+    return _to_float(rating.get("value"))
+
+
+def tmdb_poster_url(path: Any) -> str:
+    """把 TMDB 的 ``poster_path`` 拼成可访问的海报地址；缺图返回空串。"""
+    text = _clean_text(path)
+    return f"{_TMDB_IMAGE_BASE}{text}" if text.startswith("/") else ""
 
 
 # ─────────────────────────── TMDB 发现源 ───────────────────────────
@@ -844,6 +894,9 @@ class _TmdbClient:
                     "source": "tmdb",
                     "media_id": str(item.get("id") or "").strip(),
                     "type": MediaType.TV.value if media_type == "tv" else MediaType.MOVIE.value,
+                    # combined_credits 只给 poster_path，拼成完整地址；缺图时留空由前端占位
+                    "poster": tmdb_poster_url(item.get("poster_path")),
+                    "vote": _to_float(item.get("vote_average")),
                 }
             )
         # 年份缺失的排在最后（空串小于任何年份），因此优先保留近期作品
@@ -1774,6 +1827,9 @@ class ShortDramaActorSubscribe(_PluginBase):
                     "source": _clean_text(work.get("source")),
                     "media_id": _clean_text(work.get("media_id")),
                     "actor": actor,
+                    # 海报与评分只用于卡片展示；旧快照里没有这两个字段时前端显示占位图
+                    "poster": _clean_text(work.get("poster")),
+                    "vote": _to_float(work.get("vote")),
                     "state": "pending",
                     "remaining_minutes": 0,
                     "site_name": "",
@@ -2490,7 +2546,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                 merged[key] = dict(item)
                 continue
             # 已经有一条时：补齐缺失字段，不覆盖已有值
-            for field in ("year", "alt_title", "media_id", "type"):
+            for field in ("year", "alt_title", "media_id", "type", "poster"):
                 if not current.get(field) and item.get(field):
                     current[field] = item[field]
         return list(merged.values())
