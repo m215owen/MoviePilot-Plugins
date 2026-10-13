@@ -99,59 +99,67 @@
 }
 
 /* 只使用 scoped 样式 */
-.sdas-dim[data-v-919cf77e] {
+.sdas-dim[data-v-13ea58e4] {
   opacity: 0.75;
 }
-.sdas-switch[data-v-919cf77e] {
+.sdas-switch[data-v-13ea58e4] {
   flex: 0 0 auto;
   margin-right: 4px;
 }
-.sdas-filter[data-v-919cf77e] {
+.sdas-filter[data-v-13ea58e4] {
   max-width: 220px;
   flex: 1 1 180px;
 }
 
+/* 设置弹窗：配置项不少（演员 / 站点 / 下载器 / 目录 / 整理），
+   限高 + 内部滚动，避免小屏上按钮被挤出可视区。 */
+.sdas-settings[data-v-13ea58e4] {
+  max-height: 88vh;
+  overflow-y: auto;
+  border-radius: 8px;
+}
+
 /* 作品墙标题栏与工具条（与豆瓣插件同一套间距，视觉保持一致） */
-.sdas-titlebar[data-v-919cf77e] {
+.sdas-titlebar[data-v-13ea58e4] {
   flex-wrap: wrap;
   gap: 8px;
   row-gap: 4px;
 }
-.sdas-toolbar[data-v-919cf77e] {
+.sdas-toolbar[data-v-13ea58e4] {
   gap: 12px;
 }
 
 /* 演员 chip 区：flex 换行 + 纵向滚动（不能用 v-chip-group——那是横向滑动容器） */
-.sdas-chips[data-v-919cf77e] {
+.sdas-chips[data-v-13ea58e4] {
   max-height: 96px;
   overflow-y: auto;
 }
-.sdas-actor-chips[data-v-919cf77e] {
+.sdas-actor-chips[data-v-13ea58e4] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 /* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
-.sdas-chips-expanded[data-v-919cf77e] {
+.sdas-chips-expanded[data-v-13ea58e4] {
   max-height: 60vh;
 }
-.sdas-page-info[data-v-919cf77e] {
+.sdas-page-info[data-v-13ea58e4] {
   font-size: 0.82rem;
   opacity: 0.85;
   white-space: nowrap;
 }
-.sdas-count[data-v-919cf77e] {
+.sdas-count[data-v-13ea58e4] {
   white-space: nowrap;
 }
-.sdas-label[data-v-919cf77e] {
+.sdas-label[data-v-13ea58e4] {
   min-width: 96px;
   flex: 0 0 auto;
 }
-.sdas-table[data-v-919cf77e] {
+.sdas-table[data-v-13ea58e4] {
   table-layout: auto;
 }
-.sdas-title[data-v-919cf77e] {
+.sdas-title[data-v-13ea58e4] {
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;

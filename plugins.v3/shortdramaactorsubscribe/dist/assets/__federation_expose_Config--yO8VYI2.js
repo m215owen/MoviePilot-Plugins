@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { r as resolveApi, s as searchActor, f as fetchOptions, a as saveConfig, _ as _export_sfc } from './_plugin-vue_export-helper-CgyRQy_e.js';
+import { r as resolveApi, n as searchActor, q as fetchOptions, i as saveConfig, _ as _export_sfc } from './_plugin-vue_export-helper-BPSYN_be.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -787,6 +787,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-166b336a"]]);
+const ConfigPanel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-166b336a"]]);
 
-export { Config as default };
+export { ConfigPanel as default };

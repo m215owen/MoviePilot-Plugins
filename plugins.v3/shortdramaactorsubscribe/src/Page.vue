@@ -27,6 +27,18 @@
         冷却 {{ cooldownCount }}
       </v-chip>
       <v-spacer />
+      <v-btn
+        v-if="isMain"
+        size="small"
+        variant="tonal"
+        color="primary"
+        prepend-icon="mdi-cog-outline"
+        :loading="settingsLoading"
+        title="打开插件设置：演员 / 搜索站点 / 下载器与目录 / 整理方式"
+        @click="openSettings"
+      >
+        设置
+      </v-btn>
       <v-switch
         v-if="isMain"
         v-model="enabled"
@@ -76,7 +88,19 @@
       density="compact"
       class="mb-3"
     >
-      插件未启用或尚未配置演员/搜索站点，请先到配置页填写后保存。
+      插件未启用或尚未配置演员/搜索站点，点右上角「设置」即可就地填写并保存。
+    </v-alert>
+
+    <v-alert
+      v-if="settingsNotice"
+      closable
+      type="success"
+      variant="tonal"
+      density="compact"
+      class="mb-3"
+      @click:close="settingsNotice = ''"
+    >
+      {{ settingsNotice }}
     </v-alert>
 
     <v-alert
@@ -446,6 +470,24 @@
         </div>
       </v-card>
     </v-dialog>
+
+    <!-- 设置弹窗：面板内直达配置。
+         宿主侧栏全页壳（plugin-app）只注入 api / nav-key / plugin-id，**不提供任何设置入口**，
+         面板必须自己画一个；否则用户只能绕「设置 → 插件 → 找到本插件 → 配置」。
+         这里直接复用联邦暴露的 ./Config 同一份组件（自行 PUT /config 落盘），
+         与插件详情页的配置弹窗内容完全一致，不存在两套配置口径。 -->
+    <v-dialog v-model="settingsDialog" max-width="1000">
+      <div class="sdas-settings">
+        <ConfigPanel
+          v-if="settingsDialog"
+          :initial-config="settingsConfig"
+          :api="props.api"
+          @close="settingsDialog = false"
+          @save="onConfigSaved"
+          @switch="settingsDialog = false"
+        />
+      </div>
+    </v-dialog>
   </div>
 </template>
 
@@ -455,9 +497,11 @@
  *
  * 数据全部来自插件自己的 `GET /status`：账本、冷却、演员快照与运行摘要。
  * 本插件不走宿主订阅系统，因此这里没有任何订阅按钮 —— 面板的核心动作是
- * 「立即运行」「整理入库」「移出账本」与「人工到站点复核」。
+ * 「设置」（就地打开完整配置弹窗）、「立即运行」「整理入库」「移出账本」与
+ * 「人工到站点复核」。
  */
 import { computed, onMounted, ref, watch } from 'vue'
+import ConfigPanel from './Config.vue'
 import WorkGrid from './WorkGrid.vue'
 import {
   API_BASE,
@@ -556,6 +600,13 @@ const refreshingWorks = ref(false)
 const subscribingKey = ref('')
 const workMessage = ref('')
 
+/** 设置弹窗状态（面板标题栏「设置」按钮 → 就地打开完整配置页） */
+const settingsDialog = ref(false)
+const settingsLoading = ref(false)
+/** 打开设置时快照下来的完整配置（Config 组件只在挂载时读一次 initialConfig） */
+const settingsConfig = ref<Partial<PluginConfig>>({})
+const settingsNotice = ref('')
+
 /** 演员筛选的「全部」哨兵值（与豆瓣插件同一套写法） */
 const ALL_ACTORS = 'all'
 /** 演员筛选区超过这个数量就默认折叠，避免筛选区占掉大半屏 */
@@ -619,7 +670,7 @@ watch([workKeyword, workState, workActor], () => {
 
 const worksEmptyHint = computed(() => {
   if (!works.value.configured) {
-    return '还没配置演员与搜索站点：先到配置页填写并保存'
+    return '还没配置演员与搜索站点：点右上角「设置」填写并保存'
   }
   if (!works.value.items.length) {
     if (works.value.running) return '正在拉取演员作品…'
@@ -871,6 +922,44 @@ async function doOrganize(): Promise<void> {
   }
 }
 
+/**
+ * 打开设置弹窗：先把最新配置取回来再渲染。
+ *
+ * 必须先取配置再挂载 —— Config 组件只在 `onMounted` 里读一次 `initialConfig`，
+ * 若先挂载（快照为空）再回填，表单会全空，用户一保存就把已有配置清掉。
+ */
+async function openSettings(): Promise<void> {
+  const api = resolveApi(props)
+  settingsNotice.value = ''
+  settingsLoading.value = true
+  let merged: Partial<PluginConfig> = { ...(props.config || {}), ...remoteConfig.value }
+  if (api) {
+    try {
+      const data = await fetchConfig(api)
+      if (data?.config) {
+        remoteConfig.value = data.config
+        searchSites.value = data.config.sites || []
+        merged = { ...(props.config || {}), ...data.config }
+      }
+    } catch (err) {
+      console.debug(`[${PLUGIN_ID}] 打开设置前读取配置失败`, err)
+    }
+  }
+  settingsConfig.value = merged
+  settingsLoading.value = false
+  settingsDialog.value = true
+}
+
+/** 设置弹窗保存回调：Config 组件已自行 PUT /config，这里只需刷新面板口径 */
+async function onConfigSaved(cfg?: Partial<PluginConfig>): Promise<void> {
+  if (cfg) remoteConfig.value = { ...remoteConfig.value, ...cfg }
+  settingsDialog.value = false
+  settingsNotice.value = '设置已保存并生效'
+  await loadConfig()
+  await load(false)
+  await loadWorks()
+}
+
 /** 侧栏开关：直接改写配置并落盘，省得再进配置页 */
 async function toggleEnabled(value: boolean): Promise<void> {
   const api = resolveApi(props)
@@ -952,6 +1041,14 @@ void API_BASE
 .sdas-filter {
   max-width: 220px;
   flex: 1 1 180px;
+}
+
+/* 设置弹窗：配置项不少（演员 / 站点 / 下载器 / 目录 / 整理），
+   限高 + 内部滚动，避免小屏上按钮被挤出可视区。 */
+.sdas-settings {
+  max-height: 88vh;
+  overflow-y: auto;
+  border-radius: 8px;
 }
 
 /* 作品墙标题栏与工具条（与豆瓣插件同一套间距，视觉保持一致） */
