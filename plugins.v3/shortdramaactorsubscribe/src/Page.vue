@@ -69,16 +69,6 @@
       </v-btn>
     </div>
 
-    <!-- 统计卡片 -->
-    <v-row dense class="mb-3">
-      <v-col v-for="item in statCards" :key="item.label" cols="6" sm="3">
-        <v-card variant="tonal" class="pa-3" :title="item.title">
-          <div class="text-caption sdas-dim">{{ item.label }}</div>
-          <div class="text-h6">{{ item.value }}</div>
-        </v-card>
-      </v-col>
-    </v-row>
-
     <v-alert
       v-if="!enabled"
       type="warning"
@@ -661,17 +651,6 @@ const actorRows = computed(() => {
     }
   })
 })
-
-const statCards = computed(() => [
-  { label: '演员', value: String(summary.value.actor_count || 0), title: '配置并已解析的演员数' },
-  {
-    label: '候选作品',
-    value: String(summary.value.candidate_count || 0),
-    title: '上一轮发现层产出的候选剧数（TMDB + 豆瓣并集）',
-  },
-  { label: '已下载', value: String(summary.value.downloaded_count || 0), title: '账本里的记录数' },
-  { label: '已整理', value: String(summary.value.organized_count || 0), title: '已搬进媒体库的剧数' },
-])
 
 /** 站点 ID → 站点名（配置摘要展示用） */
 function siteName(id: number): string {

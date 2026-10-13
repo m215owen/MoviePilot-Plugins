@@ -151,7 +151,7 @@ src/
 ├── types.ts            # 与后端 payload 对齐的 TS 类型
 ├── WorkGrid.vue        # 作品海报卡片墙（内部复用组件，不作为联邦暴露入口）
 ├── Config.vue          # 配置页（下载目录 / 下载器读系统配置，带「一键采用系统推荐」）
-├── Page.vue            # 插件详情页（概览 + 作品墙 + 账本 + 冷却）
+├── Page.vue            # 插件详情页（演员 + 作品墙 + 账本 + 冷却）
 ├── Dashboard.vue       # 仪表板小组件
 ├── AppPage.vue         # 侧栏全页（nav_key=main），复用 Page
 └── AppPageSettings.vue # 运行状态页
