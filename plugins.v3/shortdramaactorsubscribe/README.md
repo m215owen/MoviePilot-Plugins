@@ -1,0 +1,251 @@
+# 短剧演员订阅（ShortDramaActorSubscribe）
+
+跟着喜欢的**短剧演员**追剧：合并 TMDB 与豆瓣的演员作品列表，用**剧名**直接在站点搜索，
+按「做种数 → 体积 → 分辨率」择优下一包；侧栏「短剧」页把演员作品铺成作品墙，
+每部都带**订阅按钮**；下载完自动整理入库并写最小 NFO。
+
+```
+配置演员 → 轮询发现（TMDB + 豆瓣并集）→ 剧名搜索站点 → 名称/年份匹配 → 择优一包 → 下载 → 账本去重 → 整理入库
+```
+
+## 为什么不用宿主的订阅系统
+
+短剧在 TMDB / 豆瓣上**大量没有条目**，宿主识别器建不起媒体身份，订阅永远不会触发。
+实测：用剧名调宿主 `/search/title` 能命中 2 条资源，但两条的 `media_info` 全是 `null`
+——订阅落库后搜索环节直接空转。
+
+所以本插件**绕过身份识别**，走「**剧名 → 站点搜索**」直达资源：
+- 「发现」用 TMDB + 豆瓣的演员作品表（拿剧名与年份）；
+- 「匹配」用剧名 + 年份做**本地判断**（不依赖宿主识别）；
+- 「去重 / 整理」由插件自己的账本负责（下载完记一笔，整理时按账本定位文件）。
+
+宿主订阅链在这里只做**可选**的一件事：本插件不写宿主订阅表，因此不受宿主订阅
+去重 / 季集识别的约束，长尾短剧也能追。
+
+## 功能
+
+| 能力 | 说明 |
+| --- | --- |
+| 演员配置 | 支持**演员名称**（自动搜索并缓存 ID）、**豆瓣人物主页链接 / 人物 ID**（推荐，最稳，不消耗搜索配额）、**TMDB 人物 ID**；多位演员用逗号 / 换行 / 顿号 / 分号分隔 |
+| 双源发现 | 每位演员同时拉 **TMDB 演职员表**与**豆瓣影视作品集**，按「归一化剧名 + 年份」合并去重，豆瓣优先补别名（同一部剧两源都命中时不会重复下载） |
+| 短剧页作品墙 | 侧栏「短剧」入口（与宿主「电影订阅 / 电视剧订阅」同组）铺开**演员的全部作品**，带关键字 / 状态 / 演员三重筛选、状态下标（待下载 / 冷却中 / 已下载 / 已整理）与分批「显示更多」 |
+| 一键订阅 | 作品墙每行一个**订阅按钮**：立即对该剧走一遍「搜索 → 匹配 → 择优 → 下载」。成功写入账本并清除冷却；站点无资源则记 24 小时冷却；已在账本里则直接拒绝，避免重复下载 |
+| 刷新作品 | 作品墙的「刷新作品」只重解析演员作品快照，**绝不触发下载**（想「先看看有什么」时用这个） |
+| 剧名匹配 | 剧名**含序号精确匹配**（「闪婚老公是豪门 第二季」不会命中第一季）；年份缺失**放行**，两边都有年份时容忍 ±1 年误差 |
+| 择优 | 同一部剧多个资源包时按 **做种数 → 体积 → 分辨率** 顺序择优，只下一包；**多剧合集包**直接排除 |
+| 去重 | 账本键 `归一化剧名\|年份`（**不含集数**）——集数只作信息展示，因为短剧常做整包整合，集数不同不代表不是同一部 |
+| 冷却 | 未命中（站点搜不到 / 下载提交失败）记 **24 小时冷却**，避免每轮对几十部剧空搜；成功下载即从冷却表移除（账本接手去重） |
+| 整理入库 | 独立定时任务：按账本定位下载完成的文件 → 硬链接 / 复制 / 移动到媒体库目录 → 写最小 NFO（不依赖宿主识别器） |
+| 下载器 / 目录 | 配置页的**下载目录与下载器直接读宿主的「目录管理」与「下载器」配置**，并自动勾出系统默认项与「短剧」目录，不用手抄路径 |
+| 通知 | 通过宿主通知渠道推送本轮结果（新下载清单 + 异常摘要） |
+| 远程命令 | `/shortdrama`：在宿主聊天里直接触发一轮订阅轮询 |
+
+## 配置项
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | 启用插件。**必须保存一次配置**才会出现侧栏入口与定时服务 |
+| `sidebar_nav` | bool | `true` | 是否在侧栏显示「短剧」入口（关闭后插件照常运行） |
+| `actors` | str | 空 | 演员列表（后端以换行串存储，配置页以逗号分隔编辑）。推荐粘贴豆瓣人物主页链接或人物 ID |
+| `sites` | list | `[]` | **搜索站点**（站点 ID 列表），短剧专站 / 带短剧分类的站优先 |
+| `prefer_short_drama_category` | bool | `true` | 优先在站点的「短剧」分类里搜索（命中率更高，也省请求） |
+| `downloader` | str | 空 | 下载器名，取自宿主已配置下载客户端（与系统「下载器」配置同源） |
+| `download_path` | str | 空 | 下载目录，取自宿主「目录管理」的下载目录 |
+| `library_path` | str | 空 | 媒体库目录（整理入库目标），与下载目录**成对**读取 |
+| `transfer_type` | str | `link` | 搬运方式：`link` 硬链接（推荐，省空间）/ `copy` 复制 / `move` 移动 |
+| `interval_hours` | int | `6` | 订阅轮询周期（小时） |
+| `organize_enabled` | bool | `true` | 是否启用整理入库 |
+| `organize_interval_minutes` | int | `30` | 整理扫描周期（分钟） |
+| `notify` | bool | `true` | 完成后发送通知 |
+| `douban_cookie` | str | 空 | 手工粘贴的豆瓣 Cookie（留空则自动复用宿主 CookieCloud 登录态） |
+| `proxy` | bool | `false` | 走宿主配置的代理访问豆瓣 / TMDB |
+| `max_works` | int | `10` | 每位演员保留的作品条数（1–10）。上限 10 是豆瓣接口限制，不是插件限制 |
+| `onlyonce` | bool | `false` | 保存配置后立即执行一轮（勾选后自动复位） |
+
+## HTTP 接口
+
+挂载在 `/api/v1/plugin/ShortDramaActorSubscribe/<path>`，全部 `bear` 鉴权。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/config` | 获取运行时配置 + 下拉候选（含 `douban_cookie_source`） |
+| PUT | `/config` | 合并更新配置，持久化后重新初始化插件 |
+| GET | `/options` | 站点 / 下载器 / 整理方式候选 + **系统目录** + 推荐初值 |
+| GET | `/status` | 运行概览、账本与冷却列表 |
+| GET | `/works` | **演员作品墙**：摊平快照的每条作品 + 其状态 + 汇总 |
+| POST | `/works/subscribe` | 对某一部作品立即搜索并下载（body：`key` / `title` / `year`） |
+| POST | `/works/refresh` | 只刷新演员作品快照，不下载 |
+| POST | `/run` | 立即执行一轮完整任务（异步，立刻返回） |
+| POST | `/organize` | 立即整理一次 |
+| POST | `/unmatch` | 从账本移除一条记录（允许重新下载） |
+| POST | `/miss/clear` | 清空未命中冷却 |
+| GET | `/search_actor?name=` | 按名称搜索 TMDB / 豆瓣演员 |
+| POST | `/clear` | 清空账本 |
+
+> 插件动态路由**不套宿主的 `Response[T]` 外壳**，因此插件接口一律自行返回 `{success, data}`。
+>
+> 宿主用 `router.add_api_route(**api)` 注册路由，参数由 **FastAPI 注入**：
+> `Optional[Dict[str, Any]] = None` 会被识别成 **requestBody**，`name: str = ""` 则是 **query**。
+
+### `/works` 的数据形状
+
+```jsonc
+{
+  "items": [
+    {
+      "key": "闪婚老公是豪门|2025",     // 与账本同源的身份键
+      "title": "闪婚老公是豪门", "year": "2025", "type": "电视剧",
+      "actor": "王格格", "source": "douban", "media_id": "…",
+      "state": "pending",              // pending / cooling / downloaded / organized
+      "ledger": null, "last_miss": null
+    }
+  ],
+  "summary": {"total": 11, "pending": 10, "cooling": 1, "downloaded": 0},
+  "refreshed_at": "2026-10-13 21:47:00",
+  "running": false, "configured": true,
+  "actors": [{ "key": "王格格", "name": "王格格", "douban_id": "…", "tmdb_id": "…" }]
+}
+```
+
+状态由**账本 + 冷却表**推导（不额外存一份状态），排序固定为
+`pending → cooling → downloaded → organized`，所以「能点的」永远排在最前面。
+
+## 其他扩展点
+
+- **定时服务**：`get_service()` 注册 `<类名>.Refresh`（订阅轮询，`IntervalTrigger(hours=interval_hours)`）
+  与 `<类名>.Organize`（整理扫描，`IntervalTrigger(minutes=organize_interval_minutes)`）；
+  未启用 / 未配置演员与站点 / 未配置目录时对应服务不注册。
+
+  ⚠️ 传给被调函数的参数必须写在 **`func_kwargs`** 里，**不能写成 `kwargs`**。宿主注册服务时会把
+  `service["kwargs"]` 原样展开给 `scheduler.add_job()`（见宿主 `scheduler/reconcile.py` 的
+  `update_plugin_job`），而 `trigger` 正是 `add_job` 自己的形参名 —— 写成 `kwargs` 会让
+  `add_job()` 收到两个 trigger 并抛 `got multiple values for argument 'trigger'`，
+  **注册被静默拒绝、定时任务永远不会执行**（宿主只写一条 ERROR 日志）。
+  排障：`docker logs moviepilot | grep 注册插件`（成功 INFO / 失败 ERROR）。
+- **一次性任务**：`POST /run` 与 `POST /works/refresh` 只登记一次性任务
+  （`add_plugin_once_job(..., func_kwargs={"trigger": ...})`）并立即返回，避免长任务触发 HTTP 超时；
+  两个动作各自用独立 `job_id`（`refresh_once` / `refresh_works_once`），避免互相覆盖。
+- **侧栏入口**：`nav_key=main`（`./AppPage`），`section=subscribe`、`permission=subscribe`、
+  图标 `mdi-movie-open-star-outline`，与宿主「电影订阅 / 电视剧订阅」并列落在「订阅」组。
+  受 `enabled` 与 `sidebar_nav` 双重控制。
+- **仪表板**：`key=overview`，`cols/sm/md = 12/6/4`，刷新间隔 300s。
+- **远程命令**：`/shortdrama` → `EventType.PluginAction` → `on_plugin_action`
+  （`data.action = "shortdramaactorsubscribe_refresh"`，只处理属于本插件的 action）。
+
+## 前端（Vue 模块联邦）
+
+`get_render_mode()` 返回 `("vue", "dist/assets")`，宿主直接加载 `dist/assets/remoteEntry.js`。
+
+```
+src/
+├── api.ts              # 接口封装 + 宿主深链构造（媒体详情页 / 资源搜索页）
+├── types.ts            # 与后端 payload 对齐的 TS 类型
+├── Config.vue          # 配置页（下载目录 / 下载器读系统配置，带「一键采用系统推荐」）
+├── Page.vue            # 插件详情页（概览 + 账本 + 冷却 + 演员作品墙）
+├── Dashboard.vue       # 仪表板小组件
+├── AppPage.vue         # 侧栏全页（nav_key=main），复用 Page
+└── AppPageSettings.vue # 运行状态页
+```
+
+### 作品墙与订阅按钮
+
+- 数据来自 `GET /works`。前端**不缓存状态**，每次操作后重拉，因此「订阅」成功 /
+  记冷却 / 已下载都能立刻反映到行内状态与顶部汇总。
+- 「订阅」按钮走 `POST /works/subscribe`（**不是**前端直接调站点搜索）：后端在
+  `self._lock.acquire(blocking=False)` 保护下复用整轮任务的 `_process_candidate`
+  —— 搜索、匹配、择优、下载**完全同一条链路**，所以手动订阅与自动轮询的判定口径一致，
+  不会出现「手动能下、自动下不了」这类偏差。
+- 未配置搜索站点 / 下载器 / 下载目录时，按钮会直接给出可读原因（`configured: false`），
+  而不是静默失败。
+
+### 下载路径与下载器：读系统配置，不手抄
+
+配置页的下载目录 / 下载器不再是纯手填输入框：
+
+| 数据 | 来源 |
+| --- | --- |
+| 目录列表 | `DirectoryHelper().get_dirs()`（宿主「目录管理」，**下载目录与媒体库目录成对**），按 `priority` 排序 |
+| 「短剧」目录 | 目录的 `name` / `media_category` / `download_path` 任一含「短剧」即标记 `is_short_drama` |
+| 推荐初值 | `defaults`：优先命中「短剧」目录（没有就取第一个），连同它的 `library_path` 一起下发 |
+| 下载器列表 | `DownloaderHelper().get_configs()`，并标出系统里 `default=true` 的那个 |
+| 系统默认下载器 | `get_configured_system_config()[SystemConfigKey.Downloaders]` 里 `default=true and enabled` 的条目 |
+
+于是 `/options` 返回：
+
+```jsonc
+{
+  "sites": [...], "downloaders": [{"title": "qb", "value": "qb", "default": true}],
+  "transfer_types": [...],
+  "directories": [{"title": "短剧（/vol00/…/短剧/）", "value": "/vol00/…/短剧/",
+                   "library_path": "/vol2/1000/media/短剧/", "is_short_drama": true}],
+  "defaults": {"downloader": "qb", "directory": "/vol00/…/短剧/",
+               "library_path": "/vol2/1000/media/短剧/", "directory_name": "短剧"}
+}
+```
+
+配置页在**字段为空时**用 `defaults` 预填，并提供「采用系统推荐」按钮一键套用；
+选中某个目录时**联动填好媒体库目录**（两者在宿主里本来就是一对），避免只改一半。
+已有值的字段不会被覆盖。
+
+> ⚠️ 一个踩过的坑：宿主 `ServiceBaseHelper.get_configs()` 返回的是 **`{name: conf}` 字典**
+> （不是列表），且 `conf` 是 pydantic 对象而非 dict。早期按列表写 `for item in get_configs()`
+> 迭代到的是字符串键，`item.get(...)` 抛 `AttributeError` 被 `except` 吞掉 —— 表现是
+> **下载器下拉永远是空的**，且日志里一句提示都没有。现在键与字段两种来源都取，
+> 并用 `_conf_field()` 兼容对象 / dict 两种形状。
+
+### 深链
+
+作品行可跳宿主自带的**媒体详情页**与**资源搜索页**：`<应用基址>#/media?…` /
+`<应用基址>#/resource?…`。两个易错点：① 宿主前端是 **hash 路由**，直接拼 `/resource?…`
+会落到 SPA 首页（看起来像「点了没反应」）；② 资源搜索页的媒体源清单只在探索 / 媒体详情
+等路由预加载，**`/resource` 不在其中**，所以深链必须**同时带 `media_id` 与 `keyword`**
+才能保证「打开就搜」（有身份走精确搜索、否则退回按剧名模糊搜索）。应用基址取
+`location.href.split('#')[0]`，反代到子路径也不会拼错。
+
+构建：
+
+```bash
+npm install --ignore-scripts   # 沙箱内需跳过 postinstall
+node node_modules/vite/bin/vite.js build
+```
+
+产物写入 `dist/`。**联邦产物必须随插件提交**（仓库根 `.gitignore` 忽略 `dist/`，
+提交时用 `git add -f`），因为运行时不重新构建，宿主直接读取该目录。
+
+## 匹配与择优规则
+
+| 环节 | 规则 |
+| --- | --- |
+| 剧名匹配 | 归一化（去空格 / 全半角 / 标点）后**要求包含剧名**；剧名自带序号（第 N 季 / 第 N 部 / 罗马数字）时**序号也必须一致** |
+| 别名 | 豆瓣 `alt_title` 与 TMDB 译名都参与匹配，任一命中即可 |
+| 年份 | 资源标题 / 描述里能提取到年份时与作品年份比对，容忍 **±1 年**；**作品年份缺失一律放行** |
+| 排除 | 标题出现「合集 / 全集打包 / 多剧」等特征的**多剧合集包**直接排除 |
+| 择优 | 依次比 **做种数（多者优先）→ 体积（大者优先）→ 分辨率（高者优先）**，只取第一包 |
+| 记账 | 下载成功立刻写账本（含 `torrent_hash` / 站点 / 集数 / 演员 / 来源），整理完成再补 `organized` 标记 |
+
+## 豆瓣 Frodo 接口适配要点
+
+实测（2026-10）移动端接口的几个易错点，都足以让整条豆瓣链路**静默失效**（不报错、只是没数据）：
+
+| 事项 | 结论 |
+| --- | --- |
+| 签名 | `_ts` 是**日期串 `YYYYMMDD`**（不是 Unix 时间戳），签名对象是**路径**（含 `/api/v2` 前缀，`quote(path, safe="")`），参数还需带 `os_rom=android`。任一项错 → 稳定 `400 签名错误` |
+| 人物详情 | `/elessar/subject/{person_id}` 的真实结构是 `modules[type=work_collections].payload.collections[]` —— **比早期结构多一层 `payload`**（`module["collections"]` 恒为 `None`） |
+| 作品集 ID | 集合自身的 `id` 是**空串**，可用的 ID 在 `payload.id`；作品**直接内嵌**在集合的 `works` 里（10 条） |
+| 分页 | `/elessar/work_collections/{id}/works` 单次最多 10 条，且 `start > 0` 恒返回 `{"total": 0, "works": []}` —— **不支持翻页**，每位演员只能取最近 10 部 |
+| 媒体类型 | 条目里 `subject.type` 恒为 `"subject"`，真实类型在 `subject.subtype`（`movie` / `tv`） |
+| 年份 | 顶层无 `year`，位置是 `subject.extra.year` |
+| 简介 | `subject.extra.short_info`，形如 `2026 / 中国大陆 / 短剧 / …` |
+| 搜索限流 | `/search/subjects?type=person` 匿名约 **5 次**后 `403 {"msg":"need_login","code":103}`，**恢复窗口约 3 分钟**；带登录态（宿主 CookieCloud）单轮可解析约 **12 位**演员 |
+
+> 排障提示：豆瓣侧任何失败都会写进该演员快照的 `errors`
+> （例如 `豆瓣：人物详情里没有「影视」作品集（modules=[...]）`），
+> `/works` 与配置页都能看到。**不要让失败路径静默 `return []`** —— 上面那条
+> 「多一层 payload」的问题就是靠它一眼定位的（修复后同一位演员的作品数 1 → 11）。
+
+## 兼容性
+
+- 目标宿主：MoviePilot **V3**（`>=3.0.0`），已在 **v3.1.3** 实测。
+- 仅从稳定入口导入：`app.sdk.*`（`plugin` / `logging` / `config` / `network` / `services` / `scheduler`）、
+  `app.schemas.types`；不使用 `app.helper.*`、`app.utils.*`、`app.core.*`。
+- 前端只用主程序**已注册**的 Vuetify 组件（主程序按需自动导入，冷门组件会静默渲染成空元素）。
