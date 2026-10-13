@@ -48,12 +48,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     const enabled = computed(() => payload.value?.enabled ?? props.config?.enabled !== false);
     const newWindowLabel = computed(() => {
       const days = Number(payload.value?.new_window_days || 0);
-      return days > 0 ? `近 ${days} 天新作品` : "新作品";
+      return days > 0 ? `近 ${days} 天新增` : "近期新增";
     });
     const stats = computed(() => ({
       actor_count: payload.value?.actor_count ?? 0,
       work_count: payload.value?.work_count ?? 0,
       new_count: payload.value?.new_count ?? 0,
+      new_actor_count: payload.value?.new_actor_count ?? 0,
       updated_at: payload.value?.updated_at || "",
       new_label: newWindowLabel.value
     }));
@@ -208,7 +209,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         ]),
                         _createElementVNode("span", _hoisted_6, [
                           _createTextVNode(_toDisplayString(stats.value.new_label) + " ", 1),
-                          _createElementVNode("b", _hoisted_7, _toDisplayString(stats.value.new_count), 1)
+                          _createElementVNode("b", _hoisted_7, "演员 " + _toDisplayString(stats.value.new_actor_count) + " / 作品 " + _toDisplayString(stats.value.new_count), 1)
                         ])
                       ]),
                       !latest.value.length ? (_openBlock(), _createElementBlock("div", _hoisted_8, " 暂无作品数据，点击右上角刷新。 ")) : _createCommentVNode("", true),
@@ -274,6 +275,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-95ecf32f"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-6b913f2c"]]);
 
 export { Dashboard as default };

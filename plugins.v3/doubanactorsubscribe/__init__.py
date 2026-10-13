@@ -153,16 +153,22 @@ _COOKIE_EXPIRED_HINT = (
 # 其作品与详情仍按 cron / 手动刷新照常抓取，不受此冷却影响。
 _SEARCH_COOLDOWN_SECONDS = 24 * 3600
 
-# 「新作品」的时间窗：一部作品自首次被发现起 N 天内都算「新」。
+# 「新」的时间窗：演员自**加入订阅列表**起、作品自**在演员加入之后首次出现**起，
+# N 天内标「新」。
 #
-# 这里不能用「相对上一轮快照新增」来判定 —— 那个口径只活到下一次刷新为止：
+# 这里刻意不用「相对上一轮快照新增」来判定 —— 那个口径只活到下一次刷新为止：
 # 抓完新作品后随手点一次刷新、插件被重载、或定时任务跑一轮，标记就全被清零了，
-# 于是「新作品」计数长期是 0、勾上「只看新作品」一片空白，看起来就像插件没抓到东西。
-# 按 first_seen 的时间窗判定则天然稳定：只要作品是最近发现的，就一直显示「新」。
+# 于是计数长期是 0，看起来就像插件没抓到东西。按时间窗现算则天然稳定。
 #
-# 天数不宜太长：刚把上百位演员一次性导进来时，全部作品都会落在窗口内，
-# 标成「新」的会糊成一片（实测 98 位演员 = 844 部全中）。3 天足够跨过一个周末、
-# 又能让批量导入的噪声在一周内自行消散。面板会把天数写在统计卡上，口径对用户可见。
+# 另一半同样关键：**作品只在「演员加入之后」出现才算新**。
+# 否则刚把上百位演员一次性导进来时，他们过去几十年的作品会被整片标成「新」
+# （实测 98 位演员 = 844 部全中），既糊成一片又毫无信息量。
+# 判定方式是把作品的 first_seen 与演员的 added_at 比较：同一轮刷新里写入的基线
+# first_seen 与 added_at 是**同一个 now 字符串**，因此基线作品天然不算「新」，
+# 只有后来某轮刷新才冒出来的作品才会挂上「新」。演员本身则单独在 chip 上标「新」，
+# 刚加进来的演员因此一眼可辨。
+#
+# 天数不宜太长，3 天足够跨过一个周末、又能让噪声自行消散；面板会把天数与口径写出来。
 _NEW_WINDOW_DAYS = 3
 _NEW_WINDOW_SECONDS = _NEW_WINDOW_DAYS * 24 * 3600
 
@@ -541,7 +547,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.11.0"
+    plugin_version = "1.12.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -767,13 +773,17 @@ class DoubanActorSubscribe(_PluginBase):
             return None
         if key and key != "works":
             return None
-        total, new_count = self._count_works()
+        total, new_count, new_actor_count = self._count_works()
+        fresh_hint = (
+            f"｜近 {_NEW_WINDOW_DAYS} 天新增 演员 {new_actor_count} / 作品 {new_count}"
+            if (new_count or new_actor_count)
+            else ""
+        )
         return (
             {"cols": 12, "sm": 6, "md": 4},
             {
                 "title": f"{self.plugin_name} · 最新作品",
-                "subtitle": f"{len(self._actor_entries)} 位演员｜{total} 部作品"
-                + (f"｜近 {_NEW_WINDOW_DAYS} 天新增 {new_count} 部" if new_count else ""),
+                "subtitle": f"{len(self._actor_entries)} 位演员｜{total} 部作品" + fresh_hint,
                 "refresh": 300,
                 "border": True,
             },
@@ -1141,10 +1151,22 @@ class DoubanActorSubscribe(_PluginBase):
         )
 
         work_total = sum(len(group["works"]) for group in snapshot.values())
+        # 「新作品」与面板同一口径（演员加入之后才出现的才算），
+        # 「新收录」则包含刚建立基线的演员作品 —— 两者分开说，否则用户看到
+        # 通知里「本次新发现 98 部」而面板显示「新作品 0 部」会以为插件坏了。
+        fresh_total = sum(
+            1
+            for group in snapshot.values()
+            if isinstance(group, dict)
+            for work in (group.get("works") or [])
+            if isinstance(work, dict) and work.get("is_new")
+        )
         detail = (
             f"刷新 {len(snapshot)} 位演员、{work_total} 部作品，"
-            f"本次新发现 {new_count} 部，自动订阅 {len(subscribed)} 部（{elapsed_ms} ms）"
+            f"新作品 {fresh_total} 部，自动订阅 {len(subscribed)} 部（{elapsed_ms} ms）"
         )
+        if new_count:
+            detail += f"，本次新收录 {new_count} 部（首次建立基线的作品不计入新作品）"
         if errors:
             detail += f"，{len(errors)} 项异常"
         if skipped:
@@ -1174,6 +1196,8 @@ class DoubanActorSubscribe(_PluginBase):
         ignored = self._load_ignored()
         actors: List[Dict[str, Any]] = []
         new_count = 0
+        new_actor_count = 0
+        now = time.time()
         for group in snapshot.values():
             if not isinstance(group, dict):
                 continue
@@ -1184,8 +1208,11 @@ class DoubanActorSubscribe(_PluginBase):
                 for work in (group.get("works") or [])
                 if self._work_unique(work) not in ignored
             ]
-            # 「新」按 first_seen 时间窗现算，读旧快照也不会显示过期标记
-            new_count += self._apply_new_flags(visible)
+            # 「新」全部现算：作品看「演员加入之后才出现 + 未过期」，演员看「加入未过期」。
+            # 读旧快照也不会显示过期标记，口径与刷新落盘时完全一致。
+            new_count += self._apply_new_flags(visible, _parse_ts(actor.get("added_at")))
+            actor["is_new"] = self._is_fresh_actor(actor, now)
+            new_actor_count += 1 if actor["is_new"] else 0
             # 同理：张冠李戴的判定也现算，旧缓存里的记录才会被标出来
             actor["fuzzy"] = self._is_fuzzy_actor(actor)
             actor["works"] = visible
@@ -1211,8 +1238,11 @@ class DoubanActorSubscribe(_PluginBase):
             "actor_count": len(self._actor_entries),
             "work_count": total,
             "new_count": new_count,
-            # 「新作品」的口径：首次发现距今不超过这个天数。面板据此把口径写进统计卡，
-            # 免得用户看到 0 或一个很大的数时无从判断是不是坏了。
+            # 近窗口内加入的演员数：作品不再逐张标新，新演员的规模改成这个数来体现，
+            # 面板统计卡会把「近 N 天新增 演员 x / 作品 y」一起写出来。
+            "new_actor_count": new_actor_count,
+            # 「新」的口径：演员自加入、作品自在演员加入之后出现起，不超过这个天数。
+            # 面板据此把口径写进统计卡，免得用户看到 0 或一个很大的数时无从判断是不是坏了。
             "new_window_days": _NEW_WINDOW_DAYS,
             "auto_subscribe": self._auto_subscribe,
             "auto_only_new": self._auto_only_new,
@@ -1242,16 +1272,39 @@ class DoubanActorSubscribe(_PluginBase):
     # ─── 业务逻辑：演员解析与作品抓取 ────────────────────────────
 
     @staticmethod
-    def _is_fresh_work(work: Dict[str, Any], now: float) -> bool:
-        """作品是否属于「最近发现」——首次发现在 ``_NEW_WINDOW_SECONDS`` 之内。
+    def _is_fresh_work(work: Dict[str, Any], now: float, added_at: float = 0.0) -> bool:
+        """作品是否属于「后来才出现的新作品」。
+
+        两个条件缺一不可：
+
+        1. 首次出现在**该演员加入之后**（``first_seen`` > ``added_at``）——
+           演员加入前就存在的老作品永远不算新，哪怕它是刚刚才从豆瓣抓回来的；
+        2. 首次出现距今在 ``_NEW_WINDOW_SECONDS`` 之内 —— 时间窗负责让「新」自然过期。
 
         没有 first_seen（历史快照或字段缺失）时按「不新」处理，
         避免把来源不明的旧数据当成新作品推给自动订阅。
+
+        :param added_at: 该演员的加入时间（epoch 秒）；为 0 表示未知（升级前写入、
+            尚未刷新过的旧快照），此时只按时间窗判定，宁可多标也不漏标。
         """
         first_seen = _parse_ts(work.get("first_seen"))
         if not first_seen:
             return False
+        if added_at and first_seen <= added_at:
+            return False
         return (now - first_seen) <= _NEW_WINDOW_SECONDS
+
+    @staticmethod
+    def _is_fresh_actor(actor: Dict[str, Any], now: float) -> bool:
+        """演员是否属于「最近加入」——加入时间在 ``_NEW_WINDOW_SECONDS`` 之内。
+
+        只用来在演员 chip 上标「新」：作品不再逐张标新（见 ``_is_fresh_work``），
+        刚加进来的演员得靠这个标记才找得到。
+        """
+        added_at = _parse_ts(actor.get("added_at"))
+        if not added_at:
+            return False
+        return (now - added_at) <= _NEW_WINDOW_SECONDS
 
     @staticmethod
     def _is_fuzzy_actor(actor: Dict[str, Any]) -> bool:
@@ -1270,18 +1323,20 @@ class DoubanActorSubscribe(_PluginBase):
         name = str(actor.get("name") or "").strip()
         return bool(key) and bool(name) and key != name
 
-    def _apply_new_flags(self, works: List[Dict[str, Any]]) -> int:
-        """按时间窗就地重算 ``is_new``，返回其中新作品的数量。
+    def _apply_new_flags(self, works: List[Dict[str, Any]], added_at: float = 0.0) -> int:
+        """按「演员加入时间 + 时间窗」就地重算 ``is_new``，返回其中新作品的数量。
 
         所有对外输出作品的地方（刷新落盘、面板载荷、仪表板统计）都过这一手，
         保证「新」的口径只有一个，也不会因为读到旧快照而显示过期标记。
+
+        :param added_at: 该批作品所属演员的加入时间（epoch 秒），0 表示未知。
         """
         now = time.time()
         fresh = 0
         for work in works:
             if not isinstance(work, dict):
                 continue
-            flag = self._is_fresh_work(work, now)
+            flag = self._is_fresh_work(work, now, added_at)
             work["is_new"] = flag
             fresh += 1 if flag else 0
         return fresh
@@ -1297,13 +1352,21 @@ class DoubanActorSubscribe(_PluginBase):
 
         :param cache: 共享的演员解析缓存，由调用方统一读写，
             避免每位演员都落盘一次（112 位演员会变成 112 次写库）。
-        :return: ``(演员信息, 作品列表, 缓存是否有更新, 本次新发现的作品数)``
+        :return: ``(演员信息, 作品列表, 缓存是否有更新, 本次首次收录的作品数)``
         """
+        # 本轮统一的时间戳：演员的「加入时间」与基线作品的 first_seen 都取它，
+        # 于是基线作品的 first_seen == added_at，天然不会被判成「新作品」。
+        now = datetime.now().strftime(_TS_FORMAT)
         actor: Dict[str, Any] = dict(cache.get(key) or {})
+        # 「加入时间」= 本插件第一次看到这位演员的时刻，用来划出「加入前就有的老作品」
+        # 与「加入之后才出现的作品」。升级前的旧缓存没有该字段，补记为本次刷新时间 ——
+        # 那些历史作品随即回到「不新」，不必等缓存过期或手动清库。
+        added_at = str(actor.get("added_at") or "").strip() or now
         actor_id = str(actor.get("id") or "").strip()
         if not actor_id:
             actor = self._resolve_actor(client, key)
             actor_id = str(actor.get("id") or "").strip()
+        actor["added_at"] = added_at
 
         cache_dirty = False
         # 每次刷新都取一次人物详情：既刷新头像/简介，也拿到最新的作品集 ID
@@ -1343,8 +1406,8 @@ class DoubanActorSubscribe(_PluginBase):
                 works.append(work)
         works = self._sort_works(works)[: self._max_works]
 
-        # 继承首次发现时间（只在真正第一次见到时才写 now），
-        # 「是否新作品」另由 first_seen 落在时间窗内决定，见 _apply_new_flags
+        # 继承首次出现时间（只在真正第一次见到时才写 now），
+        # 「是否新作品」另由 first_seen 与演员 added_at 的比较决定，见 _apply_new_flags
         previous_works: List[Any] = []
         if isinstance(previous, dict):
             group = previous.get(actor_id)
@@ -1355,7 +1418,6 @@ class DoubanActorSubscribe(_PluginBase):
             for item in previous_works
             if isinstance(item, dict) and item.get("media_id")
         }
-        now = datetime.now().strftime(_TS_FORMAT)
         discovered = 0
         for work in works:
             first_seen = seen.get(work["media_id"])
@@ -1364,7 +1426,7 @@ class DoubanActorSubscribe(_PluginBase):
             else:
                 work["first_seen"] = now
                 discovered += 1
-        self._apply_new_flags(works)
+        self._apply_new_flags(works, _parse_ts(added_at))
         return actor, works, cache_dirty, discovered
 
     @staticmethod
@@ -1961,18 +2023,25 @@ class DoubanActorSubscribe(_PluginBase):
                 errors.append(f"{actor.get('name') or key}：{actor['error']}")
         return errors
 
-    def _count_works(self) -> Tuple[int, int]:
+    def _count_works(self) -> Tuple[int, int, int]:
+        """统计 ``(作品总数, 新作品数, 新演员数)``，口径与面板载荷完全一致。"""
         snapshot = self._load_works()
+        now = time.time()
         total = 0
         new_count = 0
+        new_actor_count = 0
         for group in snapshot.values():
             if not isinstance(group, dict):
                 continue
+            actor = group.get("actor") or {}
+            if not isinstance(actor, dict):
+                actor = {}
             works = [item for item in (group.get("works") or []) if isinstance(item, dict)]
             total += len(works)
-            # 与面板同一套口径：按 first_seen 时间窗现算，而不是读落盘时的旧标记
-            new_count += self._apply_new_flags(works)
-        return total, new_count
+            # 与面板同一套口径：现算，而不是读落盘时的旧标记
+            new_count += self._apply_new_flags(works, _parse_ts(actor.get("added_at")))
+            new_actor_count += 1 if self._is_fresh_actor(actor, now) else 0
+        return total, new_count, new_actor_count
 
     def _send_notify(
         self, detail: str, subscribed: List[Dict[str, Any]], errors: List[str]

@@ -300,7 +300,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     size: "x-small",
                     color: "error",
                     variant: "flat",
-                    class: "das-badge das-badge-left"
+                    class: "das-badge das-badge-left",
+                    title: "该演员加入订阅之后才出现的新作品"
                   }, {
                     default: _withCtx(() => [..._cache[0] || (_cache[0] = [
                       _createTextVNode(" 新 ", -1)
@@ -416,6 +417,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-b1a24f85"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-2b5d28a4"]]);
 
 export { IgnoredManager as I, WorkGrid as W };

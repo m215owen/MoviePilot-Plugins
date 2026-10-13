@@ -89,9 +89,15 @@ export interface ActorWork {
   roles?: string[]
   /** 出演该作品的演员名（作品墙合并去重后聚合而来） */
   actorNames?: string[]
-  /** 首次被发现的时间 */
+  /** 首次出现的时间（同一轮刷新里写入基线的作品，其 first_seen == 演员 added_at） */
   first_seen?: string
-  /** 是否为本次刷新新发现的作品 */
+  /**
+   * 是否是「后来才出现的新作品」。
+   *
+   * 口径 = 首次出现在**该演员加入之后**，且在 `new_window_days` 天以内。
+   * 所以刚把演员加进来时，他的历史作品一张都不会标「新」（那些是基线），
+   * 只有之后某轮刷新才冒出来的作品才会带这个标记。
+   */
   is_new?: boolean
 }
 
@@ -119,6 +125,10 @@ export interface ActorBrief {
   fuzzy?: boolean
   /** fuzzy 为真时的前几个候选名，供用户判断该改成哪个名字或改填人物 ID */
   candidates?: string[]
+  /** 演员的「加入时间」（本插件第一次看到他/她的时刻），用于判定「新演员」与基线作品 */
+  added_at?: string
+  /** 是否是「最近加入」的演员（added_at 在 new_window_days 天以内），chip 上标「新」 */
+  is_new?: boolean
   /** 解析或抓取错误 */
   error?: string | null
   /** 该错误是否为可重试（豆瓣限流/网络失败），前端据此显示「稍后重试」而非「改配置」 */
@@ -151,8 +161,11 @@ export interface WorksPayload {
   run_count: number
   actor_count: number
   work_count: number
+  /** 「后来才出现的新作品」数量：首次出现在演员加入之后、且在窗口内的作品 */
   new_count: number
-  /** 「新作品」的口径：首次发现距今不超过这个天数（后端下发，面板据此标注口径） */
+  /** 窗口内加入的演员数（作品不再逐张标新，新演员的规模由这个数体现） */
+  new_actor_count?: number
+  /** 「新」的口径：演员自加入、作品自在演员加入之后出现起，不超过这个天数 */
   new_window_days?: number
   auto_subscribe: boolean
   auto_only_new: boolean

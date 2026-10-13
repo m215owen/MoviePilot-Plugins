@@ -24,12 +24,14 @@
               </div>
             </template>
           </v-img>
+          <!-- 「新」只给**演员加入之后**才出现的作品；刚加入演员的历史作品属于基线，不标新 -->
           <v-chip
             v-if="work.is_new"
             size="x-small"
             color="error"
             variant="flat"
             class="das-badge das-badge-left"
+            title="该演员加入订阅之后才出现的新作品"
           >
             新
           </v-chip>

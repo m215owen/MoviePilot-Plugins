@@ -1,19 +1,19 @@
 
 /* 为绝对定位的拖拽提示提供定位上下文；不要编写全局生效的选择器 */
-.das-root[data-v-95ecf32f] {
+.das-root[data-v-6b913f2c] {
   position: relative;
 }
-.das-dash-card[data-v-95ecf32f] {
+.das-dash-card[data-v-6b913f2c] {
   height: 100%;
 }
-.das-drag-hint[data-v-95ecf32f] {
+.das-drag-hint[data-v-6b913f2c] {
   position: absolute;
   right: 12px;
   top: 12px;
   opacity: 0.6;
   cursor: move;
 }
-.das-dot[data-v-95ecf32f] {
+.das-dot[data-v-6b913f2c] {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -21,18 +21,18 @@
   margin-right: 8px;
   flex: 0 0 auto;
 }
-.das-dot-new[data-v-95ecf32f] {
+.das-dot-new[data-v-6b913f2c] {
   background-color: rgb(var(--v-theme-error, 244 67 54));
 }
-.das-name[data-v-95ecf32f] {
+.das-name[data-v-6b913f2c] {
   font-size: 0.8rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.das-dim[data-v-95ecf32f] {
+.das-dim[data-v-6b913f2c] {
   opacity: 0.7;
 }
-.das-new[data-v-95ecf32f] {
+.das-new[data-v-6b913f2c] {
   color: rgb(var(--v-theme-error, 244 67 54));
 }

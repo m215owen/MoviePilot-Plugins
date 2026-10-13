@@ -83,7 +83,7 @@
 
         <v-row dense>
           <v-col v-for="item in statCards" :key="item.label" cols="6" sm="3">
-            <v-card variant="tonal" class="pa-3">
+            <v-card variant="tonal" class="pa-3" :title="item.title">
               <div class="text-caption">{{ item.label }}</div>
               <div class="text-h6">{{ item.value }}</div>
             </v-card>
@@ -152,6 +152,13 @@
                 color="warning"
                 class="mr-1"
               />
+              <!-- 最近加入的演员在这里标「新」：作品墙不再逐张标新，
+                   刚加的演员靠这个标记才找得到（点一下 chip 即可只看他/她） -->
+              <span
+                v-if="actor.is_new"
+                class="das-chip-new"
+                title="最近加入的演员"
+              >新</span>
               <template v-if="isFuzzyActor(actor)">
                 {{ actor.key }}
                 <span class="das-dim mx-1">→</span>
@@ -186,6 +193,7 @@
             density="compact"
             hide-details
             class="das-checkbox"
+            title="只显示在你订阅的演员加入之后才出现的作品；刚加入演员的历史作品属于基线，不算新。想看新加的演员，请点上方的「新」chip"
           />
           <v-checkbox
             v-model="onlyUnsubscribed"
@@ -426,25 +434,38 @@ const unresolvedCount = computed(
 )
 
 /**
- * 「新作品」的口径（首次发现距今几天内）由后端下发，跟着一起展示。
+ * 「新」的口径由后端下发：演员自加入、作品自在演员加入之后出现起，不超过 N 天。
  * 只写「新作品」的话，用户看到 0 或一个很大的数时无从判断是坏了还是口径如此。
  */
-const newWindowLabel = computed(() => {
-  const days = Number(payload.value?.new_window_days || 0)
-  return days > 0 ? `近 ${days} 天新作品` : '新作品'
-})
+const newWindowDays = computed(() => Number(payload.value?.new_window_days || 0))
+const newWindowLabel = computed(() =>
+  newWindowDays.value > 0 ? `近 ${newWindowDays.value} 天新增` : '近期新增'
+)
+/** 窗口内加入的演员数；旧版后端没有该字段时按快照自算 */
+const newActorCount = computed(
+  () => payload.value?.new_actor_count ?? actors.value.filter((actor) => actor.is_new).length
+)
 
 const statCards = computed(() => {
   const rows = [
-    { label: '演员', value: actors.value.length },
-    { label: '作品', value: payload.value?.work_count ?? 0 },
-    { label: newWindowLabel.value, value: payload.value?.new_count ?? 0 },
+    // 每张卡都带 title 字段（可为空串），保证数组元素类型一致、模板里可安全取 item.title
+    { label: '演员', value: actors.value.length, title: '' },
+    { label: '作品', value: payload.value?.work_count ?? 0, title: '' },
+    {
+      label: `${newWindowLabel.value}（演员 / 作品）`,
+      value: `${newActorCount.value} / ${payload.value?.new_count ?? 0}`,
+      title:
+        `新演员 = 最近 ${newWindowDays.value} 天加入订阅列表的演员（chip 上标「新」）；` +
+        '新作品 = 首次出现在该演员加入之后的作品。' +
+        '刚加入的演员过去的老作品属于基线，不会逐张标「新」，' +
+        '只有之后刷新才冒出来的作品才带「新」。',
+    },
   ]
   // 有未解析演员时优先暴露这个数：它才是「为什么作品这么少」的真正原因
   if (unresolvedCount.value) {
-    rows.push({ label: '未解析演员', value: unresolvedCount.value })
+    rows.push({ label: '未解析演员', value: unresolvedCount.value, title: '' })
   } else {
-    rows.push({ label: '累计刷新', value: payload.value?.run_count ?? 0 })
+    rows.push({ label: '累计刷新', value: payload.value?.run_count ?? 0, title: '' })
   }
   return rows
 })
@@ -514,16 +535,20 @@ function isFuzzyActor(actor: ActorGroup): boolean {
 /** 演员 chip 的悬停提示：说清这一位是谁，模糊匹配时给出候选并提示改用人物 ID */
 function actorTitle(actor: ActorGroup): string {
   const suffix = '（点右侧 × 可从订阅演员中移除）'
-  if (actor.error) return `${actor.error}${suffix}`
+  // 新加入的演员把「加入时间」写进提示：chip 上的「新」只说明是最近加的，
+  // 具体哪天加的看着这个日期才没有歧义
+  const prefix =
+    actor.is_new && actor.added_at ? `最近加入（${actor.added_at}）｜` : ''
+  if (actor.error) return `${prefix}${actor.error}${suffix}`
   if (isFuzzyActor(actor)) {
     const candidates = (actor.candidates || []).filter(Boolean)
     return (
-      `配置的「${actor.key}」在豆瓣没有同名演员，已按最接近的结果「${actor.name}」解析` +
+      `${prefix}配置的「${actor.key}」在豆瓣没有同名演员，已按最接近的结果「${actor.name}」解析` +
       (candidates.length ? `（候选：${candidates.join(' / ')}）` : '') +
       `。请核对，或把配置项改成人物 ID 精确指定。${suffix}`
     )
   }
-  return `${actor.name}${suffix}`
+  return `${prefix}${actor.name}${suffix}`
 }
 
 /**
@@ -788,6 +813,21 @@ onMounted(() => load())
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* 演员 chip 上的「新」：作品墙不再逐张标新，最近加入的演员靠这里才一眼可辨 */
+.das-chip-new {
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  padding: 0 4px;
+  margin-right: 3px;
+  border-radius: 3px;
+  background-color: rgb(var(--v-theme-error));
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 /* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
