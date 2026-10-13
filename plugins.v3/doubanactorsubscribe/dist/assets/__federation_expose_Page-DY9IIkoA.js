@@ -1,6 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { I as IgnoredManager, W as WorkGrid } from './WorkGrid-In6hJO_1.js';
-import { m as mergeWorks, s as sortWorks, e as formatTime, w as workKey, r as resolveApi, i as ignoreWork, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, a as waitForRefresh, P as PLUGIN_ID, b as submitSubscribe, c as unsubscribeWork, d as removeActor, _ as _export_sfc } from './_plugin-vue_export-helper-qagfV18f.js';
+import { I as IgnoredManager, W as WorkGrid } from './WorkGrid-7ak_kei_.js';
+import { m as mergeWorks, s as sortWorks, e as formatTime, w as workKey, r as resolveApi, i as ignoreWork, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, a as waitForRefresh, P as PLUGIN_ID, b as submitSubscribe, c as unsubscribeWork, d as removeActor, _ as _export_sfc } from './_plugin-vue_export-helper-Bu1j1gfm.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -867,12 +867,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           "subscribed-keys": subscribedKeys.value,
           "pending-key": pendingKey.value,
           busy: busy.value,
-          api: props.api,
           "empty-text": "没有符合条件的作品",
           onSubscribe: subscribe,
           onUnsubscribe: unsubscribe,
           onIgnore: ignore
-        }, null, 8, ["works", "subscribed-keys", "pending-key", "busy", "api"])),
+        }, null, 8, ["works", "subscribed-keys", "pending-key", "busy"])),
         pageCount.value > 1 ? (_openBlock(), _createElementBlock("div", _hoisted_12, [
           _createVNode(_component_v_btn, {
             size: "small",
@@ -895,6 +894,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-b440c943"]]);
+const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-600798e4"]]);
 
 export { Page as default };

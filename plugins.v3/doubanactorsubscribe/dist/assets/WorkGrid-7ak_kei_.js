@@ -1,6 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { r as resolveApi, l as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage, g as mediaPageUrl } from './_plugin-vue_export-helper-qagfV18f.js';
-import { _ as _sfc_main$2 } from './SearchResourceButton.vue_vue_type_script_setup_true_lang-Dfqp7Wbz.js';
+import { r as resolveApi, l as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage, g as mediaPageUrl } from './_plugin-vue_export-helper-Bu1j1gfm.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 
@@ -236,8 +235,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     pendingKey: {},
     busy: { type: Boolean },
     emptyText: {},
-    showActors: { type: Boolean, default: true },
-    api: {}
+    showActors: { type: Boolean, default: true }
   },
   emits: ["subscribe", "unsubscribe", "ignore"],
   setup(__props, { emit: __emit }) {
@@ -390,12 +388,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       target: "_blank",
                       rel: "noopener"
                     }, null, 8, ["title", "href"])) : _createCommentVNode("", true),
-                    _createVNode(_sfc_main$2, {
-                      api: __props.api,
-                      work,
-                      size: "small",
-                      variant: "text"
-                    }, null, 8, ["api", "work"]),
                     _createVNode(_component_v_btn, {
                       size: "small",
                       variant: "text",
@@ -417,6 +409,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-2b5d28a4"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-05da72b1"]]);
 
 export { IgnoredManager as I, WorkGrid as W };

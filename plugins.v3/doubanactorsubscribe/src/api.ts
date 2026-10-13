@@ -56,33 +56,6 @@ export const HOST_DOWNLOAD_CLIENTS = 'download/clients'
  */
 export const HOST_MEDIA_PAGE = '/media'
 
-/**
- * MoviePilot 自带的「资源搜索」页路由。
- *
- * 就是左侧导航里那一项（`mdi-magnify` 图标），页面组件 `ResourceSearchView`。
- * 它允许**通过 query 直接发起一次搜索**，是「拿一部作品去站点里找资源」最省事的入口：
- * 打开即搜，不必让用户再把片名手打一遍。
- */
-export const HOST_RESOURCE_PAGE = '/resource'
-
-/**
- * 宿主「按媒体类型取可搜索站点」接口，取值为 `site/media/{movie|tv|music}`。
- *
- * 这就是媒体详情页「搜索资源」时用来铺站点选择框的接口：只返回**启用中**的站点，
- * 且会被宿主按媒体类型裁剪（电影站 / 剧集站 / 音乐站）。插件前端只取 `id`/`name`，
- * 该接口的返回体里带站点凭据（cookie），绝不能整条透传上去。
- */
-export const HOST_SITE_MEDIA = 'site/media/'
-
-/**
- * 宿主的「默认搜索站点」设置（系统设置里的那一项）。
- *
- * 媒体详情页弹出的站点选择框，**默认勾选**的就是这里配置的站点，
- * 插件要做出「和宿主一样」的观感就必须用同一个默认值，而不是自己另存一份。
- * 返回体形如 `{value: [站点ID, …]}`。
- */
-export const HOST_DEFAULT_SEARCH_SITES = 'system/setting/public/IndexerSites'
-
 /** 宿主单次列表查询允许的最大条数（见后端 COLLECTION_MAX_PAGE_SIZE） */
 const MAX_PAGE_SIZE = 200
 
@@ -198,85 +171,6 @@ export function mediaPageUrl(work: {
     if (value) params.set(key, value)
   }
   return `${appBaseUrl()}#${HOST_MEDIA_PAGE}?${params.toString()}`
-}
-
-/**
- * 组装 MoviePilot「资源搜索」页地址，打开即用这部作品搜一遍站点资源。
- *
- * 宿主该页会从 query 反解出搜索条件（`media_source` / `media_id` / `keyword` /
- * `title` / `year` / `type`），有内容就自动发起搜索，因此可以把它当成「按作品搜资源」
- * 的深链。两种搜索模式各有触发条件，这里**同时把两套参数都带上**，哪种生效都能出结果：
- *
- * - **精确搜索**：需要 `media_source` + `media_id` 且媒体源可用，走 `search/media/{id}`，
- *   能正确匹配季集，是首选；
- * - **模糊搜索**：只要 `keyword` 非空即可，走 `search/title`。
- *   宿主只在部分路由（探索 / 媒体详情等）预加载媒体源清单，用户直接进搜索页时
- *   清单可能还是空的、精确搜索被跳过，所以 `keyword` 这个兜底不能省。
- *
- * 与 `mediaPageUrl` 同理，必须走 hash 路由（`<应用基址>#/resource?…`）。
- *
- * @param work 作品；至少要有一个豆瓣 ID 或标题，二者皆无时返回空串
- * @param sites 限定搜索的站点 ID（可传数组，也可直接传 `1,2,3` 形态的字符串）。
- *              留空则不带该参数，由宿主按自己的默认搜索站点跑。
- * @returns 可直接放进 `<a href>` 的地址
- */
-export function resourceSearchUrl(
-  work: {
-    media_source?: string
-    media_id?: string
-    title?: string
-    year?: string
-    type?: string
-  },
-  sites?: number[] | string
-): string {
-  const mediaId = String(work?.media_id ?? '').trim()
-  const title = String(work?.title ?? '').trim()
-  if (!mediaId && !title) return ''
-  const params = new URLSearchParams()
-  if (mediaId) {
-    params.set('media_source', String(work?.media_source || '').trim() || 'douban')
-    params.set('media_id', mediaId)
-  }
-  // 关键词兜底：精确搜索不可用时改走模糊搜索，且它会作为标签展示在结果页上
-  if (title) params.set('keyword', title)
-  for (const key of ['title', 'year', 'type'] as const) {
-    const value = String(work?.[key] ?? '').trim()
-    if (value) params.set(key, value)
-  }
-  // 站点限定：宿主该页会把 `sites` 原样转给搜索接口，形如 `9,1,14`
-  const siteText = normalizeSiteIds(sites)
-  if (siteText) params.set('sites', siteText)
-  return `${appBaseUrl()}#${HOST_RESOURCE_PAGE}?${params.toString()}`
-}
-
-/** 把站点 ID 归一化成宿主认识的 `1,2,3` 形态；无效输入返回空串 */
-export function normalizeSiteIds(sites?: number[] | string): string {
-  if (sites == null) return ''
-  const list = Array.isArray(sites) ? sites : String(sites).split(',')
-  const ids: string[] = []
-  for (const item of list) {
-    const text = String(item ?? '').trim()
-    if (!text) continue
-    const value = Number(text)
-    if (!Number.isFinite(value)) continue
-    ids.push(String(value))
-  }
-  return ids.join(',')
-}
-
-/**
- * 媒体类型（`电影` / `电视剧` / `音乐`）→ 宿主的站点检索分类。
- *
- * 与宿主媒体详情页的分支**完全一致**：只有电视剧走 `tv`、音乐走 `music`，
- * 其余（含综艺、动漫这类插件识别不出细分的）统一按 `movie` 处理，
- * 保证插件选到的站点清单和宿主自己那份一模一样。
- */
-export function searchSiteKind(type?: string): string {
-  const value = String(type || '').trim()
-  if (value === '电视剧') return 'tv'
-  if (value === '音乐') return 'music'
-  return 'movie'
 }
 
 /** 当前应用地址去掉 hash 的部分；非浏览器环境下退化为空串（相对地址）。 */
@@ -648,63 +542,6 @@ export async function fetchSiteOptions(api: PluginApi): Promise<SiteOption[]> {
     return options
   } catch (err) {
     console.warn(`[${PLUGIN_ID}] 读取站点列表失败`, err)
-    return []
-  }
-}
-
-/**
- * 读取「搜索资源」时可选的站点清单 —— 与宿主媒体详情页弹的站点选择框同源。
- *
- * 走 `site/media/{movie|tv|music}`：宿主按媒体类型挑出**启用中**的站点，
- * 因此电视剧作品只会列出剧集站。返回体含站点凭据（cookie），这里只保留
- * `{id, name, domain}`，其余字段一律丢弃，避免敏感信息进入插件前端状态。
- */
-export async function fetchSearchSites(
-  api: PluginApi,
-  type?: string
-): Promise<SiteOption[]> {
-  try {
-    const raw = await api.get(`${HOST_SITE_MEDIA}${searchSiteKind(type)}`)
-    const list = unwrapList<Record<string, unknown>>(raw)
-    if (!list.length) return []
-    const options: SiteOption[] = []
-    for (const row of list) {
-      if (row?.id == null) continue
-      if (row.is_active === false) continue
-      options.push({
-        id: Number(row.id),
-        name: String(row.name || `站点 ${row.id}`),
-        domain: String(row.domain || ''),
-      })
-    }
-    return options
-  } catch (err) {
-    console.warn(`[${PLUGIN_ID}] 读取搜索站点列表失败`, err)
-    return []
-  }
-}
-
-/**
- * 读取宿主「默认搜索站点」设置（系统设置里的那一项）。
- *
- * 宿主弹出的站点选择框默认勾选的就是它，插件用同一个值才能做到「开箱即一致」。
- * 返回体是 `{value: [站点ID, …]}`，为兼容拦截器是否已解包，这里两层都兜一下。
- */
-export async function fetchDefaultSearchSites(api: PluginApi): Promise<number[]> {
-  try {
-    const raw = await api.get(HOST_DEFAULT_SEARCH_SITES)
-    const holder = (unwrap<Record<string, unknown>>(raw) || {}) as Record<string, unknown>
-    const inner = ((holder.data as Record<string, unknown> | undefined) ?? holder) || {}
-    const value = inner.value
-    if (!Array.isArray(value)) return []
-    const ids: number[] = []
-    for (const item of value) {
-      const id = Number(item)
-      if (Number.isFinite(id)) ids.push(id)
-    }
-    return ids
-  } catch (err) {
-    console.warn(`[${PLUGIN_ID}] 读取默认搜索站点设置失败`, err)
     return []
   }
 }

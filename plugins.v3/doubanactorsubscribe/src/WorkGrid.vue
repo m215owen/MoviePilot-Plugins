@@ -87,7 +87,6 @@
             target="_blank"
             rel="noopener"
           />
-          <SearchResourceButton :api="api" :work="work" size="small" variant="text" />
           <v-btn
             size="small"
             variant="text"
@@ -109,12 +108,10 @@
  * 只负责渲染与事件抛出，订阅的后端交互由父组件完成，
  * 这样详情页 / 侧栏全页 / 仪表板可以复用同一套视觉与交互。
  * 海报统一经宿主图片代理加载，绕开豆瓣 CDN 的 Referer 防盗链。
- * 卡片上的「详情」按钮跳宿主自带的媒体详情页（见 `mediaPageUrl`），不再外链豆瓣；
- * 「搜索资源」按钮自带站点选择框（见 `SearchResourceButton`）。
+ * 卡片上的「详情」按钮跳宿主自带的媒体详情页（见 `mediaPageUrl`），不再外链豆瓣。
  */
-import SearchResourceButton from './SearchResourceButton.vue'
 import { mediaPageUrl, proxyImage, workKey } from './api'
-import type { ActorWork, PluginApi } from './types'
+import type { ActorWork } from './types'
 
 const props = withDefaults(
   defineProps<{
@@ -130,8 +127,6 @@ const props = withDefaults(
     emptyText?: string
     /** 是否在卡片上显示「出演演员」，合并视图下用它替代按演员分组 */
     showActors?: boolean
-    /** 宿主注入的 axios 实例，供「搜索资源」读取站点清单 */
-    api?: PluginApi
   }>(),
   { subscribedKeys: () => [], showActors: true }
 )

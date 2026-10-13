@@ -52,7 +52,6 @@
                   :title="isSubscribed(item.work) ? '取消订阅' : '订阅'"
                   @click="isSubscribed(item.work) ? unsubscribe(item.work) : subscribe(item.work)"
                 />
-                <SearchResourceButton :api="api" :work="item.work" size="x-small" variant="text" />
                 <v-btn
                   size="x-small"
                   variant="text"
@@ -86,7 +85,6 @@
  * 内容由本组件渲染。这里聚焦「新作品 + 一键订阅」这一最常用动作。
  */
 import { computed, inject, onMounted, ref } from 'vue'
-import SearchResourceButton from './SearchResourceButton.vue'
 import {
   API_BASE,
   PLUGIN_ID,

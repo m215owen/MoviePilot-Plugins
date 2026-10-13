@@ -1,6 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _sfc_main$1 } from './SearchResourceButton.vue_vue_type_script_setup_true_lang-Dfqp7Wbz.js';
-import { m as mergeWorks, s as sortWorks, w as workKey, e as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, c as unsubscribeWork, i as ignoreWork, _ as _export_sfc } from './_plugin-vue_export-helper-qagfV18f.js';
+import { m as mergeWorks, s as sortWorks, w as workKey, e as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, c as unsubscribeWork, i as ignoreWork, _ as _export_sfc } from './_plugin-vue_export-helper-Bu1j1gfm.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -236,12 +235,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                             title: isSubscribed(item.work) ? "取消订阅" : "订阅",
                             onClick: ($event) => isSubscribed(item.work) ? unsubscribe(item.work) : subscribe(item.work)
                           }, null, 8, ["icon", "color", "loading", "title", "onClick"]),
-                          _createVNode(_sfc_main$1, {
-                            api: __props.api,
-                            work: item.work,
-                            size: "x-small",
-                            variant: "text"
-                          }, null, 8, ["api", "work"]),
                           _createVNode(_component_v_btn, {
                             size: "x-small",
                             variant: "text",
@@ -275,6 +268,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-6b913f2c"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-1e6f912d"]]);
 
 export { Dashboard as default };
