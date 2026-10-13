@@ -1186,6 +1186,8 @@ class DoubanActorSubscribe(_PluginBase):
             ]
             # 「新」按 first_seen 时间窗现算，读旧快照也不会显示过期标记
             new_count += self._apply_new_flags(visible)
+            # 同理：张冠李戴的判定也现算，旧缓存里的记录才会被标出来
+            actor["fuzzy"] = self._is_fuzzy_actor(actor)
             actor["works"] = visible
             actors.append(actor)
         actors.sort(key=lambda item: str(item.get("name") or ""))
@@ -1250,6 +1252,23 @@ class DoubanActorSubscribe(_PluginBase):
         if not first_seen:
             return False
         return (now - first_seen) <= _NEW_WINDOW_SECONDS
+
+    @staticmethod
+    def _is_fuzzy_actor(actor: Dict[str, Any]) -> bool:
+        """演员是否属于「按最接近的搜索结果」解析出来的（配置名 ≠ 豆瓣名）。
+
+        以「来源是名称搜索 且 配置名与豆瓣名不一致」现算，而不是只看解析时记下的
+        ``fuzzy``：字段出现之前写入的旧缓存同样存在张冠李戴，只有展示时现算才能
+        把历史遗留的一并暴露出来（实测实例上有 8 位：宋星颐→宋星翰、任绵绵→林绵绵…）。
+
+        直接填人物 ID 的配置名是「1025229」这类数字，与豆瓣名天然不同，
+        因此必须用 ``resolved_from`` 先排除掉。
+        """
+        if str(actor.get("resolved_from") or "") != "search":
+            return False
+        key = str(actor.get("key") or "").strip()
+        name = str(actor.get("name") or "").strip()
+        return bool(key) and bool(name) and key != name
 
     def _apply_new_flags(self, works: List[Dict[str, Any]]) -> int:
         """按时间窗就地重算 ``is_new``，返回其中新作品的数量。
