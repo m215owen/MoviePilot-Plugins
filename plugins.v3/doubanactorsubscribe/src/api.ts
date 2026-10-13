@@ -765,6 +765,7 @@ export const MAX_LIST_PAGE_SIZE = MAX_PAGE_SIZE
 export function mergeWorks(actors: ActorGroup[]): ActorWork[] {
   const merged = new Map<string, ActorWork>()
   for (const actor of actors) {
+    const names = actorDisplayNames(actor)
     for (const work of actor.works || []) {
       const key = workKey(work)
       const existing = merged.get(key)
@@ -772,12 +773,13 @@ export function mergeWorks(actors: ActorGroup[]): ActorWork[] {
         merged.set(key, {
           ...work,
           roles: [...(work.roles || [])],
-          actorNames: actor.name ? [actor.name] : [],
+          actorNames: [...names],
         })
         continue
       }
-      if (actor.name && !(existing.actorNames || []).includes(actor.name)) {
-        existing.actorNames = [...(existing.actorNames || []), actor.name]
+      const missing = names.filter((name) => !(existing.actorNames || []).includes(name))
+      if (missing.length) {
+        existing.actorNames = [...(existing.actorNames || []), ...missing]
       }
       // 任一演员把它视为新作品，就按新作品呈现
       if (work.is_new) existing.is_new = true
@@ -788,6 +790,20 @@ export function mergeWorks(actors: ActorGroup[]): ActorWork[] {
     }
   }
   return Array.from(merged.values())
+}
+
+/**
+ * 演员在作品墙上可被搜到的名字。
+ *
+ * 模糊匹配（豆瓣没有同名演员，插件退回了最接近的结果）时，配置名与豆瓣名不一致：
+ * 只放出豆瓣名的话，用户按自己填的名字搜作品会一条都搜不到。两个都带上。
+ */
+function actorDisplayNames(actor: ActorGroup): string[] {
+  const name = String(actor.name || '').trim()
+  const key = String(actor.key || '').trim()
+  const names = name ? [name] : []
+  if (key && key !== name) names.push(key)
+  return names
 }
 
 /** 作品默认排序：新作品优先，其次按年份倒序 */

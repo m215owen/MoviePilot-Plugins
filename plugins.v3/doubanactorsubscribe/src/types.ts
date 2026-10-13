@@ -109,6 +109,16 @@ export interface ActorBrief {
   biography?: string
   /** 来源：id（直接给 ID）/ search（按名称搜索得到） */
   resolved_from?: string
+  /**
+   * 是否「按最接近的搜索结果」解析出来的。
+   *
+   * 豆瓣人物搜索是模糊匹配：配置「宋星颐」会返回「宋星翰 / 宋星成 / 宋星辰…」，
+   * 插件拿不到同名条目时会退回第一个候选。此时 `key`（用户填的）与 `name`（豆瓣上的）
+   * 不一致，面板必须提示，否则用户会以为「加的演员没生效」。
+   */
+  fuzzy?: boolean
+  /** fuzzy 为真时的前几个候选名，供用户判断该改成哪个名字或改填人物 ID */
+  candidates?: string[]
   /** 解析或抓取错误 */
   error?: string | null
   /** 该错误是否为可重试（豆瓣限流/网络失败），前端据此显示「稍后重试」而非「改配置」 */

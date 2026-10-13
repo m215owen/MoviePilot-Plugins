@@ -1,6 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { r as resolveApi, l as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage, g as mediaPageUrl } from './_plugin-vue_export-helper-DpVJBdwh.js';
-import { _ as _sfc_main$2 } from './SearchResourceButton.vue_vue_type_script_setup_true_lang-BvAsOj-z.js';
+import { r as resolveApi, l as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage, g as mediaPageUrl } from './_plugin-vue_export-helper-qagfV18f.js';
+import { _ as _sfc_main$2 } from './SearchResourceButton.vue_vue_type_script_setup_true_lang-Dfqp7Wbz.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 

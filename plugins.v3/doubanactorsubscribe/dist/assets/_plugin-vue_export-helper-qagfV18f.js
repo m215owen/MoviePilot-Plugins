@@ -402,6 +402,7 @@ async function fetchDownloaderOptions(api) {
 function mergeWorks(actors) {
   const merged = /* @__PURE__ */ new Map();
   for (const actor of actors) {
+    const names = actorDisplayNames(actor);
     for (const work of actor.works || []) {
       const key = workKey(work);
       const existing = merged.get(key);
@@ -409,12 +410,13 @@ function mergeWorks(actors) {
         merged.set(key, {
           ...work,
           roles: [...work.roles || []],
-          actorNames: actor.name ? [actor.name] : []
+          actorNames: [...names]
         });
         continue;
       }
-      if (actor.name && !(existing.actorNames || []).includes(actor.name)) {
-        existing.actorNames = [...existing.actorNames || [], actor.name];
+      const missing = names.filter((name) => !(existing.actorNames || []).includes(name));
+      if (missing.length) {
+        existing.actorNames = [...existing.actorNames || [], ...missing];
       }
       if (work.is_new) existing.is_new = true;
       const extraRoles = (work.roles || []).filter(
@@ -424,6 +426,13 @@ function mergeWorks(actors) {
     }
   }
   return Array.from(merged.values());
+}
+function actorDisplayNames(actor) {
+  const name = String(actor.name || "").trim();
+  const key = String(actor.key || "").trim();
+  const names = name ? [name] : [];
+  if (key && key !== name) names.push(key);
+  return names;
 }
 function sortWorks(works, mode = "year") {
   return [...works].sort((a, b) => {

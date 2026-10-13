@@ -1,42 +1,42 @@
 
 /* 仅使用 scoped 样式 */
-.das-root[data-v-aed48879] {
+.das-root[data-v-f52ce566] {
   max-width: 1600px;
 }
-.das-titlebar[data-v-aed48879] {
+.das-titlebar[data-v-f52ce566] {
   gap: 12px;
   row-gap: 4px;
 }
 
 /* 演员 chip 区：flex 换行 + 纵向滚动。
    不能用 v-chip-group——它是横向滑动容器，会带左右箭头且展开看不出效果。 */
-.das-chips[data-v-aed48879] {
+.das-chips[data-v-f52ce566] {
   max-height: 96px;
   overflow-y: auto;
 }
-.das-actor-chips[data-v-aed48879] {
+.das-actor-chips[data-v-f52ce566] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 /* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
-.das-chips-expanded[data-v-aed48879] {
+.das-chips-expanded[data-v-f52ce566] {
   max-height: 60vh;
 }
-.das-toolbar[data-v-aed48879] {
+.das-toolbar[data-v-f52ce566] {
   gap: 12px;
 }
-.das-dim[data-v-aed48879] {
+.das-dim[data-v-f52ce566] {
   opacity: 0.75;
 }
-.das-search[data-v-aed48879] {
+.das-search[data-v-f52ce566] {
   max-width: 240px;
 }
-.das-checkbox[data-v-aed48879] {
+.das-checkbox[data-v-f52ce566] {
   max-width: 130px;
 }
-.das-page-info[data-v-aed48879] {
+.das-page-info[data-v-f52ce566] {
   font-size: 0.82rem;
   opacity: 0.85;
   white-space: nowrap;

@@ -1,6 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { I as IgnoredManager, W as WorkGrid } from './WorkGrid-CPglNOHq.js';
-import { m as mergeWorks, s as sortWorks, e as formatTime, w as workKey, r as resolveApi, i as ignoreWork, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, a as waitForRefresh, P as PLUGIN_ID, b as submitSubscribe, c as unsubscribeWork, d as removeActor, _ as _export_sfc } from './_plugin-vue_export-helper-DpVJBdwh.js';
+import { I as IgnoredManager, W as WorkGrid } from './WorkGrid-ssDqvL9g.js';
+import { m as mergeWorks, s as sortWorks, e as formatTime, w as workKey, r as resolveApi, i as ignoreWork, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, a as waitForRefresh, P as PLUGIN_ID, b as submitSubscribe, c as unsubscribeWork, d as removeActor, _ as _export_sfc } from './_plugin-vue_export-helper-qagfV18f.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -123,6 +123,18 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     }
     function isActorActive(actor) {
       return actorFilter.value === actor.key || actorFilter.value === actor.id;
+    }
+    function isFuzzyActor(actor) {
+      return Boolean(actor.fuzzy) && Boolean(actor.name) && actor.name !== actor.key;
+    }
+    function actorTitle(actor) {
+      const suffix = "（点右侧 × 可从订阅演员中移除）";
+      if (actor.error) return `${actor.error}${suffix}`;
+      if (isFuzzyActor(actor)) {
+        const candidates = (actor.candidates || []).filter(Boolean);
+        return `配置的「${actor.key}」在豆瓣没有同名演员，已按最接近的结果「${actor.name}」解析` + (candidates.length ? `（候选：${candidates.join(" / ")}）` : "") + `。请核对，或把配置项改成人物 ID 精确指定。${suffix}`;
+      }
+      return `${actor.name}${suffix}`;
     }
     const visibleWorks = computed(() => {
       const groups = actors.value.filter(actorMatches);
@@ -549,7 +561,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         color: isActorActive(actor) ? "primary" : void 0,
                         closable: "",
                         "close-icon": "mdi-close",
-                        title: `${actor.error || actor.name}（点右侧 × 可从订阅演员中移除）`,
+                        title: actorTitle(actor),
                         onClick: ($event) => actorFilter.value = actor.key,
                         "onClick:close": ($event) => askRemoveActor(actor)
                       }, {
@@ -560,8 +572,20 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                             size: "14",
                             color: "warning",
                             class: "mr-1"
+                          })) : isFuzzyActor(actor) ? (_openBlock(), _createBlock(_component_v_icon, {
+                            key: 1,
+                            icon: "mdi-help-circle-outline",
+                            size: "14",
+                            color: "warning",
+                            class: "mr-1"
                           })) : _createCommentVNode("", true),
-                          _createTextVNode(" " + _toDisplayString(actor.name) + " ", 1),
+                          isFuzzyActor(actor) ? (_openBlock(), _createElementBlock(_Fragment, { key: 2 }, [
+                            _createTextVNode(_toDisplayString(actor.key) + " ", 1),
+                            _cache[25] || (_cache[25] = _createElementVNode("span", { class: "das-dim mx-1" }, "→", -1)),
+                            _createTextVNode(" " + _toDisplayString(actor.name), 1)
+                          ], 64)) : (_openBlock(), _createElementBlock(_Fragment, { key: 3 }, [
+                            _createTextVNode(_toDisplayString(actor.name), 1)
+                          ], 64)),
                           _createElementVNode("span", _hoisted_7, _toDisplayString((actor.works || []).length), 1)
                         ]),
                         _: 2
@@ -596,7 +620,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         size: "small",
                         value: ""
                       }, {
-                        default: _withCtx(() => [..._cache[25] || (_cache[25] = [
+                        default: _withCtx(() => [..._cache[26] || (_cache[26] = [
                           _createTextVNode("全部", -1)
                         ])]),
                         _: 1
@@ -605,7 +629,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         size: "small",
                         value: "电影"
                       }, {
-                        default: _withCtx(() => [..._cache[26] || (_cache[26] = [
+                        default: _withCtx(() => [..._cache[27] || (_cache[27] = [
                           _createTextVNode("电影", -1)
                         ])]),
                         _: 1
@@ -614,7 +638,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         size: "small",
                         value: "电视剧"
                       }, {
-                        default: _withCtx(() => [..._cache[27] || (_cache[27] = [
+                        default: _withCtx(() => [..._cache[28] || (_cache[28] = [
                           _createTextVNode("电视剧", -1)
                         ])]),
                         _: 1
@@ -650,7 +674,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         size: "small",
                         value: "year"
                       }, {
-                        default: _withCtx(() => [..._cache[28] || (_cache[28] = [
+                        default: _withCtx(() => [..._cache[29] || (_cache[29] = [
                           _createTextVNode("最新优先", -1)
                         ])]),
                         _: 1
@@ -659,7 +683,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         size: "small",
                         value: "new"
                       }, {
-                        default: _withCtx(() => [..._cache[29] || (_cache[29] = [
+                        default: _withCtx(() => [..._cache[30] || (_cache[30] = [
                           _createTextVNode("新作品优先", -1)
                         ])]),
                         _: 1
@@ -708,16 +732,16 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createVNode(_component_v_card, null, {
               default: _withCtx(() => [
                 _createVNode(_component_v_card_title, null, {
-                  default: _withCtx(() => [..._cache[30] || (_cache[30] = [
+                  default: _withCtx(() => [..._cache[31] || (_cache[31] = [
                     _createTextVNode("确认批量订阅？", -1)
                   ])]),
                   _: 1
                 }),
                 _createVNode(_component_v_card_text, null, {
                   default: _withCtx(() => [
-                    _cache[31] || (_cache[31] = _createTextVNode(" 将把当前筛选结果里的 ", -1)),
+                    _cache[32] || (_cache[32] = _createTextVNode(" 将把当前筛选结果里的 ", -1)),
                     _createElementVNode("strong", null, _toDisplayString(pendingTargets.value.length), 1),
-                    _cache[32] || (_cache[32] = _createTextVNode(" 部未订阅作品 一次性提交到订阅系统（按豆瓣 ID 精确订阅）。 ", -1)),
+                    _cache[33] || (_cache[33] = _createTextVNode(" 部未订阅作品 一次性提交到订阅系统（按豆瓣 ID 精确订阅）。 ", -1)),
                     pendingTargets.value.length > 20 ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                       _createTextVNode(" 数量较多，确认后请耐心等待逐条提交完成。 ")
                     ], 64)) : _createCommentVNode("", true)
@@ -731,7 +755,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       variant: "text",
                       onClick: _cache[11] || (_cache[11] = ($event) => confirmDialog.value = false)
                     }, {
-                      default: _withCtx(() => [..._cache[33] || (_cache[33] = [
+                      default: _withCtx(() => [..._cache[34] || (_cache[34] = [
                         _createTextVNode("取消", -1)
                       ])]),
                       _: 1
@@ -740,7 +764,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       color: "primary",
                       onClick: doSubscribeMany
                     }, {
-                      default: _withCtx(() => [..._cache[34] || (_cache[34] = [
+                      default: _withCtx(() => [..._cache[35] || (_cache[35] = [
                         _createTextVNode("确认订阅", -1)
                       ])]),
                       _: 1
@@ -763,18 +787,18 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createVNode(_component_v_card, null, {
               default: _withCtx(() => [
                 _createVNode(_component_v_card_title, null, {
-                  default: _withCtx(() => [..._cache[35] || (_cache[35] = [
+                  default: _withCtx(() => [..._cache[36] || (_cache[36] = [
                     _createTextVNode("从订阅演员中移除？", -1)
                   ])]),
                   _: 1
                 }),
                 _createVNode(_component_v_card_text, null, {
                   default: _withCtx(() => [
-                    _cache[36] || (_cache[36] = _createTextVNode(" 将移除演员 ", -1)),
+                    _cache[37] || (_cache[37] = _createTextVNode(" 将移除演员 ", -1)),
                     _createElementVNode("strong", null, _toDisplayString(removeTarget.value?.name || removeTarget.value?.key), 1),
-                    _cache[37] || (_cache[37] = _createTextVNode("， 并", -1)),
-                    _cache[38] || (_cache[38] = _createElementVNode("strong", null, "同步删除配置页里的同名条目", -1)),
-                    _cache[39] || (_cache[39] = _createTextVNode("、清理它的作品数据。 以后不会再抓取这位演员的作品；已经提交的订阅不受影响。 ", -1))
+                    _cache[38] || (_cache[38] = _createTextVNode("， 并", -1)),
+                    _cache[39] || (_cache[39] = _createElementVNode("strong", null, "同步删除配置页里的同名条目", -1)),
+                    _cache[40] || (_cache[40] = _createTextVNode("、清理它的作品数据。 以后不会再抓取这位演员的作品；已经提交的订阅不受影响。 ", -1))
                   ]),
                   _: 1
                 }),
@@ -785,7 +809,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       variant: "text",
                       onClick: _cache[13] || (_cache[13] = ($event) => removeDialog.value = false)
                     }, {
-                      default: _withCtx(() => [..._cache[40] || (_cache[40] = [
+                      default: _withCtx(() => [..._cache[41] || (_cache[41] = [
                         _createTextVNode("取消", -1)
                       ])]),
                       _: 1
@@ -796,7 +820,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       loading: removing.value,
                       onClick: doRemoveActor
                     }, {
-                      default: _withCtx(() => [..._cache[41] || (_cache[41] = [
+                      default: _withCtx(() => [..._cache[42] || (_cache[42] = [
                         _createTextVNode(" 确认移除 ", -1)
                       ])]),
                       _: 1
@@ -850,6 +874,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-7332f1f9"]]);
+const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-e4b87666"]]);
 
 export { Page as default };

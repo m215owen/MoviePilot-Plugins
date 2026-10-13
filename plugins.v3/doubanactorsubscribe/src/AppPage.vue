@@ -117,7 +117,7 @@
               :color="isActorActive(actor) ? 'primary' : undefined"
               closable
               close-icon="mdi-close"
-              :title="`${actor.error || actor.name}（点右侧 × 可从订阅演员中移除）`"
+              :title="actorTitle(actor)"
               @click="actorFilter = actor.key"
               @click:close="askRemoveActor(actor)"
             >
@@ -128,7 +128,19 @@
                 color="warning"
                 class="mr-1"
               />
-              {{ actor.name }}
+              <v-icon
+                v-else-if="isFuzzyActor(actor)"
+                icon="mdi-help-circle-outline"
+                size="14"
+                color="warning"
+                class="mr-1"
+              />
+              <template v-if="isFuzzyActor(actor)">
+                {{ actor.key }}
+                <span class="das-dim mx-1">→</span>
+                {{ actor.name }}
+              </template>
+              <template v-else>{{ actor.name }}</template>
               <span class="ml-1 das-dim">{{ (actor.works || []).length }}</span>
             </v-chip>
           </div>
@@ -441,6 +453,29 @@ function actorMatches(actor: ActorGroup): boolean {
 /** 该演员是否正好是当前筛中的那一位（用于给 chip 上高亮色） */
 function isActorActive(actor: ActorGroup): boolean {
   return actorFilter.value === actor.key || actorFilter.value === actor.id
+}
+
+/**
+ * 是否属于「模糊匹配」：豆瓣上没有与配置名同名的演员，插件退回了最接近的搜索结果。
+ * 此时 chip 会显示「配置名 → 豆瓣名」，避免用户找不到自己填的那位演员。
+ */
+function isFuzzyActor(actor: ActorGroup): boolean {
+  return Boolean(actor.fuzzy) && Boolean(actor.name) && actor.name !== actor.key
+}
+
+/** 演员 chip 的悬停提示：说清这一位是谁，模糊匹配时给出候选并提示改用人物 ID */
+function actorTitle(actor: ActorGroup): string {
+  const suffix = '（点右侧 × 可从订阅演员中移除）'
+  if (actor.error) return `${actor.error}${suffix}`
+  if (isFuzzyActor(actor)) {
+    const candidates = (actor.candidates || []).filter(Boolean)
+    return (
+      `配置的「${actor.key}」在豆瓣没有同名演员，已按最接近的结果「${actor.name}」解析` +
+      (candidates.length ? `（候选：${candidates.join(' / ')}）` : '') +
+      `。请核对，或把配置项改成人物 ID 精确指定。${suffix}`
+    )
+  }
+  return `${actor.name}${suffix}`
 }
 
 /** 统一作品列表；关键词同时匹配作品名与出演演员名 */

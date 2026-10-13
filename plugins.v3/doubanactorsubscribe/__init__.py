@@ -153,6 +153,28 @@ _COOKIE_EXPIRED_HINT = (
 # 其作品与详情仍按 cron / 手动刷新照常抓取，不受此冷却影响。
 _SEARCH_COOLDOWN_SECONDS = 24 * 3600
 
+# 「新作品」的时间窗：一部作品自首次被发现起 7 天内都算「新」。
+#
+# 这里不能用「相对上一轮快照新增」来判定 —— 那个口径只活到下一次刷新为止：
+# 抓完新作品后随手点一次刷新、插件被重载、或定时任务跑一轮，标记就全被清零了，
+# 于是「新作品」计数长期是 0、勾上「只看新作品」一片空白，看起来就像插件没抓到东西。
+# 按 first_seen 的时间窗判定则天然稳定：只要作品是最近发现的，就一直显示「新」。
+_NEW_WINDOW_SECONDS = 7 * 24 * 3600
+
+# 作品 first_seen 的落盘格式（与 strftime 保持一致）
+_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _parse_ts(value: Any) -> float:
+    """把 ``first_seen`` 文本解析为 epoch 秒；格式非法或缺失时返回 0。"""
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return datetime.strptime(text, _TS_FORMAT).timestamp()
+    except ValueError:
+        return 0.0
+
 
 def _format_remaining(seconds: float) -> str:
     """把剩余冷却秒数写成「X 小时 Y 分钟」，便于用户判断什么时候会重试。"""
@@ -514,7 +536,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.10.0"
+    plugin_version = "1.11.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -783,7 +805,17 @@ class DoubanActorSubscribe(_PluginBase):
     # ─── 后台能力：定时服务 / 远程命令 / HTTP 接口 ────────────────
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """注册定时刷新服务；启用后可在「设定 - 服务」查看状态与手动启动。"""
+        """注册定时刷新服务；启用后可在「设定 - 服务」查看状态与手动启动。
+
+        ⚠️ 传给被调函数的参数必须写在 ``func_kwargs`` 里。宿主注册时会把
+        ``service["kwargs"]`` **原样展开给 ``scheduler.add_job()``**（见
+        宿主 ``scheduler/reconcile.py`` 的 ``update_plugin_job``），而 ``trigger``
+        正是 ``add_job`` 自己的形参名 —— 写成 ``kwargs`` 会让 ``add_job()`` 收到
+        两个 trigger（一个位置参数、一个关键字参数）并抛
+        ``got multiple values for argument 'trigger'``，服务注册静默失败、
+        每日定时刷新永远不会执行。宿主内置插件（如 popularsubscribe）用的也是
+        ``func_kwargs``，此处与之一致。
+        """
         if not self.get_state() or not self._actor_entries:
             return []
         cron = self._cron or "0 8 * * *"
@@ -798,7 +830,7 @@ class DoubanActorSubscribe(_PluginBase):
                 "name": f"{self.plugin_name}刷新服务",
                 "trigger": trigger,
                 "func": self.execute_task,
-                "kwargs": {"trigger": "cron"},
+                "func_kwargs": {"trigger": "cron"},
             }
         ]
 
@@ -1061,7 +1093,7 @@ class DoubanActorSubscribe(_PluginBase):
                 continue
             search_calls_before = client.search_calls
             try:
-                actor, works, cached = self._refresh_actor(client, key, previous, cache)
+                actor, works, cached, discovered = self._refresh_actor(client, key, previous, cache)
             except Exception as err:  # pragma: no cover - 单演员失败不影响其他演员
                 logger.error(f"{self.plugin_name} 刷新演员「{key}」失败：{err}")
                 errors.append(f"{key}：{err}")
@@ -1078,7 +1110,7 @@ class DoubanActorSubscribe(_PluginBase):
                 errors.append(f"{key}：{actor['error']}")
             group_key = str(actor.get("id") or key)
             snapshot[group_key] = {"actor": actor, "works": works}
-            new_count += sum(1 for item in works if item.get("is_new"))
+            new_count += discovered
             if need_search and client.last_rate_limited:
                 search_blocked = True
                 logger.warning(f"{self.plugin_name} 豆瓣搜索已限流，本轮跳过剩余未解析的演员")
@@ -1106,7 +1138,7 @@ class DoubanActorSubscribe(_PluginBase):
         work_total = sum(len(group["works"]) for group in snapshot.values())
         detail = (
             f"刷新 {len(snapshot)} 位演员、{work_total} 部作品，"
-            f"新增 {new_count} 部，自动订阅 {len(subscribed)} 部（{elapsed_ms} ms）"
+            f"本次新发现 {new_count} 部，自动订阅 {len(subscribed)} 部（{elapsed_ms} ms）"
         )
         if errors:
             detail += f"，{len(errors)} 项异常"
@@ -1136,20 +1168,23 @@ class DoubanActorSubscribe(_PluginBase):
         snapshot = self._load_works()
         ignored = self._load_ignored()
         actors: List[Dict[str, Any]] = []
+        new_count = 0
         for group in snapshot.values():
             if not isinstance(group, dict):
                 continue
             actor = dict(group.get("actor") or {})
             # 被忽略的作品不参与展示与统计；数据仍留在快照里，随时可以恢复
-            actor["works"] = [
+            visible = [
                 work
                 for work in (group.get("works") or [])
                 if self._work_unique(work) not in ignored
             ]
+            # 「新」按 first_seen 时间窗现算，读旧快照也不会显示过期标记
+            new_count += self._apply_new_flags(visible)
+            actor["works"] = visible
             actors.append(actor)
         actors.sort(key=lambda item: str(item.get("name") or ""))
         total = sum(len(item["works"]) for item in actors)
-        new_count = sum(1 for item in actors for work in item["works"] if work.get("is_new"))
         search_log = self._load_search_log()
         # 解析进度统计：只把「还没拿到人物 ID」的演员算作待解析。
         # 注意必须与搜索缓存取交集 —— 一旦某位演员解析出 ID，它这轮和下轮都不会再
@@ -1196,18 +1231,46 @@ class DoubanActorSubscribe(_PluginBase):
 
     # ─── 业务逻辑：演员解析与作品抓取 ────────────────────────────
 
+    @staticmethod
+    def _is_fresh_work(work: Dict[str, Any], now: float) -> bool:
+        """作品是否属于「最近发现」——首次发现在 ``_NEW_WINDOW_SECONDS`` 之内。
+
+        没有 first_seen（历史快照或字段缺失）时按「不新」处理，
+        避免把来源不明的旧数据当成新作品推给自动订阅。
+        """
+        first_seen = _parse_ts(work.get("first_seen"))
+        if not first_seen:
+            return False
+        return (now - first_seen) <= _NEW_WINDOW_SECONDS
+
+    def _apply_new_flags(self, works: List[Dict[str, Any]]) -> int:
+        """按时间窗就地重算 ``is_new``，返回其中新作品的数量。
+
+        所有对外输出作品的地方（刷新落盘、面板载荷、仪表板统计）都过这一手，
+        保证「新」的口径只有一个，也不会因为读到旧快照而显示过期标记。
+        """
+        now = time.time()
+        fresh = 0
+        for work in works:
+            if not isinstance(work, dict):
+                continue
+            flag = self._is_fresh_work(work, now)
+            work["is_new"] = flag
+            fresh += 1 if flag else 0
+        return fresh
+
     def _refresh_actor(
         self,
         client: "_DoubanClient",
         key: str,
         previous: Dict[str, Any],
         cache: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], bool]:
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], bool, int]:
         """解析（必要时搜索）演员并抓取其最新作品。
 
         :param cache: 共享的演员解析缓存，由调用方统一读写，
             避免每位演员都落盘一次（112 位演员会变成 112 次写库）。
-        :return: ``(演员信息, 作品列表, 缓存是否有更新)``
+        :return: ``(演员信息, 作品列表, 缓存是否有更新, 本次新发现的作品数)``
         """
         actor: Dict[str, Any] = dict(cache.get(key) or {})
         actor_id = str(actor.get("id") or "").strip()
@@ -1229,7 +1292,7 @@ class DoubanActorSubscribe(_PluginBase):
             # 关键：ID 已经解析出来了，即使详情这次被限流也要把 ID 落缓存。
             # 否则下一轮会为一个**已经解析好**的演员再花一次宝贵的搜索额度。
             cache[key] = {k: v for k, v in actor.items() if k not in ("works", "retryable")}
-            return actor, [], True
+            return actor, [], True, 0
 
         if actor_id and not actor.get("error"):
             cache[key] = {k: v for k, v in actor.items() if k not in ("works", "retryable")}
@@ -1239,7 +1302,7 @@ class DoubanActorSubscribe(_PluginBase):
         if not collection_id:
             if not actor.get("error"):
                 actor["error"] = "未找到该演员的豆瓣影视作品集"
-            return actor, [], cache_dirty
+            return actor, [], cache_dirty, 0
 
         # 豆瓣作品集接口不支持翻页，每位演员最多取到 10 部
         fetch_count = min(self._max_works, _DoubanClient.MAX_WORKS_PER_REQUEST)
@@ -1253,7 +1316,8 @@ class DoubanActorSubscribe(_PluginBase):
                 works.append(work)
         works = self._sort_works(works)[: self._max_works]
 
-        # 继承首次发现时间，据此标记 is_new（供面板显示「新」徽标与自动订阅判定）
+        # 继承首次发现时间（只在真正第一次见到时才写 now），
+        # 「是否新作品」另由 first_seen 落在时间窗内决定，见 _apply_new_flags
         previous_works: List[Any] = []
         if isinstance(previous, dict):
             group = previous.get(actor_id)
@@ -1264,16 +1328,17 @@ class DoubanActorSubscribe(_PluginBase):
             for item in previous_works
             if isinstance(item, dict) and item.get("media_id")
         }
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now().strftime(_TS_FORMAT)
+        discovered = 0
         for work in works:
             first_seen = seen.get(work["media_id"])
             if first_seen:
                 work["first_seen"] = first_seen
-                work["is_new"] = False
             else:
                 work["first_seen"] = now
-                work["is_new"] = True
-        return actor, works, cache_dirty
+                discovered += 1
+        self._apply_new_flags(works)
+        return actor, works, cache_dirty, discovered
 
     @staticmethod
     def _extract_person_id(value: str) -> str:
@@ -1330,12 +1395,22 @@ class DoubanActorSubscribe(_PluginBase):
             }
         exact = next((item for item in candidates if item.get("name") == key), None)
         matched = exact or candidates[0]
+        # 没有同名条目时退回最接近的搜索结果 —— 但必须把这个事实记下来。
+        # 豆瓣的人物搜索是模糊匹配：配置「宋星颐」会返回「宋星翰 / 宋星成 / 宋星辰…」，
+        # 静默取第一个会让面板上冒出一个用户从没填过的名字（作品也是别人的），
+        # 用户只会觉得「我加的演员没生效」。记下 fuzzy 与候选名后，
+        # 面板会显式提示「配置名 ↔ 实际解析到的名字」，由用户决定是否改用人物 ID。
+        fuzzy = exact is None
         return {
             "key": key,
             "id": str(matched.get("id") or ""),
             "name": _clean_text(matched.get("name")) or key,
             "avatar": matched.get("avatar"),
             "resolved_from": "search",
+            "fuzzy": fuzzy,
+            "candidates": (
+                [str(c.get("name")) for c in candidates[:5] if c.get("name")] if fuzzy else []
+            ),
             "error": None,
         }
 
@@ -1866,9 +1941,10 @@ class DoubanActorSubscribe(_PluginBase):
         for group in snapshot.values():
             if not isinstance(group, dict):
                 continue
-            works = group.get("works") or []
+            works = [item for item in (group.get("works") or []) if isinstance(item, dict)]
             total += len(works)
-            new_count += sum(1 for item in works if item.get("is_new"))
+            # 与面板同一套口径：按 first_seen 时间窗现算，而不是读落盘时的旧标记
+            new_count += self._apply_new_flags(works)
         return total, new_count
 
     def _send_notify(
