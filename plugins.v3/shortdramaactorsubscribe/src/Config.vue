@@ -229,6 +229,7 @@
             density="comfortable"
             hint="与下载目录成对，来自宿主「目录管理」；整理后放到 <该目录>/剧名 (年份)/"
             persistent-hint
+            @update:model-value="onPickLibrary"
           />
         </v-col>
         <v-col cols="12" sm="6" md="4">
@@ -357,7 +358,8 @@ const options = reactive<OptionsPayload>({
   sites: [] as SiteOption[],
   downloaders: [] as DownloaderOption[],
   transfer_types: [
-    { title: '硬链接（推荐，省空间）', value: 'link' },
+    { title: '硬链接（推荐，省空间，需同盘）', value: 'link' },
+    { title: '软链接（跨盘可用，指向下载文件）', value: 'softlink' },
     { title: '复制', value: 'copy' },
     { title: '移动', value: 'move' },
   ] as TransferTypeOption[],
@@ -413,9 +415,27 @@ const shortDramaDirectory = computed(
   () => options.directories.find((item) => item.is_short_drama) || null
 )
 
+/**
+ * 把 v-combobox 回写的值取成纯字符串。
+ *
+ * ⚠️ 这版 Vuetify 的 `v-combobox` **不认 `item-value`**：`:items` 是
+ * `{title, value}` 对象数组时，选中一项会把**整个 item 对象**写回 `v-model`
+ * （`v-select` 才只回写 value）。于是配置里会存成
+ * `{"title": "★ 短剧（/vol00/…）", "value": "/vol00/…"}` 这种脏值，
+ * 后端拿到就不是路径了。这里统一取 value，保证落库的是路径字符串。
+ */
+function pickValue(value: unknown): string {
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>
+    return String(item.value ?? item.title ?? '').trim()
+  }
+  return String(value ?? '').trim()
+}
+
 /** 选中系统目录后，若媒体库目录还是空的或仍是自动填的，就跟着一起更新 */
 function onPickDirectory(value: unknown): void {
-  const path = String(value || '').trim()
+  const path = pickValue(value)
+  local.download_path = path // 把可能写进来的 item 对象换回字符串
   if (!path) return
   const hit = options.directories.find((item) => item.download_path === path)
   if (!hit) return
@@ -426,6 +446,11 @@ function onPickDirectory(value: unknown): void {
   if (!current || autoFilled) {
     local.library_path = hit.library_path || ''
   }
+}
+
+/** 媒体库目录同样归一化（items 是字符串数组，但历史脏值可能是对象） */
+function onPickLibrary(value: unknown): void {
+  local.library_path = pickValue(value)
 }
 
 /** 一键采用系统推荐（优先「短剧」目录 + 系统默认下载器） */
@@ -558,6 +583,10 @@ async function loadOptions(): Promise<void> {
 async function saveConfig(): Promise<void> {
   saving.value = true
   const payload = JSON.parse(JSON.stringify(local)) as PluginConfig
+  // 路径字段再兜一层：即便是历史脏值（item 对象）也在此刻收敛成字符串
+  payload.download_path = pickValue(payload.download_path)
+  payload.library_path = pickValue(payload.library_path)
+  payload.transfer_type = pickValue(payload.transfer_type) || 'link'
   emit('save', payload)
   const api = resolveApi(props)
   if (api) {
@@ -579,6 +608,10 @@ onMounted(() => {
       }
     })
   }
+  // 历史脏值自愈：早期版本把 v-combobox 的 item 对象写进了路径字段，
+  // 不修的话页面会显示 [object Object]、且整理必然失败
+  local.download_path = pickValue(local.download_path)
+  local.library_path = pickValue(local.library_path)
   void loadOptions()
 })
 </script>

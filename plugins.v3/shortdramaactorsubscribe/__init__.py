@@ -416,16 +416,70 @@ def ledger_key(title: str, year: str) -> str:
 
 
 def site_domain_of(url: str) -> str:
-    """从种子链接里取出站点域名（用于回查站点 Cookie）。"""
+    """从种子链接里取出站点域名（**纯域名**，去掉 ``www.`` 前缀）。
+
+    返回值刻意与宿主索引器清单的字典键保持一致：``/api/v1/site/supporting`` 里
+    PTS 的键是 ``ptskit.org`` 而不是 ``www.ptskit.org``，多一个 ``www.`` 就查不到。
+    裸域名（``ptskit.org``，没有协议头）同样要能处理 —— 宿主索引器记录的 ``domain``
+    就可能是这种形态，``urlparse`` 对它会返回空 netloc。
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
     try:
-        parsed = parse.urlparse(str(url or ""))
+        parsed = parse.urlparse(text)
         domain = parsed.netloc or ""
-        if domain:
-            return domain
-        # 少数站点用磁力/相对链接，退回按 '/' 切分
-        return str(url or "").split("/")[2] if str(url or "").count("/") >= 2 else ""
+        if not domain:
+            # 没有协议时 urlparse 会把整串当成 path，这里退回手工切分
+            head = text.split("//", 1)[1] if "//" in text else text
+            domain = head.split("/", 1)[0]
+        domain = domain.lower().split(":", 1)[0].strip()  # 去掉端口
+        return domain[4:] if domain.startswith("www.") else domain
     except Exception:  # pragma: no cover - 解析失败按空域名处理
         return ""
+
+
+def site_domain_candidates(raw: str) -> List[str]:
+    """把一个「可能是完整 URL、也可能带 www」的域名字段展开成候选索引键（按优先级）。
+
+    ⚠️ 实测（MoviePilot v3.1.3）：``SitesHelper().get_indexers()`` 每条记录里的
+    ``domain`` 字段存的是**完整 URL**（``https://www.ptskit.org/``），而
+    ``SitesHelper().get_indexer(domain)`` 的匹配键是**纯域名**（``ptskit.org``，
+    与 ``/api/v1/site/supporting`` 的字典键一致）。把 URL 原样喂进 ``get_indexer()``
+    一律返回 ``None`` —— 外在表现就是日志里的「站点 … 不存在！」，
+    且整轮站点搜索颗粒无收（每个站点都被判为不存在）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    host = site_domain_of(text)
+    candidates: List[str] = [host, text]
+    if host:
+        parts = [part for part in host.split(".") if part]
+        if len(parts) > 2:
+            # 下载链接常落在子域（pt.xxx.com / mua.xxx.com），退一级主域再试
+            candidates.append(".".join(parts[-2:]))
+        candidates.append(host[4:] if host.startswith("www.") else f"www.{host}")
+    result: List[str] = []
+    for item in candidates:
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
+def config_text(value: Any) -> str:
+    """把配置项取成字符串，兼容前端 ``v-combobox`` 写回**整个 item 对象**的情形。
+
+    Vuetify 的 ``v-select`` 只回写 ``value``，而 ``v-combobox`` 会把选中的 item
+    **对象**直接写进 ``v-model``，于是配置里会出现
+    ``{"title": "★ 短剧（/vol00/…）", "value": "/vol00/…"}`` 这种脏值。
+    后端统一取 ``value`` 字段，不依赖前端用哪个组件、怎么绑。
+    """
+    if isinstance(value, dict):
+        return str(value.get("value") or "").strip()
+    if isinstance(value, (list, tuple)):
+        return config_text(value[0]) if value else ""
+    return str(value or "").strip()
 
 
 # ─────────────────────────── CookieCloud ───────────────────────────
@@ -939,8 +993,21 @@ class _SiteSearcher:
         self._category_cache[domain] = cat
         return cat
 
+    def _resolve_domain(self, raw: str) -> str:
+        """把宿主给的域名字段解析成 ``get_indexer()`` 真正认得的键。
+
+        宿主索引器记录里的 ``domain`` 是完整 URL，直接拿去查询会一律返回 ``None``；
+        这里按候选顺序实探一次（``get_indexer`` 只是本地字典查找，开销可忽略），
+        命中哪个就用哪个，保证后续 ``browse(domain=…)`` 与分类探测拿到的是同一个键。
+        """
+        candidates = site_domain_candidates(raw)
+        for candidate in candidates:
+            if self._indexer(candidate):
+                return candidate
+        return candidates[0] if candidates else ""
+
     def _domains(self) -> List[str]:
-        """把配置里的站点 ID 解析成域名列表。
+        """把配置里的站点 ID 解析成宿主索引器认得的域名列表。
 
         用 ``get_indexers()`` 一次取回全部站点再按 ID 过滤 —— 单站点查询接口的名字在
         宿主版本间并不稳定，一次取回再本地过滤更安全。
@@ -960,12 +1027,15 @@ class _SiteSearcher:
                 continue
         domains: List[str] = []
         for site_id in self._sites:
-            site = by_id.get(site_id)
-            domain = str((site or {}).get("domain") or "").strip()
+            site = by_id.get(site_id) or {}
+            # ⚠️ 实测这里取到的 domain 是完整 URL（如 https://www.ptskit.org/），
+            # 必须归一化成纯域名才能被 get_indexer() 认出来，否则整轮搜索全空。
+            raw = str(site.get("domain") or site.get("url") or "").strip()
+            domain = self._resolve_domain(raw) if raw else ""
             if domain:
                 domains.append(domain)
             else:
-                logger.warning(f"{PLUGIN_NAME} 站点 ID={site_id} 未解析出域名，已跳过")
+                logger.warning(f"{PLUGIN_NAME} 站点 ID={site_id} 未解析出可用域名，已跳过")
         return domains
 
     @staticmethod
@@ -1027,6 +1097,10 @@ class _SiteSearcher:
 
 # ─────────────────────────── 整理器（自建） ───────────────────────────
 
+# 支持的整理方式，与宿主系统设置里的「整理方式」保持同一套取值
+# （宿主 i18n 里同样是 copy / move / link / softlink 四项）。
+TRANSFER_TYPES = ("link", "softlink", "copy", "move")
+
 
 class _Organizer:
     """自建整理入库：把下载完成的短剧搬进媒体库并生成 NFO。
@@ -1042,7 +1116,7 @@ class _Organizer:
         self._library_raw = str(library_path or "").strip()
         self._download_path = Path(self._download_raw).expanduser() if self._download_raw else None
         self._library_path = Path(self._library_raw).expanduser() if self._library_raw else None
-        self._transfer_type = transfer_type if transfer_type in ("link", "copy", "move") else "link"
+        self._transfer_type = transfer_type if transfer_type in TRANSFER_TYPES else "link"
 
     @property
     def ready(self) -> bool:
@@ -1099,11 +1173,29 @@ class _Organizer:
     def _move_tree(self, source: Path, target: Path) -> None:
         """按配置的搬运方式把内容放到目标路径。
 
-        链接模式**先复制、再尽力替换为硬链接**：同设备时省空间，跨设备或文件系统不支持
-        硬链接时保留副本，且不视为失败（否则一个文件系统差异就会让整轮整理全挂）。
+        - ``move``：直接搬走（源不再保留）。
+        - ``softlink``：**不复制**，把文件换成指向源文件的符号链接。链接是路径级的，
+          因此跨设备也能用；媒体库侧仍建真实的目录结构，NFO 写在媒体库侧，不污染下载盘。
+        - ``link``：先复制、再尽力替换为硬链接。同设备时省空间，跨设备或文件系统不支持
+          硬链接时保留副本，且不视为失败（否则一个文件系统差异就会让整轮整理全挂）。
         """
         if self._transfer_type == "move":
             shutil.move(str(source), str(target))
+            return
+
+        if self._transfer_type == "softlink":
+            if source.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                for item in sorted(source.rglob("*")):
+                    destination = target / item.relative_to(source)
+                    if item.is_dir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                    else:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        self._symlink_or_copy(destination, item)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                self._symlink_or_copy(target, source)
             return
 
         if source.is_dir():
@@ -1119,6 +1211,26 @@ class _Organizer:
         shutil.copy2(str(source), str(target))
         if self._transfer_type == "link":
             self._replace_with_link(target, source)
+
+    @staticmethod
+    def _symlink_or_copy(link_path: Path, origin: Path) -> None:
+        """建立符号链接；平台不支持（如无权限的 Windows）时回退为复制，不算失败。"""
+        try:
+            if link_path.is_symlink() or link_path.exists():
+                link_path.unlink()
+            link_path.symlink_to(origin, target_is_directory=origin.is_dir())
+        except OSError as err:
+            logger.warning(
+                f"{PLUGIN_NAME} 建立符号链接失败，回退为复制（{link_path.name}）：{err}"
+            )
+            if not link_path.exists() and origin.exists():
+                try:
+                    if origin.is_dir():
+                        shutil.copytree(str(origin), str(link_path), dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(origin, link_path)
+                except (OSError, shutil.Error) as copy_err:  # pragma: no cover
+                    logger.error(f"{PLUGIN_NAME} 回退复制失败：{copy_err}")
 
     @staticmethod
     def _replace_with_link(link_path: Path, origin: Path) -> None:
@@ -1254,9 +1366,11 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._sites = [int(item) for item in (config.get("sites") or []) if str(item).strip()]
         self._prefer_short_drama_category = bool(config.get("prefer_short_drama_category", True))
         self._downloader = str(config.get("downloader") or "").strip()
-        self._download_path = str(config.get("download_path") or "").strip()
-        self._library_path = str(config.get("library_path") or "").strip()
-        self._transfer_type = str(config.get("transfer_type") or "link").strip()
+        # 路径与整理方式统一走 config_text：v-combobox 会把整个 item 对象写回配置，
+        # 直接 str() 会得到 "{'title': …, 'value': …}" 这种脏值、整理必然失败
+        self._download_path = config_text(config.get("download_path"))
+        self._library_path = config_text(config.get("library_path"))
+        self._transfer_type = config_text(config.get("transfer_type")) or "link"
         self._interval_hours = max(1, _to_int(config.get("interval_hours")) or 6)
         self._organize_enabled = bool(config.get("organize_enabled", True))
         self._organize_interval_minutes = max(5, _to_int(config.get("organize_interval_minutes")) or 30)
@@ -1630,9 +1744,9 @@ class ShortDramaActorSubscribe(_PluginBase):
             _to_int(item) for item in (merged.get("sites") or []) if str(item).strip().lstrip("-").isdigit()
         ]
         merged["downloader"] = str(merged.get("downloader") or "").strip()
-        merged["download_path"] = str(merged.get("download_path") or "").strip()
-        merged["library_path"] = str(merged.get("library_path") or "").strip()
-        merged["transfer_type"] = str(merged.get("transfer_type") or "link").strip() or "link"
+        merged["download_path"] = config_text(merged.get("download_path"))
+        merged["library_path"] = config_text(merged.get("library_path"))
+        merged["transfer_type"] = config_text(merged.get("transfer_type")) or "link"
         merged["interval_hours"] = max(1, _to_int(merged.get("interval_hours")) or 6)
         merged["organize_interval_minutes"] = max(5, _to_int(merged.get("organize_interval_minutes")) or 30)
         merged["max_works"] = min(10, max(1, _to_int(merged.get("max_works")) or 10))
@@ -2130,7 +2244,8 @@ class ShortDramaActorSubscribe(_PluginBase):
             "sites": self._site_items(),
             "downloaders": self._downloader_items(),
             "transfer_types": [
-                {"title": "硬链接（推荐，省空间）", "value": "link"},
+                {"title": "硬链接（推荐，省空间，需同盘）", "value": "link"},
+                {"title": "软链接（跨盘可用，指向下载文件）", "value": "softlink"},
                 {"title": "复制", "value": "copy"},
                 {"title": "移动", "value": "move"},
             ],
@@ -2795,17 +2910,21 @@ class ShortDramaActorSubscribe(_PluginBase):
 
     @staticmethod
     def _site_cookie(domain: str) -> str:
-        """按域名取站点 Cookie（用于下载种子文件）。"""
+        """按域名取站点 Cookie（用于下载种子文件）。
+
+        候选顺序里已经包含「子域退一级主域」（下载链接常落在 ``pt.xxx.com`` 这类子域上），
+        所以不再需要单独写一次降级；第一个cookie 非空的候选即为结果。
+        """
         if not domain or not HAS_FRAMEWORK:
             return ""
         try:
-            site = SitesHelper().get_indexer(domain)
-            if not site:
-                # 退一级域名再试（下载链接可能是子域）
-                parts = domain.split(".")
-                if len(parts) >= 2:
-                    site = SitesHelper().get_indexer(".".join(parts[-2:]))
-            return str((site or {}).get("cookie") or "")
+            helper = SitesHelper()
+            for candidate in site_domain_candidates(domain):
+                site = helper.get_indexer(candidate)
+                cookie = str((site or {}).get("cookie") or "")
+                if cookie:
+                    return cookie
+            return ""
         except Exception as err:  # noqa: BLE001
             logger.warning(f"{PLUGIN_NAME} 读取站点 Cookie 失败（{domain}）：{err}")
             return ""

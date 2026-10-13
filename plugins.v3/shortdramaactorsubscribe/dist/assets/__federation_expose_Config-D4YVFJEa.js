@@ -72,7 +72,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       sites: [],
       downloaders: [],
       transfer_types: [
-        { title: "硬链接（推荐，省空间）", value: "link" },
+        { title: "硬链接（推荐，省空间，需同盘）", value: "link" },
+        { title: "软链接（跨盘可用，指向下载文件）", value: "softlink" },
         { title: "复制", value: "copy" },
         { title: "移动", value: "move" }
       ],
@@ -113,8 +114,16 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     const shortDramaDirectory = computed(
       () => options.directories.find((item) => item.is_short_drama) || null
     );
+    function pickValue(value) {
+      if (value && typeof value === "object") {
+        const item = value;
+        return String(item.value ?? item.title ?? "").trim();
+      }
+      return String(value ?? "").trim();
+    }
     function onPickDirectory(value) {
-      const path = String(value || "").trim();
+      const path = pickValue(value);
+      local.download_path = path;
       if (!path) return;
       const hit = options.directories.find((item) => item.download_path === path);
       if (!hit) return;
@@ -125,6 +134,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       if (!current || autoFilled) {
         local.library_path = hit.library_path || "";
       }
+    }
+    function onPickLibrary(value) {
+      local.library_path = pickValue(value);
     }
     function applySystemDefaults() {
       const defaults2 = options.defaults;
@@ -219,6 +231,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     async function saveConfig$1() {
       saving.value = true;
       const payload = JSON.parse(JSON.stringify(local));
+      payload.download_path = pickValue(payload.download_path);
+      payload.library_path = pickValue(payload.library_path);
+      payload.transfer_type = pickValue(payload.transfer_type) || "link";
       emit("save", payload);
       const api = resolveApi(props);
       if (api) {
@@ -239,6 +254,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           }
         });
       }
+      local.download_path = pickValue(local.download_path);
+      local.library_path = pickValue(local.library_path);
       void loadOptions();
     });
     return (_ctx, _cache) => {
@@ -631,7 +648,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_combobox, {
                       modelValue: local.library_path,
-                      "onUpdate:modelValue": _cache[13] || (_cache[13] = ($event) => local.library_path = $event),
+                      "onUpdate:modelValue": [
+                        _cache[13] || (_cache[13] = ($event) => local.library_path = $event),
+                        onPickLibrary
+                      ],
                       items: libraryItems.value,
                       label: "媒体库根目录",
                       density: "comfortable",
@@ -763,6 +783,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-966a881d"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-ce522d92"]]);
 
 export { Config as default };
