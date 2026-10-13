@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { m as mergeWorks, s as sortWorks, w as workKey, c as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, i as ignoreWork, _ as _export_sfc } from './api-WVyoRzoO.js';
+import { m as mergeWorks, s as sortWorks, w as workKey, e as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, c as unsubscribeWork, i as ignoreWork, l as resourceSearchUrl, _ as _export_sfc } from './_plugin-vue_export-helper-DkqlrLa1.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -114,6 +114,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       try {
         const res = await submitSubscribe(api, work, {
           savePath: payload.value?.subscribe_save_path || props.config?.subscribe_save_path || "",
+          downloader: payload.value?.subscribe_downloader || props.config?.subscribe_downloader || "",
           sites: payload.value?.subscribe_sites || props.config?.subscribe_sites || []
         });
         if (res.ok) {
@@ -126,12 +127,32 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         pendingKey.value = "";
       }
     }
+    async function unsubscribe(work) {
+      const api = resolveApi(props);
+      if (!api) return;
+      const key = workKey(work);
+      pendingKey.value = key;
+      try {
+        const res = await unsubscribeWork(api, work);
+        if (res.ok) {
+          subscribedKeys.value = subscribedKeys.value.filter((item) => item !== key);
+          notify("success", res.message);
+        } else {
+          notify("error", `${work.title} 取消订阅失败：${res.message}`);
+        }
+      } finally {
+        pendingKey.value = "";
+      }
+    }
     async function ignore(work) {
       const api = resolveApi(props);
       if (!api) return;
       const res = await ignoreWork(api, work);
       notify(res.ok ? "success" : "error", res.message);
       if (res.ok) await load();
+    }
+    function searchHref(work) {
+      return resourceSearchUrl(work);
     }
     onMounted(load);
     return (_ctx, _cache) => {
@@ -205,12 +226,22 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                           _createVNode(_component_v_btn, {
                             size: "x-small",
                             variant: "text",
-                            icon: isSubscribed(item.work) ? "mdi-check" : "mdi-plus",
-                            color: isSubscribed(item.work) ? "success" : "primary",
+                            icon: isSubscribed(item.work) ? "mdi-close" : "mdi-plus",
+                            color: isSubscribed(item.work) ? "error" : "primary",
                             loading: pendingKey.value === _unref(workKey)(item.work),
-                            title: isSubscribed(item.work) ? "已订阅" : "订阅",
-                            onClick: ($event) => subscribe(item.work)
+                            title: isSubscribed(item.work) ? "取消订阅" : "订阅",
+                            onClick: ($event) => isSubscribed(item.work) ? unsubscribe(item.work) : subscribe(item.work)
                           }, null, 8, ["icon", "color", "loading", "title", "onClick"]),
+                          searchHref(item.work) ? (_openBlock(), _createBlock(_component_v_btn, {
+                            key: 0,
+                            size: "x-small",
+                            variant: "text",
+                            icon: "mdi-magnify",
+                            href: searchHref(item.work),
+                            target: "_blank",
+                            rel: "noopener",
+                            title: "在 MoviePilot 中搜索这部作品的资源（新标签页）"
+                          }, null, 8, ["href"])) : _createCommentVNode("", true),
                           _createVNode(_component_v_btn, {
                             size: "x-small",
                             variant: "text",
@@ -244,6 +275,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-bddd93be"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-1b04855d"]]);
 
 export { Dashboard as default };

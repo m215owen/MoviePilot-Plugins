@@ -19,6 +19,7 @@ import type {
   ApiResult,
   PluginApi,
   SiteOption,
+  DownloadClientOption,
   DownloadPathOption,
   WorksPayload,
 } from './types'
@@ -37,6 +38,32 @@ export const HOST_SITES = 'site/rss'
 
 /** 宿主下载目录接口 */
 export const HOST_DOWNLOAD_PATHS = 'download/paths'
+
+/**
+ * 宿主已配置的下载器列表（形如 `[{name, type}]`）。
+ *
+ * 提交订阅时把 `name` 写进 `downloader` 字段，宿主就按它选择下载客户端；
+ * 不填则由宿主按默认订阅配置补全。
+ */
+export const HOST_DOWNLOAD_CLIENTS = 'download/clients'
+
+/**
+ * MoviePilot 自带的「媒体详情」页路由。
+ *
+ * 就是「探索 / 推荐」里点进某部作品时打开的那个页面，宿主前端 `MediaDetailView`
+ * 从 **query** 读取 `media_source` / `media_id` / `title` / `year` / `type`
+ * （`type` 为中文的 电影 / 电视剧，缺它会直接显示空页面）。
+ */
+export const HOST_MEDIA_PAGE = '/media'
+
+/**
+ * MoviePilot 自带的「资源搜索」页路由。
+ *
+ * 就是左侧导航里那一项（`mdi-magnify` 图标），页面组件 `ResourceSearchView`。
+ * 它允许**通过 query 直接发起一次搜索**，是「拿一部作品去站点里找资源」最省事的入口：
+ * 打开即搜，不必让用户再把片名手打一遍。
+ */
+export const HOST_RESOURCE_PAGE = '/resource'
 
 /** 宿主单次列表查询允许的最大条数（见后端 COLLECTION_MAX_PAGE_SIZE） */
 const MAX_PAGE_SIZE = 200
@@ -118,6 +145,89 @@ export function proxyImage(url?: string | null): string {
   // 已经是宿主代理地址时不再二次包装
   if (raw.includes('/system/img/')) return raw
   return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`
+}
+
+/**
+ * 组装 MoviePilot「媒体详情」页地址 —— 就是探索页里点进某部作品打开的那个页面。
+ *
+ * ⚠️ 宿主前端用的是 **hash 路由**（`createWebHashHistory`，base 形如 `./#`），
+ * 所以绝不能直接拼 `/media?…`：那样只会落到站点根路径、由 SPA 兜底渲染成
+ * 首页或登录页，看起来就是「点了没反应」。正确形态是 `<应用基址>#/media?…`。
+ *
+ * 应用基址取「当前文档地址去掉 `#` 之后的部分」：面板本身就跑在
+ * `#/plugin-app/…` 之上，这样拼出来的地址天然带上实例的部署前缀，
+ * 即使被反向代理到子路径下也不会拼错。
+ *
+ * @param work 至少要有 `media_id`；`title` / `year` 只是帮详情页省一次匹配，
+ *             `type` 则是宿主详情页的硬性依赖（取值为中文的 电影 / 电视剧，
+ *             缺失时页面会渲染成空壳，因此调用方应据此决定是否回退到豆瓣页）
+ * @returns 可直接放进 `<a href>` 的地址；缺少 `media_id` 时返回空串
+ */
+export function mediaPageUrl(work: {
+  media_source?: string
+  media_id?: string
+  title?: string
+  year?: string
+  type?: string
+}): string {
+  const mediaId = String(work?.media_id ?? '').trim()
+  if (!mediaId) return ''
+  const params = new URLSearchParams()
+  params.set('media_source', String(work?.media_source || '').trim() || 'douban')
+  params.set('media_id', mediaId)
+  for (const key of ['title', 'year', 'type'] as const) {
+    const value = String(work?.[key] ?? '').trim()
+    if (value) params.set(key, value)
+  }
+  return `${appBaseUrl()}#${HOST_MEDIA_PAGE}?${params.toString()}`
+}
+
+/**
+ * 组装 MoviePilot「资源搜索」页地址，打开即用这部作品搜一遍站点资源。
+ *
+ * 宿主该页会从 query 反解出搜索条件（`media_source` / `media_id` / `keyword` /
+ * `title` / `year` / `type`），有内容就自动发起搜索，因此可以把它当成「按作品搜资源」
+ * 的深链。两种搜索模式各有触发条件，这里**同时把两套参数都带上**，哪种生效都能出结果：
+ *
+ * - **精确搜索**：需要 `media_source` + `media_id` 且媒体源可用，走 `search/media/{id}`，
+ *   能正确匹配季集，是首选；
+ * - **模糊搜索**：只要 `keyword` 非空即可，走 `search/title`。
+ *   宿主只在部分路由（探索 / 媒体详情等）预加载媒体源清单，用户直接进搜索页时
+ *   清单可能还是空的、精确搜索被跳过，所以 `keyword` 这个兜底不能省。
+ *
+ * 与 `mediaPageUrl` 同理，必须走 hash 路由（`<应用基址>#/resource?…`）。
+ *
+ * @param work 作品；至少要有一个豆瓣 ID 或标题，二者皆无时返回空串
+ * @returns 可直接放进 `<a href>` 的地址
+ */
+export function resourceSearchUrl(work: {
+  media_source?: string
+  media_id?: string
+  title?: string
+  year?: string
+  type?: string
+}): string {
+  const mediaId = String(work?.media_id ?? '').trim()
+  const title = String(work?.title ?? '').trim()
+  if (!mediaId && !title) return ''
+  const params = new URLSearchParams()
+  if (mediaId) {
+    params.set('media_source', String(work?.media_source || '').trim() || 'douban')
+    params.set('media_id', mediaId)
+  }
+  // 关键词兜底：精确搜索不可用时改走模糊搜索，且它会作为标签展示在结果页上
+  if (title) params.set('keyword', title)
+  for (const key of ['title', 'year', 'type'] as const) {
+    const value = String(work?.[key] ?? '').trim()
+    if (value) params.set(key, value)
+  }
+  return `${appBaseUrl()}#${HOST_RESOURCE_PAGE}?${params.toString()}`
+}
+
+/** 当前应用地址去掉 hash 的部分；非浏览器环境下退化为空串（相对地址）。 */
+function appBaseUrl(): string {
+  if (typeof window === 'undefined') return ''
+  return window.location.href.split('#')[0]
 }
 
 /** 归一化宿主响应：拦截器已解包的直接返回，否则取 .data */
@@ -206,6 +316,8 @@ export function extractError(err: unknown): string {
 export interface SubscribeExtras {
   /** 下载保存路径，空串表示跟随宿主默认配置 */
   savePath?: string
+  /** 下载器名称，空串表示跟随宿主默认配置 */
+  downloader?: string
   /** 订阅站点 ID 列表，空数组表示跟随宿主默认配置 */
   sites?: number[]
 }
@@ -214,6 +326,34 @@ export interface SubscribeExtras {
 export interface SubscribeOutcome {
   ok: boolean
   message: string
+}
+
+/**
+ * 宿主在「影视未播出 / 信息尚未收录」时给出的拒绝原因关键词。
+ *
+ * 这些原因缺的是**季集信息**而不是作品本身有问题，因此可以降级成「预订」（待定），
+ * 交给后端建一条占位订阅；其余失败（分类无效、网络异常等）照旧如实上报。
+ */
+const MISSING_INFO_HINTS = [
+  '季集信息',
+  '季的信息',
+  '总集数',
+  '集数信息',
+  '未识别到媒体信息',
+  '媒体信息识别失败',
+]
+
+/**
+ * 判断订阅失败是否属于「影视信息还没到」（未播出 / 尚未收录）。
+ *
+ * 已知文案：「媒体信息中没有季集信息」「未获取到第 N 季的总集数」「未识别到媒体信息」
+ * 「媒体信息识别失败」。最后用「季」「集」同现兜底，宿主换文案时不至于漏判。
+ * 与后端 `_looks_like_missing_info` 保持同一套判定。
+ */
+export function isMissingInfoMessage(message: string): boolean {
+  const text = String(message || '')
+  if (MISSING_INFO_HINTS.some((hint) => text.includes(hint))) return true
+  return text.includes('季') && text.includes('集')
 }
 
 /**
@@ -237,14 +377,92 @@ export async function submitSubscribe(
   if (work.type) payload.type = work.type
   const savePath = String(extras.savePath || '').trim()
   if (savePath) payload.save_path = savePath
+  const downloader = String(extras.downloader || '').trim()
+  if (downloader) payload.downloader = downloader
   if (extras.sites && extras.sites.length) payload.sites = extras.sites
   try {
     const raw = await api.post(HOST_SUBSCRIBE, payload)
     const res = unwrap<{ success?: boolean; message?: string }>(raw)
     if (res && res.success === false) {
-      return { ok: false, message: res.message || '订阅失败' }
+      const failure = res.message || '订阅失败'
+      // 未播出 / 尚未收录的作品会因缺季集信息被宿主拒绝：这类不是「作品有问题」，
+      // 而是「信息还没到」，改走插件侧「预订」（待定）兜底。
+      if (isMissingInfoMessage(failure)) {
+        const reserved = await reserveWork(api, work, extras)
+        if (reserved.ok) return reserved
+        return { ok: false, message: `${failure}（转为预订也失败：${reserved.message}）` }
+      }
+      return { ok: false, message: failure }
     }
     return { ok: true, message: res?.message || `已提交订阅：${work.title}` }
+  } catch (err) {
+    const message = extractError(err)
+    if (isMissingInfoMessage(message)) {
+      const reserved = await reserveWork(api, work, extras)
+      if (reserved.ok) return reserved
+    }
+    return { ok: false, message }
+  }
+}
+
+/**
+ * 把作品转为「预订」（订阅状态置为待定 P）。
+ *
+ * 宿主为什么不能直接建：订阅链必须先补齐季集信息才肯落库，未播出 / TMDB 尚未收录的
+ * 作品会被直接拒掉；而宿主公开接口又把 `state` 排除在可写字段之外，
+ * 所以只能由插件侧按豆瓣身份建占位订阅（待定 = 允许搜索、不允许完成）。
+ */
+export async function reserveWork(
+  api: PluginApi,
+  work: ActorWork,
+  extras: SubscribeExtras = {}
+): Promise<SubscribeOutcome> {
+  try {
+    const raw = await api.post(`${API_BASE}/reserve`, {
+      title: work.title,
+      year: work.year || '',
+      type: work.type || '',
+      media_source: work.media_source,
+      media_id: work.media_id,
+      poster: work.poster || '',
+      subtitle: work.subtitle || '',
+      vote: work.vote || 0,
+      save_path: String(extras.savePath || '').trim(),
+      downloader: String(extras.downloader || '').trim(),
+      sites: extras.sites || [],
+    })
+    const res = unwrap<{ success?: boolean; message?: string }>(raw)
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || '转为预订失败' }
+    }
+    return { ok: true, message: res?.message || `已按「预订」提交：${work.title}` }
+  } catch (err) {
+    return { ok: false, message: extractError(err) }
+  }
+}
+
+/**
+ * 取消一部作品在 MoviePilot 里的订阅。
+ *
+ * 面板上的订阅按钮在作品已订阅时会变成「取消订阅」，点它走的就是这里。
+ * 宿主公开接口只能按 media_id + season 逐条删，而面板的粒度是「这部作品」，
+ * 所以由插件后端按豆瓣身份找出订阅记录再删除。
+ */
+export async function unsubscribeWork(
+  api: PluginApi,
+  work: ActorWork
+): Promise<SubscribeOutcome> {
+  try {
+    const raw = await api.post(`${API_BASE}/unsubscribe`, {
+      media_source: work.media_source,
+      media_id: work.media_id,
+      title: work.title,
+    })
+    const res = unwrap<{ success?: boolean; message?: string }>(raw)
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || '取消订阅失败' }
+    }
+    return { ok: true, message: res?.message || `已取消订阅「${work.title}」` }
   } catch (err) {
     return { ok: false, message: extractError(err) }
   }
@@ -291,6 +509,34 @@ export async function unignoreWork(
       return { ok: false, message: res.message || '恢复失败' }
     }
     return { ok: true, message: res?.message || '已恢复' }
+  } catch (err) {
+    return { ok: false, message: extractError(err) }
+  }
+}
+
+/**
+ * 从订阅演员里移除一位（同步删除配置面板里的同名条目）。
+ *
+ * 面板的演员筛选 chip 上带删除按钮，点一下就能把这位演员从**配置的演员列表**里去掉，
+ * 不必再跑回配置页手动删一行；后端会同步丢弃它的作品快照并安排一次补刷新。
+ * 传的是配置里写的原始条目（`actor.key`），后端据此精确匹配。
+ */
+export async function removeActor(
+  api: PluginApi,
+  actor: ActorGroup
+): Promise<SubscribeOutcome> {
+  try {
+    const raw = await api.post(`${API_BASE}/actor/remove`, {
+      actor: actor.key,
+      actor_id: actor.id || '',
+      name: actor.name || '',
+    })
+    const res = unwrap<{ success?: boolean; message?: string }>(raw)
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || '移除失败' }
+    }
+    const display = actor.name || actor.key
+    return { ok: true, message: res?.message || `已移除演员「${display}」` }
   } catch (err) {
     return { ok: false, message: extractError(err) }
   }
@@ -369,6 +615,27 @@ export async function fetchPathOptions(api: PluginApi): Promise<DownloadPathOpti
     return options
   } catch (err) {
     console.warn(`[${PLUGIN_ID}] 读取下载目录失败`, err)
+    return []
+  }
+}
+
+/** 读取宿主已配置的下载器列表（`name` 即提交订阅时要写的 `downloader` 值） */
+export async function fetchDownloaderOptions(api: PluginApi): Promise<DownloadClientOption[]> {
+  try {
+    const raw = await api.get(HOST_DOWNLOAD_CLIENTS)
+    const list = unwrapList<Record<string, unknown>>(raw)
+    if (!list.length) return []
+    const options: DownloadClientOption[] = []
+    const seen = new Set<string>()
+    for (const row of list) {
+      const name = String(row.name || '').trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      options.push({ name, type: String(row.type || '').trim() })
+    }
+    return options
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 读取下载器列表失败`, err)
     return []
   }
 }

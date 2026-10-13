@@ -45,11 +45,21 @@
                 <v-btn
                   size="x-small"
                   variant="text"
-                  :icon="isSubscribed(item.work) ? 'mdi-check' : 'mdi-plus'"
-                  :color="isSubscribed(item.work) ? 'success' : 'primary'"
+                  :icon="isSubscribed(item.work) ? 'mdi-close' : 'mdi-plus'"
+                  :color="isSubscribed(item.work) ? 'error' : 'primary'"
                   :loading="pendingKey === workKey(item.work)"
-                  :title="isSubscribed(item.work) ? '已订阅' : '订阅'"
-                  @click="subscribe(item.work)"
+                  :title="isSubscribed(item.work) ? '取消订阅' : '订阅'"
+                  @click="isSubscribed(item.work) ? unsubscribe(item.work) : subscribe(item.work)"
+                />
+                <v-btn
+                  v-if="searchHref(item.work)"
+                  size="x-small"
+                  variant="text"
+                  icon="mdi-magnify"
+                  :href="searchHref(item.work)"
+                  target="_blank"
+                  rel="noopener"
+                  title="在 MoviePilot 中搜索这部作品的资源（新标签页）"
                 />
                 <v-btn
                   size="x-small"
@@ -92,8 +102,10 @@ import {
   ignoreWork,
   mergeWorks,
   resolveApi,
+  resourceSearchUrl,
   sortWorks,
   submitSubscribe,
+  unsubscribeWork,
   unwrap,
   waitForRefresh,
   workKey,
@@ -206,9 +218,11 @@ async function subscribe(work: ActorWork): Promise<void> {
   const key = workKey(work)
   pendingKey.value = key
   try {
-    // 复用插件配置里的订阅偏好（下载路径 / 站点），留空则跟随宿主默认
+    // 复用插件配置里的订阅偏好（下载路径 / 下载器 / 站点），留空则跟随宿主默认
     const res = await submitSubscribe(api, work, {
       savePath: payload.value?.subscribe_save_path || props.config?.subscribe_save_path || '',
+      downloader:
+        payload.value?.subscribe_downloader || props.config?.subscribe_downloader || '',
       sites: payload.value?.subscribe_sites || props.config?.subscribe_sites || [],
     })
     if (res.ok) {
@@ -222,6 +236,25 @@ async function subscribe(work: ActorWork): Promise<void> {
   }
 }
 
+/** 取消订阅：仪表板上已订阅的作品再点一次就是取消，与详情页行为一致 */
+async function unsubscribe(work: ActorWork): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  const key = workKey(work)
+  pendingKey.value = key
+  try {
+    const res = await unsubscribeWork(api, work)
+    if (res.ok) {
+      subscribedKeys.value = subscribedKeys.value.filter((item) => item !== key)
+      notify('success', res.message)
+    } else {
+      notify('error', `${work.title} 取消订阅失败：${res.message}`)
+    }
+  } finally {
+    pendingKey.value = ''
+  }
+}
+
 /** 忽略一部作品：与详情页/侧栏一致，忽略状态由后端持久化 */
 async function ignore(work: ActorWork): Promise<void> {
   const api = resolveApi(props)
@@ -229,6 +262,11 @@ async function ignore(work: ActorWork): Promise<void> {
   const res = await ignoreWork(api, work)
   notify(res.ok ? 'success' : 'error', res.message)
   if (res.ok) await load()
+}
+
+/** 「搜索资源」的去向：宿主自带的资源搜索页，打开即按这部作品搜一遍站点 */
+function searchHref(work: ActorWork): string {
+  return resourceSearchUrl(work)
 }
 
 onMounted(load)

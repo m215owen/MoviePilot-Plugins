@@ -66,23 +66,34 @@
           <v-btn
             size="small"
             class="das-sub-btn"
-            :color="isSubscribed(work) ? 'success' : 'primary'"
+            :color="isSubscribed(work) ? 'error' : 'primary'"
             :variant="isSubscribed(work) ? 'tonal' : 'flat'"
-            :prepend-icon="isSubscribed(work) ? 'mdi-check' : 'mdi-plus'"
+            :prepend-icon="isSubscribed(work) ? 'mdi-close' : 'mdi-plus'"
             :loading="pendingKey === workKey(work)"
             :disabled="busy"
-            @click="emit('subscribe', work)"
+            @click="isSubscribed(work) ? emit('unsubscribe', work) : emit('subscribe', work)"
           >
-            {{ isSubscribed(work) ? '已订阅' : '订阅' }}
+            {{ isSubscribed(work) ? '取消订阅' : '订阅' }}
           </v-btn>
           <v-btn
-            v-if="work.url"
+            v-if="detailHref(work)"
             size="small"
             variant="text"
             icon="mdi-open-in-new"
-            title="打开豆瓣条目"
-            :href="work.url"
+            :title="detailTitle(work)"
+            :href="detailHref(work)"
             target="_blank"
+            rel="noopener"
+          />
+          <v-btn
+            v-if="searchHref(work)"
+            size="small"
+            variant="text"
+            icon="mdi-magnify"
+            title="在 MoviePilot 中搜索这部作品的资源（新标签页）"
+            :href="searchHref(work)"
+            target="_blank"
+            rel="noopener"
           />
           <v-btn
             size="small"
@@ -105,8 +116,9 @@
  * 只负责渲染与事件抛出，订阅的后端交互由父组件完成，
  * 这样详情页 / 侧栏全页 / 仪表板可以复用同一套视觉与交互。
  * 海报统一经宿主图片代理加载，绕开豆瓣 CDN 的 Referer 防盗链。
+ * 卡片上的「详情」按钮跳宿主自带的媒体详情页（见 `mediaPageUrl`），不再外链豆瓣。
  */
-import { proxyImage, workKey } from './api'
+import { mediaPageUrl, proxyImage, resourceSearchUrl, workKey } from './api'
 import type { ActorWork } from './types'
 
 const props = withDefaults(
@@ -129,12 +141,42 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'subscribe', work: ActorWork): void
+  (e: 'unsubscribe', work: ActorWork): void
   (e: 'ignore', work: ActorWork): void
 }>()
 
 /** 该作品是否已在订阅系统中 */
 function isSubscribed(work: ActorWork): boolean {
   return props.subscribedKeys.includes(workKey(work))
+}
+
+/**
+ * 「详情」按钮的去向：优先走 MoviePilot 自带的媒体详情页
+ * （与探索页点进媒体是同一个页面），一眼就能看到识别结果、订阅状态与资源。
+ *
+ * 宿主详情页强依赖媒体类型，遇到插件没能归类出类型的作品时，
+ * 退回豆瓣条目页 —— 有得看总比点开一个空页面强。
+ */
+function detailHref(work: ActorWork): string {
+  if (String(work.type || '').trim()) return mediaPageUrl(work)
+  return String(work.url || '').trim() || mediaPageUrl(work)
+}
+
+/** 详情按钮的悬停提示：说清点出去会落在哪儿，别让人以为还在插件面板里 */
+function detailTitle(work: ActorWork): string {
+  return String(work.type || '').trim()
+    ? '在 MoviePilot 中打开媒体详情（新标签页）'
+    : '宿主未识别出媒体类型，改为打开豆瓣条目（新标签页）'
+}
+
+/**
+ * 「搜索资源」按钮的去向：宿主自带的资源搜索页，打开就按这部作品搜一遍站点。
+ *
+ * 与「详情」不同，这里不需要类型也能用：搜索页拿豆瓣身份做精确匹配，
+ * 匹配不上就退回用片名模糊搜索，所以只要作品有 ID 或标题就一定会给出结果。
+ */
+function searchHref(work: ActorWork): string {
+  return resourceSearchUrl(work)
 }
 </script>
 

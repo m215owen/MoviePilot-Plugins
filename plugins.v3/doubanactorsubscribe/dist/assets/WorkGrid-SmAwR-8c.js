@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { r as resolveApi, g as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage } from './api-WVyoRzoO.js';
+import { r as resolveApi, o as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage, g as mediaPageUrl, l as resourceSearchUrl } from './_plugin-vue_export-helper-DkqlrLa1.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 
@@ -237,12 +237,22 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     emptyText: {},
     showActors: { type: Boolean, default: true }
   },
-  emits: ["subscribe", "ignore"],
+  emits: ["subscribe", "unsubscribe", "ignore"],
   setup(__props, { emit: __emit }) {
     const props = __props;
     const emit = __emit;
     function isSubscribed(work) {
       return props.subscribedKeys.includes(workKey(work));
+    }
+    function detailHref(work) {
+      if (String(work.type || "").trim()) return mediaPageUrl(work);
+      return String(work.url || "").trim() || mediaPageUrl(work);
+    }
+    function detailTitle(work) {
+      return String(work.type || "").trim() ? "在 MoviePilot 中打开媒体详情（新标签页）" : "宿主未识别出媒体类型，改为打开豆瓣条目（新标签页）";
+    }
+    function searchHref(work) {
+      return resourceSearchUrl(work);
     }
     return (_ctx, _cache) => {
       const _component_v_icon = _resolveComponent("v-icon");
@@ -358,26 +368,37 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     _createVNode(_component_v_btn, {
                       size: "small",
                       class: "das-sub-btn",
-                      color: isSubscribed(work) ? "success" : "primary",
+                      color: isSubscribed(work) ? "error" : "primary",
                       variant: isSubscribed(work) ? "tonal" : "flat",
-                      "prepend-icon": isSubscribed(work) ? "mdi-check" : "mdi-plus",
+                      "prepend-icon": isSubscribed(work) ? "mdi-close" : "mdi-plus",
                       loading: __props.pendingKey === _unref(workKey)(work),
                       disabled: __props.busy,
-                      onClick: ($event) => emit("subscribe", work)
+                      onClick: ($event) => isSubscribed(work) ? emit("unsubscribe", work) : emit("subscribe", work)
                     }, {
                       default: _withCtx(() => [
-                        _createTextVNode(_toDisplayString(isSubscribed(work) ? "已订阅" : "订阅"), 1)
+                        _createTextVNode(_toDisplayString(isSubscribed(work) ? "取消订阅" : "订阅"), 1)
                       ]),
                       _: 2
                     }, 1032, ["color", "variant", "prepend-icon", "loading", "disabled", "onClick"]),
-                    work.url ? (_openBlock(), _createBlock(_component_v_btn, {
+                    detailHref(work) ? (_openBlock(), _createBlock(_component_v_btn, {
                       key: 0,
                       size: "small",
                       variant: "text",
                       icon: "mdi-open-in-new",
-                      title: "打开豆瓣条目",
-                      href: work.url,
-                      target: "_blank"
+                      title: detailTitle(work),
+                      href: detailHref(work),
+                      target: "_blank",
+                      rel: "noopener"
+                    }, null, 8, ["title", "href"])) : _createCommentVNode("", true),
+                    searchHref(work) ? (_openBlock(), _createBlock(_component_v_btn, {
+                      key: 1,
+                      size: "small",
+                      variant: "text",
+                      icon: "mdi-magnify",
+                      title: "在 MoviePilot 中搜索这部作品的资源（新标签页）",
+                      href: searchHref(work),
+                      target: "_blank",
+                      rel: "noopener"
                     }, null, 8, ["href"])) : _createCommentVNode("", true),
                     _createVNode(_component_v_btn, {
                       size: "small",
@@ -400,6 +421,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-3da403a7"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-9aca08ea"]]);
 
 export { IgnoredManager as I, WorkGrid as W };

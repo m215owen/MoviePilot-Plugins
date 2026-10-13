@@ -1,0 +1,43 @@
+
+/* 仅使用 scoped 样式 */
+.das-root[data-v-beff9194] {
+  max-width: 1600px;
+}
+.das-titlebar[data-v-beff9194] {
+  gap: 12px;
+  row-gap: 4px;
+}
+
+/* 演员 chip 区：flex 换行 + 纵向滚动。
+   不能用 v-chip-group——它是横向滑动容器，会带左右箭头且展开看不出效果。 */
+.das-chips[data-v-beff9194] {
+  max-height: 96px;
+  overflow-y: auto;
+}
+.das-actor-chips[data-v-beff9194] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
+.das-chips-expanded[data-v-beff9194] {
+  max-height: 60vh;
+}
+.das-toolbar[data-v-beff9194] {
+  gap: 12px;
+}
+.das-dim[data-v-beff9194] {
+  opacity: 0.75;
+}
+.das-search[data-v-beff9194] {
+  max-width: 240px;
+}
+.das-checkbox[data-v-beff9194] {
+  max-width: 130px;
+}
+.das-page-info[data-v-beff9194] {
+  font-size: 0.82rem;
+  opacity: 0.85;
+  white-space: nowrap;
+}

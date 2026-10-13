@@ -38,6 +38,8 @@ export interface PluginConfig {
   auto_max_per_run: number
   /** 订阅偏好：默认下载保存路径，空串表示跟随宿主默认配置 */
   subscribe_save_path: string
+  /** 订阅偏好：默认下载器名称，空串表示跟随宿主默认配置 */
+  subscribe_downloader: string
   /** 订阅偏好：默认订阅站点 ID 列表，空数组表示跟随宿主默认配置 */
   subscribe_sites: number[]
   /**
@@ -149,6 +151,8 @@ export interface WorksPayload {
   actors: ActorGroup[]
   /** 订阅偏好：当前默认保存路径 */
   subscribe_save_path: string
+  /** 订阅偏好：当前默认下载器，空串表示跟随宿主默认配置 */
+  subscribe_downloader?: string
   /** 订阅偏好：当前默认订阅站点 */
   subscribe_sites: number[]
   /** 当前豆瓣 Cookie 来源：manual（插件内手填）/ cookiecloud（宿主自动取）/ none */
@@ -156,10 +160,16 @@ export interface WorksPayload {
   /** 未取到豆瓣 Cookie 时的原因，直接展示给用户 */
   douban_cookie_hint?: string
   /**
-   * 仍在 24 小时搜索冷却内的演员数。
+   * 还没解析出人物 ID 的演员数。
    *
-   * 某位演员成功搜到人物 ID 后，24 小时内不会重复按名称搜索（豆瓣搜索额度极紧），
-   * 这个数字用于解释面板上「这批演员为什么还是未解析状态」。
+   * 0 表示全部解析完毕，之后刷新只走详情/作品集接口，不再消耗搜索额度。
+   */
+  unresolved_count?: number
+  /**
+   * 「待解析」演员中仍处于 24 小时搜索冷却内的数量。
+   *
+   * 只统计**尚未解析出人物 ID**的演员：某位演员成功搜到 ID 后本轮就不会再搜，
+   * 把它的历史搜索记录也算成冷却会让数字只涨不降（搜索记录满 24 小时才过期）。
    */
   search_cooldown_count?: number
   /** 被用户忽略的作品数量；面板据此显示「已忽略 N 部」入口 */
@@ -195,6 +205,17 @@ export interface SiteOption {
 export interface DownloadPathOption {
   name: string
   path: string
+}
+
+/**
+ * 可选的下载器（宿主已配置的下载客户端）。
+ *
+ * `name` 是提交订阅时要写进 `downloader` 字段的值（宿主内部按名字找客户端），
+ * `type` 只用于展示，如 qbittorrent / transmission。
+ */
+export interface DownloadClientOption {
+  name: string
+  type: string
 }
 
 /** 豆瓣演员搜索候选 */

@@ -29,8 +29,15 @@
       {{ err }}
     </v-alert>
 
-    <!-- 订阅选项：下载保存路径 + 订阅站点（组件内自行 PUT /config 持久化） -->
-    <SubscribePrefs class="mb-3" :api="props.api" @saved="onPrefsSaved" />
+    <!-- 订阅选项：下载保存路径 + 下载器 + 订阅站点（组件内自行 PUT /config 持久化） -->
+    <SubscribePrefs
+      v-model:save-path="prefs.save_path"
+      v-model:downloader="prefs.downloader"
+      v-model:sites="prefs.sites"
+      class="mb-3"
+      :api="props.api"
+      @saved="onPrefsSaved"
+    />
 
     <v-row>
       <!-- 快速配置 -->
@@ -47,13 +54,13 @@
 
           <v-switch v-model="local.enabled" label="启用插件" color="primary" hide-details class="mb-2" />
           <v-textarea
-            v-model="local.actors"
+            v-model="actorsText"
             label="订阅的演员"
-            placeholder="支持逗号/顿号/分号分隔，也可每行一个：&#10;刘德华, 吴京, 张译&#10;或直接粘贴人物主页链接：&#10;https://www.douban.com/personage/37871253/"
-            hint="演员名或豆瓣人物 ID/主页链接均可。填 ID 或链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。"
+            placeholder="多位演员用逗号分隔，例如：刘德华，吴京，张译"
+            hint="演员名或豆瓣人物 ID/主页链接均可，用逗号分隔（也支持换行 / 顿号）。填 ID 或链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。"
             persistent-hint
             rows="4"
-            auto-grow
+            no-resize
             density="comfortable"
             class="mb-2"
           />
@@ -106,9 +113,16 @@
                   <td class="text-caption">{{ row.time }}</td>
                   <td class="text-caption">{{ row.actor || '—' }}</td>
                   <td>
-                    <a :href="`https://movie.douban.com/subject/${row.media_id}/`" target="_blank">
+                    <a
+                      v-if="recordHref(row)"
+                      :href="recordHref(row)"
+                      target="_blank"
+                      rel="noopener"
+                      :title="row.type ? '在 MoviePilot 中打开媒体详情' : '打开豆瓣条目'"
+                    >
                       {{ row.title }}
                     </a>
+                    <span v-else>{{ row.title }}</span>
                     <span class="text-caption das-dim ml-1">{{ row.year || '' }}</span>
                   </td>
                   <td>
@@ -154,8 +168,8 @@
  */
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import SubscribePrefs from './SubscribePrefs.vue'
-import { API_BASE, PLUGIN_ID, formatTime, normalizeResult, resolveApi, waitForRefresh } from './api'
-import type { PluginApi, PluginConfig, WorksPayload } from './types'
+import { API_BASE, PLUGIN_ID, formatTime, mediaPageUrl, normalizeResult, resolveApi, waitForRefresh } from './api'
+import type { AutoSubscribeRecord, PluginApi, PluginConfig, WorksPayload } from './types'
 
 interface HostToast {
   success(message: string): unknown
@@ -182,6 +196,56 @@ const payload = ref<WorksPayload | null>(null)
 
 /** 本页只编辑这三个字段，其余配置保持不变 */
 const local = reactive({ enabled: false, actors: '', cron: '' })
+
+/**
+ * 订阅选项的本地副本。
+ *
+ * 必须显式绑定到 SubscribePrefs：组件内的「保存为默认」会把这些值 PUT 回插件配置，
+ * 若只渲染不绑定，组件拿到的是空默认值，一点「保存为默认」就会把已配置的
+ * 下载路径 / 下载器 / 站点清空。
+ */
+const prefs = reactive<{ save_path: string; downloader: string; sites: number[] }>({
+  save_path: '',
+  downloader: '',
+  sites: [],
+})
+
+/**
+ * 自动订阅记录里作品名的去向 —— 与作品卡片保持一致，走 MoviePilot 自带的
+ * 媒体详情页（探索页点进媒体的那个页面），类型缺失时才退回豆瓣条目页。
+ */
+function recordHref(row: AutoSubscribeRecord): string {
+  const mediaId = String(row.media_id || '').trim()
+  if (!mediaId) return ''
+  if (String(row.type || '').trim()) {
+    return mediaPageUrl({
+      media_source: 'douban',
+      media_id: mediaId,
+      title: row.title,
+      year: row.year,
+      type: row.type,
+    })
+  }
+  return `https://movie.douban.com/subject/${mediaId}/`
+}
+
+/**
+ * 演员列表以「逗号分隔文本」展示。
+ *
+ * 后端 `_parse_actors` 兼容逗号 / 换行 / 顿号 / 分号等分隔符；
+ * 读时统一规整成中文逗号连接，写时原样存回交给后端解析。
+ */
+const actorsText = computed<string>({
+  get: () =>
+    String(local.actors || '')
+      .split(/[\r\n,，、;；]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join('，'),
+  set: (value: string) => {
+    local.actors = String(value || '')
+  },
+})
 
 const statCards = computed(() => [
   { label: '演员', value: payload.value?.actor_count ?? 0 },
@@ -221,6 +285,12 @@ async function load(): Promise<void> {
       local.enabled = Boolean(cfg.data.enabled)
       local.actors = String(cfg.data.actors || '')
       local.cron = String(cfg.data.cron || '')
+      // 订阅选项回显：让「保存为默认」提交的是当前值而不是空值
+      prefs.save_path = String(cfg.data.subscribe_save_path || '')
+      prefs.downloader = String(cfg.data.subscribe_downloader || '')
+      prefs.sites = Array.isArray(cfg.data.subscribe_sites)
+        ? cfg.data.subscribe_sites.map((item) => Number(item))
+        : []
     }
     const works = normalizeResult<WorksPayload>(worksRaw)
     if (works.ok && works.data) payload.value = works.data

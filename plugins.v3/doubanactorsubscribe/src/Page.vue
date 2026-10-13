@@ -18,15 +18,18 @@
         >
           {{ cookieChip.text }}
         </v-chip>
+        <!-- 解析进度徽标：只统计「还没解析出人物 ID」的演员，
+             解析完就归零消失。曾经的版本把「有 24 小时搜索记录的演员」全算进来，
+             已解析的演员也会被算成「冷却中」，数字只涨不降，看着像卡住了。 -->
         <v-chip
-          v-if="cooldownCount"
+          v-if="unresolvedCount"
           size="small"
           variant="tonal"
-          color="info"
+          color="warning"
           prepend-icon="mdi-timer-sand"
-          :title="`${cooldownCount} 位演员在 24 小时内成功搜索过，需等冷却结束后才会重试；直接填人物 ID 可跳过搜索`"
+          :title="unresolvedHint"
         >
-          搜索冷却 {{ cooldownCount }}
+          待解析 {{ unresolvedCount }}
         </v-chip>
         <IgnoredManager
           :api="props.api"
@@ -96,8 +99,6 @@
           </span>
         </div>
 
-        <!-- 异常提示：展示 5 秒后自动收起，避免长列表被提示刷屏 -->
-        <ErrorAlerts :errors="errorList" class="mt-3" />
       </v-card-text>
     </v-card>
 
@@ -107,17 +108,35 @@
     <!-- 筛选工具条 -->
     <v-card variant="outlined" class="mb-3">
       <v-card-text class="pb-2">
-        <!-- 演员筛选：作品墙统一展示，分类交给这一列 -->
-        <div class="das-chips">
-          <v-chip-group v-model="actorFilter" mandatory>
-            <v-chip size="small" variant="tonal" :value="ALL_ACTORS">全部演员</v-chip>
+        <!-- 演员筛选：作品墙统一展示，分类交给这一列。
+             每个 chip 可关闭（×）——移除演员时会同步删掉配置里的同名条目，
+             所以走确认弹窗，避免误删配置。
+             这里刻意**不用 v-chip-group**：它是横向滑动容器（会渲染左右箭头，
+             多出来的演员只能靠点箭头翻，展开也只是把横向内容拉长、看不出效果）。
+             改成普通的 flex-wrap 换行布局后，超出高度直接用鼠标滚轮上下滚。
+             演员多（几十上百位）时默认只列前若干位，需要时点「展开全部」，
+             免得筛选区高到把作品墙挤下去；当前选中的演员始终保留在列表里。 -->
+        <div class="das-chips" :class="{ 'das-chips-expanded': actorsExpanded }">
+          <div class="das-actor-chips">
             <v-chip
-              v-for="actor in actors"
+              size="small"
+              variant="tonal"
+              :color="actorFilter === ALL_ACTORS ? 'primary' : undefined"
+              @click="actorFilter = ALL_ACTORS"
+            >
+              全部演员
+            </v-chip>
+            <v-chip
+              v-for="actor in visibleActors"
               :key="actor.key"
               size="small"
               variant="tonal"
-              :value="actor.key"
-              :title="actor.error || actor.name"
+              :color="isActorActive(actor) ? 'primary' : undefined"
+              closable
+              close-icon="mdi-close"
+              :title="`${actor.error || actor.name}（点右侧 × 可从订阅演员中移除）`"
+              @click="actorFilter = actor.key"
+              @click:close="askRemoveActor(actor)"
             >
               <v-icon
                 v-if="actor.error"
@@ -129,7 +148,18 @@
               {{ actor.name }}
               <span class="ml-1 das-dim">{{ (actor.works || []).length }}</span>
             </v-chip>
-          </v-chip-group>
+          </div>
+        </div>
+        <div v-if="actors.length > ACTOR_COLLAPSE_LIMIT" class="mt-1">
+          <v-btn
+            size="x-small"
+            variant="text"
+            color="primary"
+            :append-icon="actorsExpanded ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+            @click="actorsExpanded = !actorsExpanded"
+          >
+            {{ actorsExpanded ? '收起' : `展开全部（共 ${actors.length} 位）` }}
+          </v-btn>
         </div>
 
         <div class="d-flex align-center flex-wrap mt-2 das-toolbar">
@@ -173,13 +203,52 @@
             variant="tonal"
             prepend-icon="mdi-plus-multiple"
             :disabled="busy || !pendingTargets.length"
-            @click="subscribeMany(pendingTargets)"
+            @click="confirmSubscribeMany"
           >
             订阅筛选结果（{{ pendingTargets.length }}）
           </v-btn>
         </div>
       </v-card-text>
     </v-card>
+
+    <!-- 批量订阅确认：一次性订阅 N 部作品是不可逆动作，误触代价高，必须先确认 -->
+    <v-dialog v-model="confirmDialog" max-width="460">
+      <v-card>
+        <v-card-title>确认批量订阅？</v-card-title>
+        <v-card-text>
+          将把当前筛选结果里的 <strong>{{ pendingTargets.length }}</strong> 部未订阅作品
+          一次性提交到订阅系统（按豆瓣 ID 精确订阅）。
+          <template v-if="pendingTargets.length > 20">
+            数量较多，确认后请耐心等待逐条提交完成。
+          </template>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="confirmDialog = false">取消</v-btn>
+          <v-btn color="primary" @click="doSubscribeMany">确认订阅</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <!-- 移除演员确认：会同步删掉配置里的同名条目，不可逆，必须先确认 -->
+    <v-dialog v-model="removeDialog" max-width="460">
+      <v-card>
+        <v-card-title>从订阅演员中移除？</v-card-title>
+        <v-card-text>
+          将移除演员
+          <strong>{{ removeTarget?.name || removeTarget?.key }}</strong>，
+          并<strong>同步删除配置页里的同名条目</strong>、清理它的作品数据。
+          以后不会再抓取这位演员的作品；已经提交的订阅不受影响。
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="removeDialog = false">取消</v-btn>
+          <v-btn color="error" variant="tonal" :loading="removing" @click="doRemoveActor">
+            确认移除
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <v-progress-linear
       v-if="loading || payload?.refreshing"
@@ -198,14 +267,36 @@
     <!-- 统一作品墙：按作品去重，卡片上标注出演演员 -->
     <WorkGrid
       v-else
-      :works="visibleWorks"
+      :works="pagedWorks"
       :subscribed-keys="subscribedKeys"
       :pending-key="pendingKey"
       :busy="busy"
       empty-text="没有符合条件的作品"
       @subscribe="subscribe"
+      @unsubscribe="unsubscribe"
       @ignore="ignore"
     />
+
+    <!-- 分页：作品多时每页只展示 PAGE_SIZE 个，避免长列表拖垮渲染。
+         用 v-btn / v-chip 手写，而非 v-pagination：主程序按需导入 Vuetify 组件，
+         v-pagination 未必被注册，联邦 remote 里会渲染成空元素导致分页失效。 -->
+    <div v-if="pageCount > 1" class="d-flex align-center justify-center mt-3 ga-2">
+      <v-btn
+        size="small"
+        variant="tonal"
+        icon="mdi-chevron-left"
+        :disabled="page <= 1"
+        @click="page = Math.max(1, page - 1)"
+      />
+      <span class="das-page-info">第 {{ page }} / {{ pageCount }} 页</span>
+      <v-btn
+        size="small"
+        variant="tonal"
+        icon="mdi-chevron-right"
+        :disabled="page >= pageCount"
+        @click="page = Math.min(pageCount, page + 1)"
+      />
+    </div>
   </div>
 </template>
 
@@ -221,8 +312,7 @@
  * 作品墙是「统一视图」：不再按演员分卡片，因为演员筛选 chip 已经承担了分类职责，
  * 按演员重复展示会让列表随演员数量线性膨胀。
  */
-import { computed, inject, onMounted, ref } from 'vue'
-import ErrorAlerts from './ErrorAlerts.vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import IgnoredManager from './IgnoredManager.vue'
 import WorkGrid from './WorkGrid.vue'
 import {
@@ -232,9 +322,11 @@ import {
   formatTime,
   ignoreWork,
   mergeWorks,
+  removeActor,
   resolveApi,
   sortWorks,
   submitSubscribe,
+  unsubscribeWork,
   unwrap,
   waitForRefresh,
   workKey,
@@ -268,8 +360,9 @@ const busy = ref(false)
 const pendingKey = ref('')
 const payload = ref<WorksPayload | null>(null)
 const subscribedKeys = ref<string[]>([])
-/** 订阅偏好：下载保存路径与订阅站点，提交订阅时一并带上 */
+/** 订阅偏好：下载保存路径、下载器与订阅站点，提交订阅时一并带上 */
 const subscribeSavePath = ref('')
+const subscribeDownloader = ref('')
 const subscribeSites = ref<number[]>([])
 
 /** 演员筛选的「全部」哨兵值：chip-group 处于 mandatory 模式，需要一个真实值 */
@@ -282,10 +375,42 @@ const onlyUnsubscribed = ref(false)
 const sortMode = ref('year')
 const keyword = ref('')
 
+/** 任何筛选条件变化都回到第一页，避免停留在越界/过时页 */
+watch(
+  [actorFilter, typeFilter, onlyNew, onlyUnsubscribed, sortMode, keyword],
+  resetPage
+)
+
 const actors = computed<ActorGroup[]>(() => payload.value?.actors || [])
 
-/** 尚未解析出豆瓣人物 ID 的演员数（豆瓣搜索限流会让这个数逐步下降） */
-const unresolvedCount = computed(() => actors.value.filter((actor) => !actor.id).length)
+/** 演员筛选区超过这个数量就默认折叠，避免筛选区占掉大半屏 */
+const ACTOR_COLLAPSE_LIMIT = 12
+
+/** 演员筛选区是否展开显示全部 */
+const actorsExpanded = ref(false)
+
+/**
+ * 演员筛选区实际渲染的演员列表。
+ *
+ * 折叠时只列前若干位；当前选中的演员强制保留——chip-group 是 mandatory，
+ * 选中项被折叠掉会让用户看到「列表里没有任何选中」，误以为筛选失效。
+ */
+const visibleActors = computed<ActorGroup[]>(() => {
+  const all = actors.value
+  if (actorsExpanded.value || all.length <= ACTOR_COLLAPSE_LIMIT) return all
+  const head = all.slice(0, ACTOR_COLLAPSE_LIMIT)
+  const current = all.find(
+    (actor) => actor.key === actorFilter.value || actor.id === actorFilter.value
+  )
+  if (current && !head.includes(current)) return [current, ...head]
+  return head
+})
+
+/** 尚未解析出豆瓣人物 ID 的演员数（豆瓣搜索限流会让这个数逐步下降）。
+ *  优先用后端给的统计（与解析缓存取交集），旧版后端没有该字段时回退到按快照自算。 */
+const unresolvedCount = computed(
+  () => payload.value?.unresolved_count ?? actors.value.filter((actor) => !actor.id).length
+)
 
 const statCards = computed(() => {
   const rows = [
@@ -330,17 +455,16 @@ const cookieChip = computed(() => {
   }
 })
 
-/** 仍处于 24 小时搜索冷却中的演员数；为 0 时不显示徽标 */
+/** 其中仍处于 24 小时搜索冷却内、要等冷却结束才会重试的数量 */
 const cooldownCount = computed(() => payload.value?.search_cooldown_count ?? 0)
-
-/** 异常提示：把「可重试」与「需改配置」的提示排在前面，便于一眼看到 */
-const errorList = computed(() => {
-  const items = payload.value?.errors || []
-  return [...items].sort((a, b) => {
-    const rank = (text: string) => (text.includes('人物 ID') ? 1 : 0)
-    return rank(a) - rank(b)
-  })
-})
+const unresolvedHint = computed(
+  () =>
+    `还有 ${unresolvedCount.value} 位演员没解析出人物 ID（共 ${actors.value.length} 位）：` +
+    (cooldownCount.value
+      ? `其中 ${cooldownCount.value} 位在 24 小时搜索冷却内，需等冷却结束后才会重试；`
+      : `下次刷新会继续按名称搜索；`) +
+    `直接填人物 ID 或主页链接可完全跳过搜索`
+)
 
 function isSubscribed(work: ActorWork): boolean {
   return subscribedKeys.value.includes(workKey(work))
@@ -350,6 +474,11 @@ function actorMatches(actor: ActorGroup): boolean {
   return !actorFilter.value || actorFilter.value === ALL_ACTORS
     ? true
     : actor.key === actorFilter.value || actor.id === actorFilter.value
+}
+
+/** 该演员是否正好是当前筛中的那一位（用于给 chip 上高亮色） */
+function isActorActive(actor: ActorGroup): boolean {
+  return actorFilter.value === actor.key || actorFilter.value === actor.id
 }
 
 /**
@@ -377,6 +506,20 @@ const visibleWorks = computed<ActorWork[]>(() => {
 /** 当前筛选结果里所有未订阅的作品，作为「订阅筛选结果」的目标 */
 const pendingTargets = computed<ActorWork[]>(() => visibleWorks.value.filter((work) => !isSubscribed(work)))
 
+/** 作品墙分页：每页最多 PAGE_SIZE 个 */
+const PAGE_SIZE = 20
+const page = ref(1)
+const pageCount = computed(() => Math.max(1, Math.ceil(visibleWorks.value.length / PAGE_SIZE)))
+const pagedWorks = computed<ActorWork[]>(() => {
+  const start = (page.value - 1) * PAGE_SIZE
+  return visibleWorks.value.slice(start, start + PAGE_SIZE)
+})
+
+/** 筛选条件变化时回到第一页，避免停留在越界页 */
+function resetPage(): void {
+  page.value = 1
+}
+
 function notify(type: 'success' | 'error' | 'info', message: string): void {
   const handler = toast && (toast as unknown as Record<string, unknown>)[type]
   if (typeof handler === 'function') {
@@ -391,6 +534,7 @@ function notify(type: 'success' | 'error' | 'info', message: string): void {
 function applyPayload(data: WorksPayload): void {
   payload.value = data
   subscribeSavePath.value = data.subscribe_save_path || ''
+  subscribeDownloader.value = data.subscribe_downloader || ''
   subscribeSites.value = data.subscribe_sites || []
 }
 
@@ -457,6 +601,7 @@ async function subscribe(work: ActorWork): Promise<void> {
   try {
     const res = await submitSubscribe(api, work, {
       savePath: subscribeSavePath.value,
+      downloader: subscribeDownloader.value,
       sites: subscribeSites.value,
     })
     if (res.ok) {
@@ -468,6 +613,76 @@ async function subscribe(work: ActorWork): Promise<void> {
   } finally {
     pendingKey.value = ''
   }
+}
+
+/** 取消单个作品的订阅（卡片上已是「已订阅」时再点一次就是取消） */
+async function unsubscribe(work: ActorWork): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  const key = workKey(work)
+  pendingKey.value = key
+  try {
+    const res = await unsubscribeWork(api, work)
+    if (res.ok) {
+      // 先摘掉「已订阅」标记，卡片立刻回到可订阅态，不等下次整页刷新
+      subscribedKeys.value = subscribedKeys.value.filter((item) => item !== key)
+      notify('success', res.message)
+    } else {
+      notify('error', `${work.title} 取消订阅失败：${res.message}`)
+    }
+  } finally {
+    pendingKey.value = ''
+  }
+}
+
+/** 批量订阅确认弹窗开关 */
+const confirmDialog = ref(false)
+
+/** 待移除的演员；点 chip 上的 × 先弹确认，避免误删配置 */
+const removeTarget = ref<ActorGroup | null>(null)
+const removeDialog = ref(false)
+const removing = ref(false)
+
+/** 点演员 chip 上的删除按钮：先确认，再同步删除配置里的该条目 */
+function askRemoveActor(actor: ActorGroup): void {
+  removeTarget.value = actor
+  removeDialog.value = true
+}
+
+/** 确认后真正移除（后端持久化配置 → 丢弃该演员快照 → 安排补刷新） */
+async function doRemoveActor(): Promise<void> {
+  const actor = removeTarget.value
+  removeDialog.value = false
+  if (!actor) return
+  const api = resolveApi(props)
+  if (!api) return
+  removing.value = true
+  try {
+    const res = await removeActor(api, actor)
+    notify(res.ok ? 'success' : 'error', res.message)
+    if (res.ok) {
+      // 移除的正好是当前筛中的演员时，回到「全部演员」，避免停在空结果上
+      if (actorFilter.value === actor.key || actorFilter.value === actor.id) {
+        actorFilter.value = ALL_ACTORS
+      }
+      await load(false)
+    }
+  } finally {
+    removing.value = false
+    removeTarget.value = null
+  }
+}
+
+/** 点「订阅筛选结果」先弹确认，避免误触一次性订阅 N 部作品 */
+function confirmSubscribeMany(): void {
+  if (!pendingTargets.value.length) return
+  confirmDialog.value = true
+}
+
+/** 确认后真正执行批量订阅（顺序执行，避免给宿主识别链造成瞬时压力） */
+async function doSubscribeMany(): Promise<void> {
+  confirmDialog.value = false
+  await subscribeMany(pendingTargets.value)
 }
 
 /** 批量提交订阅（顺序执行，避免给宿主识别链造成瞬时压力） */
@@ -483,6 +698,7 @@ async function subscribeMany(works: ActorWork[]): Promise<void> {
       pendingKey.value = key
       const res = await submitSubscribe(api, work, {
         savePath: subscribeSavePath.value,
+        downloader: subscribeDownloader.value,
         sites: subscribeSites.value,
       })
       if (res.ok) {
@@ -516,9 +732,22 @@ onMounted(() => load())
   row-gap: 4px;
 }
 
+/* 演员 chip 区：flex 换行 + 纵向滚动。
+   不能用 v-chip-group——它是横向滑动容器，会带左右箭头且展开看不出效果。 */
 .das-chips {
   max-height: 96px;
   overflow-y: auto;
+}
+
+.das-actor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
+.das-chips-expanded {
+  max-height: 60vh;
 }
 
 .das-toolbar {
@@ -535,5 +764,11 @@ onMounted(() => load())
 
 .das-checkbox {
   max-width: 130px;
+}
+
+.das-page-info {
+  font-size: 0.82rem;
+  opacity: 0.85;
+  white-space: nowrap;
 }
 </style>

@@ -18,7 +18,7 @@
       variant="tonal"
       color="warning"
       prepend-icon="mdi-alert-outline"
-      @click="show"
+      @click="expand"
     >
       {{ errors.length }} 项异常（点击查看）
     </v-chip>
@@ -27,9 +27,11 @@
 
 <script setup lang="ts">
 /**
- * 异常提示条：出现后自动隐藏，避免长列表被提示刷屏。
+ * 异常提示条：出现后自动展示，超时（默认 5 秒）后收起为「N 项异常」小标签。
  *
- * 不直接销毁信息——收起后留一个「N 项异常」的小标签，点一下可以再看一遍。
+ * 不直接销毁信息——收起后留一个小标签，点一下可以再看一遍。
+ * 手动点开小标签后**常驻展开**，不再自动缩起（方便用户仔细阅读）；
+ * 而由新一轮错误触发的自动弹出仍会在超时后收起。
  * 每次内容变化都会重新计时，因此新一轮刷新产生的异常也一定会被看到。
  */
 import { onBeforeUnmount, ref, watch } from 'vue'
@@ -53,7 +55,7 @@ function clearTimer(): void {
   }
 }
 
-/** 展示提示并重新计时 */
+/** 展示提示并重新计时（由新一轮错误触发的自动弹出，超时后收起） */
 function show(): void {
   clearTimer()
   visible.value = true
@@ -62,6 +64,12 @@ function show(): void {
       visible.value = false
     }, props.duration)
   }
+}
+
+/** 手动点开：清除计时并常驻展开，不再自动缩起 */
+function expand(): void {
+  clearTimer()
+  visible.value = true
 }
 
 watch(

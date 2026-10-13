@@ -1,16 +1,11 @@
-const _export_sfc = (sfc, props) => {
-  const target = sfc.__vccOpts || sfc;
-  for (const [key, val] of props) {
-    target[key] = val;
-  }
-  return target;
-};
-
 const PLUGIN_ID = "DoubanActorSubscribe";
 const API_BASE = `plugin/${PLUGIN_ID}`;
 const HOST_SUBSCRIBE = "subscribe/";
 const HOST_SITES = "site/rss";
 const HOST_DOWNLOAD_PATHS = "download/paths";
+const HOST_DOWNLOAD_CLIENTS = "download/clients";
+const HOST_MEDIA_PAGE = "/media";
+const HOST_RESOURCE_PAGE = "/resource";
 const SUBSCRIBE_PAGE_SIZE = 100;
 const SUBSCRIBE_MAX_PAGES = 20;
 let lastApi = null;
@@ -50,6 +45,38 @@ function proxyImage(url) {
   if (!/^https?:\/\//i.test(raw)) return raw;
   if (raw.includes("/system/img/")) return raw;
   return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`;
+}
+function mediaPageUrl(work) {
+  const mediaId = String(work?.media_id ?? "").trim();
+  if (!mediaId) return "";
+  const params = new URLSearchParams();
+  params.set("media_source", String(work?.media_source || "").trim() || "douban");
+  params.set("media_id", mediaId);
+  for (const key of ["title", "year", "type"]) {
+    const value = String(work?.[key] ?? "").trim();
+    if (value) params.set(key, value);
+  }
+  return `${appBaseUrl()}#${HOST_MEDIA_PAGE}?${params.toString()}`;
+}
+function resourceSearchUrl(work) {
+  const mediaId = String(work?.media_id ?? "").trim();
+  const title = String(work?.title ?? "").trim();
+  if (!mediaId && !title) return "";
+  const params = new URLSearchParams();
+  if (mediaId) {
+    params.set("media_source", String(work?.media_source || "").trim() || "douban");
+    params.set("media_id", mediaId);
+  }
+  if (title) params.set("keyword", title);
+  for (const key of ["title", "year", "type"]) {
+    const value = String(work?.[key] ?? "").trim();
+    if (value) params.set(key, value);
+  }
+  return `${appBaseUrl()}#${HOST_RESOURCE_PAGE}?${params.toString()}`;
+}
+function appBaseUrl() {
+  if (typeof window === "undefined") return "";
+  return window.location.href.split("#")[0];
 }
 function unwrap(raw) {
   if (raw && typeof raw === "object" && "success" in raw) {
@@ -96,6 +123,19 @@ function extractError(err) {
   }
   return anyErr?.message || "请求失败";
 }
+const MISSING_INFO_HINTS = [
+  "季集信息",
+  "季的信息",
+  "总集数",
+  "集数信息",
+  "未识别到媒体信息",
+  "媒体信息识别失败"
+];
+function isMissingInfoMessage(message) {
+  const text = String(message || "");
+  if (MISSING_INFO_HINTS.some((hint) => text.includes(hint))) return true;
+  return text.includes("季") && text.includes("集");
+}
 async function submitSubscribe(api, work, extras = {}) {
   const payload = {
     name: work.title,
@@ -106,14 +146,67 @@ async function submitSubscribe(api, work, extras = {}) {
   if (work.type) payload.type = work.type;
   const savePath = String(extras.savePath || "").trim();
   if (savePath) payload.save_path = savePath;
+  const downloader = String(extras.downloader || "").trim();
+  if (downloader) payload.downloader = downloader;
   if (extras.sites && extras.sites.length) payload.sites = extras.sites;
   try {
     const raw = await api.post(HOST_SUBSCRIBE, payload);
     const res = unwrap(raw);
     if (res && res.success === false) {
-      return { ok: false, message: res.message || "订阅失败" };
+      const failure = res.message || "订阅失败";
+      if (isMissingInfoMessage(failure)) {
+        const reserved = await reserveWork(api, work, extras);
+        if (reserved.ok) return reserved;
+        return { ok: false, message: `${failure}（转为预订也失败：${reserved.message}）` };
+      }
+      return { ok: false, message: failure };
     }
     return { ok: true, message: res?.message || `已提交订阅：${work.title}` };
+  } catch (err) {
+    const message = extractError(err);
+    if (isMissingInfoMessage(message)) {
+      const reserved = await reserveWork(api, work, extras);
+      if (reserved.ok) return reserved;
+    }
+    return { ok: false, message };
+  }
+}
+async function reserveWork(api, work, extras = {}) {
+  try {
+    const raw = await api.post(`${API_BASE}/reserve`, {
+      title: work.title,
+      year: work.year || "",
+      type: work.type || "",
+      media_source: work.media_source,
+      media_id: work.media_id,
+      poster: work.poster || "",
+      subtitle: work.subtitle || "",
+      vote: work.vote || 0,
+      save_path: String(extras.savePath || "").trim(),
+      downloader: String(extras.downloader || "").trim(),
+      sites: extras.sites || []
+    });
+    const res = unwrap(raw);
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || "转为预订失败" };
+    }
+    return { ok: true, message: res?.message || `已按「预订」提交：${work.title}` };
+  } catch (err) {
+    return { ok: false, message: extractError(err) };
+  }
+}
+async function unsubscribeWork(api, work) {
+  try {
+    const raw = await api.post(`${API_BASE}/unsubscribe`, {
+      media_source: work.media_source,
+      media_id: work.media_id,
+      title: work.title
+    });
+    const res = unwrap(raw);
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || "取消订阅失败" };
+    }
+    return { ok: true, message: res?.message || `已取消订阅「${work.title}」` };
   } catch (err) {
     return { ok: false, message: extractError(err) };
   }
@@ -144,6 +237,23 @@ async function unignoreWork(api, key = "", all = false) {
       return { ok: false, message: res.message || "恢复失败" };
     }
     return { ok: true, message: res?.message || "已恢复" };
+  } catch (err) {
+    return { ok: false, message: extractError(err) };
+  }
+}
+async function removeActor(api, actor) {
+  try {
+    const raw = await api.post(`${API_BASE}/actor/remove`, {
+      actor: actor.key,
+      actor_id: actor.id || "",
+      name: actor.name || ""
+    });
+    const res = unwrap(raw);
+    if (res && res.success === false) {
+      return { ok: false, message: res.message || "移除失败" };
+    }
+    const display = actor.name || actor.key;
+    return { ok: true, message: res?.message || `已移除演员「${display}」` };
   } catch (err) {
     return { ok: false, message: extractError(err) };
   }
@@ -205,6 +315,25 @@ async function fetchPathOptions(api) {
     return options;
   } catch (err) {
     console.warn(`[${PLUGIN_ID}] 读取下载目录失败`, err);
+    return [];
+  }
+}
+async function fetchDownloaderOptions(api) {
+  try {
+    const raw = await api.get(HOST_DOWNLOAD_CLIENTS);
+    const list = unwrapList(raw);
+    if (!list.length) return [];
+    const options = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const row of list) {
+      const name = String(row.name || "").trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      options.push({ name, type: String(row.type || "").trim() });
+    }
+    return options;
+  } catch (err) {
+    console.warn(`[${PLUGIN_ID}] 读取下载器列表失败`, err);
     return [];
   }
 }
@@ -271,4 +400,12 @@ function waitForRefresh(api, apply, tries = 72, intervalMs = 2500) {
   void tick();
 }
 
-export { API_BASE as A, PLUGIN_ID as P, _export_sfc as _, waitForRefresh as a, submitSubscribe as b, formatTime as c, fetchPathOptions as d, fetchSiteOptions as e, fetchSubscribedKeys as f, unignoreWork as g, ignoreWork as i, mergeWorks as m, normalizeResult as n, proxyImage as p, resolveApi as r, sortWorks as s, unwrap as u, workKey as w };
+const _export_sfc = (sfc, props) => {
+  const target = sfc.__vccOpts || sfc;
+  for (const [key, val] of props) {
+    target[key] = val;
+  }
+  return target;
+};
+
+export { API_BASE as A, PLUGIN_ID as P, _export_sfc as _, waitForRefresh as a, submitSubscribe as b, unsubscribeWork as c, removeActor as d, formatTime as e, fetchSubscribedKeys as f, mediaPageUrl as g, fetchPathOptions as h, ignoreWork as i, fetchDownloaderOptions as j, fetchSiteOptions as k, resourceSearchUrl as l, mergeWorks as m, normalizeResult as n, unignoreWork as o, proxyImage as p, resolveApi as r, sortWorks as s, unwrap as u, workKey as w };

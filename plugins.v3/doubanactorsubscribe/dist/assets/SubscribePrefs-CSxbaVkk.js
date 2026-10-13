@@ -1,9 +1,9 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { r as resolveApi, d as fetchPathOptions, e as fetchSiteOptions, A as API_BASE, n as normalizeResult, _ as _export_sfc } from './api-WVyoRzoO.js';
+import { r as resolveApi, h as fetchPathOptions, j as fetchDownloaderOptions, k as fetchSiteOptions, A as API_BASE, n as normalizeResult, _ as _export_sfc } from './_plugin-vue_export-helper-DkqlrLa1.js';
 
 const {useModel:_useModel,mergeModels:_mergeModels,defineComponent:_defineComponent} = await importShared('vue');
 
-const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,createBlock:_createBlock} = await importShared('vue');
+const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,createBlock:_createBlock,toDisplayString:_toDisplayString} = await importShared('vue');
 
 const _hoisted_1 = {
   class: "d-flex align-center flex-wrap mb-2",
@@ -12,6 +12,10 @@ const _hoisted_1 = {
 const _hoisted_2 = {
   key: 0,
   class: "text-caption text-warning"
+};
+const _hoisted_3 = {
+  key: 0,
+  class: "text-caption text-warning mt-n2"
 };
 const {computed,onMounted,ref,watch} = await importShared('vue');
 const _sfc_main = /* @__PURE__ */ _defineComponent({
@@ -22,16 +26,20 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }, {
     "savePath": { default: "" },
     "savePathModifiers": {},
+    "downloader": { default: "" },
+    "downloaderModifiers": {},
     "sites": { default: () => [] },
     "sitesModifiers": {}
   }),
-  emits: /* @__PURE__ */ _mergeModels(["saved"], ["update:savePath", "update:sites"]),
+  emits: /* @__PURE__ */ _mergeModels(["saved"], ["update:savePath", "update:downloader", "update:sites"]),
   setup(__props, { emit: __emit }) {
     const props = __props;
     const emit = __emit;
     const savePath = _useModel(__props, "savePath");
+    const downloader = _useModel(__props, "downloader");
     const sites = _useModel(__props, "sites");
     const pathOptions = ref([]);
+    const downloaderOptions = ref([]);
     const siteOptions = ref([]);
     const saving = ref(false);
     const loadingOptions = ref(false);
@@ -42,14 +50,33 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         path: item.path
       }))
     );
+    const downloaderItems = computed(
+      () => downloaderOptions.value.map((item) => ({
+        label: item.type ? `${item.name}（${item.type}）` : item.name,
+        name: item.name
+      }))
+    );
     const siteItems = computed(
       () => siteOptions.value.map((item) => ({ label: item.name, id: item.id }))
     );
+    const downloaderAvailable = computed(() => {
+      const current = String(downloader.value || "").trim();
+      if (!current) return true;
+      if (!downloaderOptions.value.length) return true;
+      return downloaderOptions.value.some((item) => item.name === current);
+    });
     const pathModel = computed({
       get: () => savePath.value || "",
       set: (value) => {
         if (value && typeof value === "object") savePath.value = String(value.path || "");
         else savePath.value = String(value ?? "").trim();
+      }
+    });
+    const downloaderModel = computed({
+      get: () => downloader.value || "",
+      set: (value) => {
+        if (value && typeof value === "object") downloader.value = String(value.name || "");
+        else downloader.value = String(value ?? "").trim();
       }
     });
     const sitesModel = computed({
@@ -63,8 +90,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       if (!api) return;
       loadingOptions.value = true;
       try {
-        const [paths, siteList] = await Promise.all([fetchPathOptions(api), fetchSiteOptions(api)]);
+        const [paths, downloaders, siteList] = await Promise.all([
+          fetchPathOptions(api),
+          fetchDownloaderOptions(api),
+          fetchSiteOptions(api)
+        ]);
         pathOptions.value = paths;
+        downloaderOptions.value = downloaders;
         siteOptions.value = siteList;
       } finally {
         loadingOptions.value = false;
@@ -81,6 +113,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       try {
         const raw = await api.put(`${API_BASE}/config`, {
           subscribe_save_path: savePath.value || "",
+          subscribe_downloader: downloader.value || "",
           subscribe_sites: sites.value || []
         });
         const res = normalizeResult(raw);
@@ -121,16 +154,16 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   icon: "mdi-tune-variant",
                   size: "18"
                 }),
-                _cache[3] || (_cache[3] = _createElementVNode("span", { class: "text-subtitle-2" }, "订阅选项", -1)),
-                _cache[4] || (_cache[4] = _createElementVNode("span", { class: "text-caption das-dim" }, " 提交订阅时一并带上；留空则沿用 MoviePilot 的默认订阅配置 ", -1)),
+                _cache[4] || (_cache[4] = _createElementVNode("span", { class: "text-subtitle-2" }, "订阅选项", -1)),
+                _cache[5] || (_cache[5] = _createElementVNode("span", { class: "text-caption das-dim" }, " 提交订阅时一并带上；留空则沿用 MoviePilot 的默认订阅配置 ", -1)),
                 _createVNode(_component_v_spacer),
-                loaded.value && !pathItems.value.length && !siteItems.value.length ? (_openBlock(), _createElementBlock("span", _hoisted_2, " 未能读取宿主选项 ")) : _createCommentVNode("", true),
+                loaded.value && !pathItems.value.length && !downloaderItems.value.length && !siteItems.value.length ? (_openBlock(), _createElementBlock("span", _hoisted_2, " 未能读取宿主选项 ")) : _createCommentVNode("", true),
                 _createVNode(_component_v_btn, {
                   size: "small",
                   variant: "text",
                   icon: "mdi-refresh",
                   loading: loadingOptions.value,
-                  title: "重新读取宿主的下载路径与站点",
+                  title: "重新读取宿主的下载路径、下载器与站点",
                   onClick: loadOptions
                 }, null, 8, ["loading"]),
                 __props.showSave ? (_openBlock(), _createBlock(_component_v_btn, {
@@ -142,7 +175,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   loading: saving.value,
                   onClick: saveAsDefault
                 }, {
-                  default: _withCtx(() => [..._cache[2] || (_cache[2] = [
+                  default: _withCtx(() => [..._cache[3] || (_cache[3] = [
                     _createTextVNode(" 保存为默认 ", -1)
                   ])]),
                   _: 1
@@ -152,7 +185,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 default: _withCtx(() => [
                   _createVNode(_component_v_col, {
                     cols: "12",
-                    md: "6"
+                    md: "4"
                   }, {
                     default: _withCtx(() => [
                       _createVNode(_component_v_combobox, {
@@ -174,12 +207,35 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   }),
                   _createVNode(_component_v_col, {
                     cols: "12",
-                    md: "6"
+                    md: "4"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_combobox, {
+                        modelValue: downloaderModel.value,
+                        "onUpdate:modelValue": _cache[1] || (_cache[1] = ($event) => downloaderModel.value = $event),
+                        items: downloaderItems.value,
+                        "item-title": "label",
+                        "item-value": "name",
+                        loading: loadingOptions.value,
+                        label: "下载器",
+                        hint: "宿主里已配置的下载客户端；留空表示跟随默认",
+                        "persistent-hint": "",
+                        density: "comfortable",
+                        clearable: "",
+                        "prepend-inner-icon": "mdi-download-network-outline"
+                      }, null, 8, ["modelValue", "items", "loading"]),
+                      downloader.value && !downloaderAvailable.value ? (_openBlock(), _createElementBlock("div", _hoisted_3, " 宿主没有名为「" + _toDisplayString(downloader.value) + "」的下载器，提交时会被忽略 ", 1)) : _createCommentVNode("", true)
+                    ]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_col, {
+                    cols: "12",
+                    md: "4"
                   }, {
                     default: _withCtx(() => [
                       _createVNode(_component_v_select, {
                         modelValue: sitesModel.value,
-                        "onUpdate:modelValue": _cache[1] || (_cache[1] = ($event) => sitesModel.value = $event),
+                        "onUpdate:modelValue": _cache[2] || (_cache[2] = ($event) => sitesModel.value = $event),
                         items: siteItems.value,
                         "item-title": "label",
                         "item-value": "id",
@@ -209,6 +265,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const SubscribePrefs = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-28f81ce2"]]);
+const SubscribePrefs = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-9f9868c5"]]);
 
 export { SubscribePrefs as S };

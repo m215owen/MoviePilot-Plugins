@@ -8,8 +8,7 @@
         <v-btn icon="mdi-close" variant="text" size="small" title="关闭" @click="emit('close')" />
       </div>
 
-      <!-- 运行异常：与面板保持一致的「先展示、5 秒后自动收起为小标签」行为，
-           避免一大串限流提示常驻配置页 -->
+      <!-- 运行异常：自动弹出 5 秒后收起为小标签；手动点开「N 项异常」后常驻展开，不再自动缩起 -->
       <ErrorAlerts :errors="runtimeErrors" class="mb-3" />
 
       <v-row dense>
@@ -39,13 +38,14 @@
 
       <v-divider class="my-3" />
 
-      <!-- 演员配置：行式列表。演员多时靠内部滚动收住高度，不会再把页面撑长 -->
+      <!-- 演员配置：文本形式，逗号分隔。演员多时固定高度、内部滚动，不会把页面撑长 -->
       <div class="text-subtitle-2 mb-2">
         <v-icon icon="mdi-account-multiple-outline" size="18" class="mr-1" />
         订阅的演员
         <span class="text-caption das-dim ml-2">共 {{ actorItems.length }} 位</span>
       </div>
 
+      <!-- 快捷添加：与行式列表时同一套输入框，回车 / 点「添加」并入下方文本列表 -->
       <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
         <v-text-field
           v-model="actorDraft"
@@ -68,22 +68,18 @@
         </v-btn>
       </div>
 
-      <v-card variant="outlined" class="das-actor-list mb-2">
-        <div v-if="!actorItems.length" class="text-caption das-dim pa-3 text-center">
-          还没有演员：在上面添加，或从下方搜索结果点「添加 ID」。
-        </div>
-        <div v-for="(item, index) in actorItems" :key="`${index}-${item}`" class="das-actor-row">
-          <span class="das-actor-index">{{ index + 1 }}</span>
-          <span class="das-actor-text" :title="item">{{ item }}</span>
-          <v-chip v-if="isDirectId(item)" size="x-small" variant="tonal" color="success" label>
-            免搜索
-          </v-chip>
-          <v-spacer />
-          <v-btn size="x-small" variant="text" icon="mdi-close" title="移除" @click="removeActor(index)" />
-        </div>
-      </v-card>
+      <v-textarea
+        v-model="actorsText"
+        density="comfortable"
+        variant="outlined"
+        hide-details
+        rows="5"
+        no-resize
+        placeholder="多位演员用逗号分隔，例如：刘德华，吴京，张译"
+        class="das-actor-textarea mb-2"
+      />
       <div class="text-caption das-dim mb-3">
-        填「人物 ID」或人物主页链接可跳过搜索——豆瓣搜索限流很紧，演员多时优先填 ID。
+        用逗号分隔（也支持换行 / 顿号）；填「人物 ID」或人物主页链接可跳过搜索——豆瓣搜索限流很紧，演员多时优先填 ID。
       </div>
 
       <v-text-field
@@ -108,6 +104,7 @@
           <v-spacer />
           <v-btn size="x-small" variant="text" icon="mdi-close" title="关闭提示" @click="searched = false" />
         </div>
+        <!-- 添加按钮紧跟「ID xxxx」之后：不再用 v-spacer 推到行尾，避免鼠标要跨半个屏幕 -->
         <div
           v-for="item in candidates"
           :key="item.id"
@@ -119,8 +116,14 @@
           </v-avatar>
           <span class="text-body-2">{{ item.name }}</span>
           <span class="text-caption das-dim ml-2">ID {{ item.id }}</span>
-          <v-spacer />
-          <v-btn size="x-small" variant="text" color="primary" @click="appendActor(item.id)">
+          <v-btn
+            size="x-small"
+            variant="tonal"
+            color="primary"
+            density="compact"
+            class="ml-2"
+            @click="appendActor(item.id)"
+          >
             添加 ID
           </v-btn>
         </div>
@@ -274,13 +277,14 @@
 
       <v-divider class="my-3" />
 
-      <!-- 订阅选项：下载保存路径 + 订阅站点，随本页「保存配置」一起持久化 -->
+      <!-- 订阅选项：下载保存路径 + 下载器 + 订阅站点，随本页「保存配置」一起持久化 -->
       <div class="text-subtitle-2 mb-2">
         <v-icon icon="mdi-tune-variant" size="18" class="mr-1" />
         订阅选项
       </div>
       <SubscribePrefs
         v-model:save-path="local.subscribe_save_path"
+        v-model:downloader="local.subscribe_downloader"
         v-model:sites="local.subscribe_sites"
         :api="props.api"
         :show-save="false"
@@ -345,6 +349,7 @@ const defaults: PluginConfig = {
   auto_max_per_run: 5,
   onlyonce: false,
   subscribe_save_path: '',
+  subscribe_downloader: '',
   subscribe_sites: [],
   douban_cookie: '',
 }
@@ -416,31 +421,30 @@ const autoTypes = computed<string[]>({
   },
 })
 
-// ─── 演员列表（行式） ─────────────────────────────────────────
-
-/** 输入框草稿：回车或点「添加」后追加进列表 */
-const actorDraft = ref('')
+// ─── 演员列表（文本，逗号分隔） ────────────────────────────────
 
 /**
- * 演员列表以换行分隔的字符串存储，这里拆成数组渲染。
+ * 演员列表以「逗号分隔文本」配置与展示。
  *
- * 原先是一个 auto-grow 文本框，112 位演员会把页面撑得很长；
- * 改成固定高度的行式列表后高度可控，每一行还能单独删除。
+ * 后端 `_parse_actors` 兼容逗号 / 换行 / 顿号 / 分号等分隔符；
+ * 这里统一拆分成数组用于计数，展示时用中文逗号连接。
  */
 const actorItems = computed<string[]>(() =>
   String(local.actors || '')
-    .split(/\r?\n/)
+    .split(/[\r\n,，、;；]+/)
     .map((item) => item.trim())
     .filter(Boolean)
 )
 
-/** 判断是否「人物 ID / 主页链接」——这类写法会跳过豆瓣搜索 */
-function isDirectId(item: string): boolean {
-  const value = String(item || '').trim()
-  return /^\d+$/.test(value) || /douban\.com\/personage\//.test(value)
-}
+/** 文本域绑定：读时用「，」连接，写时原样存回（交给后端解析） */
+const actorsText = computed<string>({
+  get: () => actorItems.value.join('，'),
+  set: (value: string) => {
+    local.actors = String(value || '')
+  },
+})
 
-/** 统一写回演员列表：去重且保持顺序 */
+/** 统一写回演员列表：去重且保持顺序，用「，」连接 */
 function commitActorItems(items: string[]): void {
   const seen = new Set<string>()
   const next: string[] = []
@@ -450,8 +454,11 @@ function commitActorItems(items: string[]): void {
     seen.add(value)
     next.push(value)
   }
-  local.actors = next.join('\n')
+  local.actors = next.join('，')
 }
+
+/** 快捷添加输入框的草稿（回车 / 点「添加」后并入文本列表） */
+const actorDraft = ref('')
 
 /** 追加草稿内容（支持一次粘贴多个：逗号 / 顿号 / 分号 / 换行分隔） */
 function addActorDraft(): void {
@@ -462,13 +469,6 @@ function addActorDraft(): void {
   if (!parts.length) return
   commitActorItems([...actorItems.value, ...parts])
   actorDraft.value = ''
-}
-
-/** 移除第 index 位演员 */
-function removeActor(index: number): void {
-  const next = [...actorItems.value]
-  next.splice(index, 1)
-  commitActorItems(next)
 }
 
 // ─── 演员搜索辅助 ─────────────────────────────────────────────
@@ -558,43 +558,14 @@ onMounted(() => {
   opacity: 0.75;
 }
 
+/* 固定高度 + 内部滚动：演员再多也不会把配置页撑长 */
+.das-actor-textarea {
+  max-height: 220px;
+}
+
+/* 快捷添加栏：窄屏时输入框占满一行，按钮换行跟随 */
 .das-actor-input {
   flex: 1 1 260px;
   min-width: 220px;
-}
-
-/* 固定高度 + 内部滚动：演员再多也不会把配置页撑长 */
-.das-actor-list {
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-.das-actor-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 10px;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.14);
-}
-
-.das-actor-row:last-child {
-  border-bottom: none;
-}
-
-.das-actor-index {
-  flex: 0 0 auto;
-  min-width: 22px;
-  font-size: 0.72rem;
-  opacity: 0.55;
-  text-align: right;
-}
-
-.das-actor-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.82rem;
 }
 </style>

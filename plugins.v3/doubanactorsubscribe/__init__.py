@@ -62,6 +62,55 @@ _TYPE_ALIASES: Dict[str, str] = {
 # 允许参与自动订阅的媒体类型
 _SUBSCRIBABLE_TYPES = (MediaType.MOVIE.value, MediaType.TV.value)
 
+# 订阅状态（宿主 subscribe.state）：N-新建 R-订阅中 P-待定 S-暂停。
+# 「待定(P)」语义为「允许搜索、不允许完成」，正是未播出影视需要的「预订」。
+_SUBSCRIBE_STATE_PENDING = "P"
+
+# 订阅被拒时，命中这些关键词说明缺的是「影视信息」（未播出 / 条目刚建、TMDB 还没收录），
+# 而不是作品本身有问题 —— 这类失败应当降级为「预订」，而不是直接判失败。
+_RESERVE_FAILURE_HINTS = (
+    "季集信息",
+    "季的信息",
+    "总集数",
+    "集数信息",
+    "未识别到媒体信息",
+    "媒体信息识别失败",
+)
+
+# 预订占位集数：真实集数拿不到时先按 1 集占位。宿主刷新增量时会向上覆盖它
+# （前提是 manual_total_episode 保持 0，所以绝不能顺手把它也置 1）。
+_RESERVE_TOTAL_EPISODE = 1
+
+
+def _subscribe_oper() -> Any:
+    """惰性获取宿主的订阅写库端口；宿主缺这个入口时返回 None。
+
+    走官方 SDK 兼容入口 ``app.sdk._legacy.subscribe.SubscribeOper``，
+    避免直接依赖宿主内部模块路径。
+    """
+    try:
+        from app.sdk._legacy.subscribe import SubscribeOper
+    except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+        logger.debug(f"{PLUGIN_NAME} 未找到订阅写库入口，预订将只走订阅链：{err}")
+        return None
+    try:
+        return SubscribeOper()
+    except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+        logger.debug(f"{PLUGIN_NAME} 初始化订阅写库入口失败：{err}")
+        return None
+
+
+def _looks_like_missing_info(message: str) -> bool:
+    """判断订阅失败是否属于「影视信息还没到」这一类（未播出 / 尚未收录）。
+
+    已知文案：「媒体信息中没有季集信息」「未获取到第 N 季的总集数」「未识别到媒体信息」
+    「媒体信息识别失败」。最后再用「季」「集」同现兜底，宿主换文案时不至于漏判。
+    """
+    text = str(message or "")
+    if any(hint in text for hint in _RESERVE_FAILURE_HINTS):
+        return True
+    return "季" in text and "集" in text
+
 # 豆瓣部分标题会夹带零宽/双向控制字符（实测「神探之痕迹\u200e」），
 # 这类字符不可见却会污染订阅名与去重比对，统一剔除。
 _INVISIBLE_CHARS = dict.fromkeys(
@@ -465,7 +514,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.3.0"
+    plugin_version = "1.9.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -491,8 +540,9 @@ class DoubanActorSubscribe(_PluginBase):
     _auto_max_per_run: int = 5
     _run_count: int = 0
     _last_run_at: str = ""
-    # 订阅偏好：面板与自动订阅提交时附带的下载目录与订阅站点
+    # 订阅偏好：面板与自动订阅提交时附带的下载目录、下载器与订阅站点
     _subscribe_save_path: str = ""
+    _subscribe_downloader: str = ""
     _subscribe_sites: List[int] = []
     # 手填的豆瓣 Cookie（留空则自动从宿主已配置的 CookieCloud 拉取）
     _douban_cookie: str = ""
@@ -559,6 +609,8 @@ class DoubanActorSubscribe(_PluginBase):
         self._auto_types = self._parse_types(cfg.get("auto_types"))
         self._auto_max_per_run = self._clamp_int(cfg.get("auto_max_per_run"), 5, 1, 100)
         self._subscribe_save_path = str(cfg.get("subscribe_save_path") or "").strip()
+        # 下载器名称（宿主 /download/clients 里的 name）；留空表示跟随宿主默认订阅配置
+        self._subscribe_downloader = str(cfg.get("subscribe_downloader") or "").strip()
         self._subscribe_sites = self._parse_sites(cfg.get("subscribe_sites"))
         # Cookie 变更后旧缓存立即失效，避免继续用上一个账号的登录态
         new_cookie = str(cfg.get("douban_cookie") or "").strip()
@@ -813,6 +865,20 @@ class DoubanActorSubscribe(_PluginBase):
                 "summary": "按名称搜索豆瓣演员",
             },
             {
+                "path": "/reserve",
+                "endpoint": self.api_reserve,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "把订阅失败的作品转为预订（待定）",
+            },
+            {
+                "path": "/unsubscribe",
+                "endpoint": self.api_unsubscribe,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "取消某部作品的订阅",
+            },
+            {
                 "path": "/ignore",
                 "endpoint": self.api_ignore,
                 "methods": ["POST"],
@@ -825,6 +891,13 @@ class DoubanActorSubscribe(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "恢复被忽略的作品",
+            },
+            {
+                "path": "/actor/remove",
+                "endpoint": self.api_remove_actor,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "从订阅演员中移除一位（同步删除配置里的条目）",
             },
             {
                 "path": "/clear",
@@ -1078,6 +1151,17 @@ class DoubanActorSubscribe(_PluginBase):
         total = sum(len(item["works"]) for item in actors)
         new_count = sum(1 for item in actors for work in item["works"] if work.get("is_new"))
         search_log = self._load_search_log()
+        # 解析进度统计：只把「还没拿到人物 ID」的演员算作待解析。
+        # 注意必须与搜索缓存取交集 —— 一旦某位演员解析出 ID，它这轮和下轮都不会再
+        # 搜索，把它的历史搜索记录继续算成「冷却中」会让徽标显示一个只涨不降的假数字
+        # （搜索记录要满 24 小时才过期，看起来就像永远不动）。
+        cache = self._load_actor_cache()
+        unresolved = [
+            key
+            for key in self._actor_entries
+            if not str((cache.get(key) or {}).get("id") or "").strip()
+        ]
+        cooling = [key for key in unresolved if search_log.get(key)]
         return {
             "enabled": self._enabled,
             "updated_at": self._last_run_at,
@@ -1094,16 +1178,17 @@ class DoubanActorSubscribe(_PluginBase):
             "actors": actors,
             # 订阅偏好与「配置已变更待补刷新」「后台刷新中」标记，供面板回显与轮询
             "subscribe_save_path": self._subscribe_save_path,
+            "subscribe_downloader": self._subscribe_downloader,
             "subscribe_sites": list(self._subscribe_sites),
             "pending_refresh": bool(self._pending_refresh),
             "refreshing": self._is_refreshing(),
             # 豆瓣 Cookie 来源，供面板显示「是不是靠登录态在提额度」
             "douban_cookie_source": self._cookie_source,
             "douban_cookie_hint": self._cookie_hint,
-            # 仍在 24 小时搜索冷却内的演员数（成功搜过一次，近期不再重复搜）
-            "search_cooldown_count": sum(
-                1 for key in self._actor_entries if search_log.get(key)
-            ),
+            # 尚未解析出人物 ID 的演员数（0 表示全部解析完毕，之后刷新不再消耗搜索额度）
+            "unresolved_count": len(unresolved),
+            # 其中仍处于 24 小时搜索冷却内、必须等冷却结束才会重试的数量
+            "search_cooldown_count": len(cooling),
             # 被用户忽略的作品：面板据此显示「已忽略 N 部」并提供恢复入口
             "ignored_count": len(ignored),
             "ignored": self._ignored_list(ignored),
@@ -1467,12 +1552,18 @@ class DoubanActorSubscribe(_PluginBase):
         return subscribed
 
     def _add_subscribe(self, work: Dict[str, Any]) -> Tuple[bool, str]:
-        """把单个作品提交给 MoviePilot 订阅链；返回 ``(是否成功, 说明)``。"""
+        """把单个作品提交给 MoviePilot 订阅链；返回 ``(是否成功, 说明)``。
+
+        未播出 / 信息尚未收录的影视会被订阅链以「缺季集信息」拒掉。这类失败不是
+        「这部作品有问题」而是「信息还没到」，因此会自动降级为「预订」
+        （见 :meth:`_reserve_subscribe`），等影视播出、信息补全后照常参与搜索。
+        """
         title = str(work.get("title") or "").strip()
         media_id = str(work.get("media_id") or "").strip()
         if not title or not media_id:
             return False, "标题或豆瓣 ID 为空"
         mtype = MediaType(work["type"]) if work.get("type") in _SUBSCRIBABLE_TYPES else None
+        meta: Optional[MetaInfo] = None
         try:
             meta = MetaInfo(title)
             if work.get("year"):
@@ -1497,13 +1588,204 @@ class DoubanActorSubscribe(_PluginBase):
                 username=PLUGIN_NAME,
                 # 订阅偏好：留空时交给宿主按系统默认配置补全
                 save_path=self._subscribe_save_path or None,
+                downloader=self._subscribe_downloader or None,
                 sites=list(self._subscribe_sites) or None,
             )
             if sid:
                 return True, f"订阅成功（ID {sid}）"
-            return False, str(message or "订阅链未返回订阅 ID")
+            first_message = str(message or "订阅链未返回订阅 ID")
+        except Exception as err:
+            first_message = str(err)
+
+        # 缺季集信息 / 未识别到媒体信息 → 降级为「预订」，而不是判失败
+        if not _looks_like_missing_info(first_message):
+            return False, first_message
+        ok, reserve_message = self._reserve_subscribe(work, meta, mtype, first_message)
+        if ok:
+            return True, reserve_message
+        if reserve_message:
+            return False, f"{first_message}（转为预订也失败：{reserve_message}）"
+        return False, first_message
+
+    @staticmethod
+    def _reserve_prefs(prefs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """解析预订用的订阅偏好；未提供的位置留空，由调用方回落到插件配置。"""
+        data = prefs or {}
+        raw_path = data.get("save_path")
+        save_path = str(raw_path).strip() if isinstance(raw_path, str) else ""
+        # 下载器名称：留空表示跟随宿主默认，非字符串输入直接忽略
+        raw_downloader = data.get("downloader")
+        downloader = raw_downloader.strip() if isinstance(raw_downloader, str) else ""
+        sites: List[int] = []
+        raw_sites = data.get("sites")
+        if isinstance(raw_sites, (list, tuple)):
+            for item in raw_sites:
+                text = str(item).strip()
+                if text.isdigit():
+                    sites.append(int(text))
+        return {"save_path": save_path, "downloader": downloader, "sites": sites}
+
+    def _reserve_subscribe(
+        self,
+        work: Dict[str, Any],
+        meta: Optional[MetaInfo],
+        mtype: Optional[MediaType],
+        reason: str,
+        prefs: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str]:
+        """把订阅失败的作品降级为「预订」：状态置为待定（P）。
+
+        未播出 / 豆瓣条目才建时，订阅链拿不到季集信息会直接拒绝创建订阅，而这类作品
+        恰恰最需要先占位，因此分两步兜底：
+
+        1. 仍走官方订阅链，但补一个占位总集数跳过季集补齐，并把状态置为 ``P``；
+        2. 连识别都过不去（TMDB 还没收录）时，直接按豆瓣身份落一条待定订阅。
+
+        ``P``（待定）语义是「允许搜索、不允许完成」：不会在资源出现前被误判为已看完，
+        也不会漏掉后续资源；宿主刷新到真实集数时会自动向上覆盖占位值。
+        """
+        if mtype is None and work.get("type") in _SUBSCRIBABLE_TYPES:
+            mtype = MediaType(work["type"])
+        if mtype is None:
+            return False, ""
+        title = str(work.get("title") or "").strip()
+        media_id = str(work.get("media_id") or "").strip()
+        if not title or not media_id:
+            return False, "标题或豆瓣 ID 为空"
+        source = str(work.get("media_source") or MediaSource.Douban.value)
+        try:
+            source_enum = MediaSource(source)
+        except ValueError:  # pragma: no cover - 宿主枚举差异兜底
+            source_enum = MediaSource.Douban
+        effective = self._reserve_prefs(prefs)
+        save_path = effective["save_path"] or self._subscribe_save_path or None
+        downloader = effective["downloader"] or self._subscribe_downloader or None
+        sites = effective["sites"] or list(self._subscribe_sites) or None
+
+        is_tv = mtype == MediaType.TV
+        season: Optional[int] = None
+        if is_tv:
+            begin = getattr(meta, "begin_season", None) if meta is not None else None
+            season = int(begin) if isinstance(begin, int) and begin > 0 else 1
+
+        # 一级兜底：正规订阅链路 + 占位季集 + 待定状态
+        sid = 0
+        message = ""
+        try:
+            sid, message = SubscribeChain().add(
+                title=title,
+                year=str(work.get("year") or ""),
+                mtype=mtype,
+                media_source=source_enum,
+                media_id=media_id,
+                exist_ok=True,
+                username=PLUGIN_NAME,
+                state=_SUBSCRIBE_STATE_PENDING,
+                save_path=save_path,
+                downloader=downloader,
+                sites=sites,
+                **(dict(season=season, total_episode=_RESERVE_TOTAL_EPISODE) if is_tv else {}),
+            )
+        except Exception as err:
+            sid, message = 0, str(err)
+        if sid:
+            self._ensure_pending_state(int(sid))
+            logger.info(f"{self.plugin_name} 「{title}」订阅失败已转为预订（ID {sid}）：{reason}")
+            return True, f"已按「预订」提交（待定，ID {sid}）"
+        # 二级兜底：识别链都过不去（尚未收录）→ 直接落一条待定订阅占位
+        return self._reserve_subscribe_directly(
+            work, mtype, season, reason, str(message or ""), save_path, downloader, sites
+        )
+
+    def _reserve_subscribe_directly(
+        self,
+        work: Dict[str, Any],
+        mtype: MediaType,
+        season: Optional[int],
+        reason: str,
+        chain_error: str,
+        save_path: Optional[str],
+        downloader: Optional[str],
+        sites: Optional[List[int]],
+    ) -> Tuple[bool, str]:
+        """连识别都失败时，按豆瓣身份直接写一条待定订阅（预订占位）。
+
+        订阅链必须先识别出媒体信息才会创建订阅，未播出、TMDB 尚未收录的作品过不了
+        这一步 —— 而这正是最需要预订的情况。这里绕过识别直接写库：身份用豆瓣
+        ``media_id``，状态 P，集数留占位值，等宿主刷新到真实信息后照常参与搜索。
+        """
+        oper = _subscribe_oper()
+        if oper is None:
+            return False, chain_error or "宿主未提供订阅写库接口"
+        title = str(work.get("title") or "").strip()
+        media_id = str(work.get("media_id") or "").strip()
+        source = str(work.get("media_source") or MediaSource.Douban.value)
+        is_tv = mtype == MediaType.TV
+        identity = {
+            "media_source": source,
+            "media_id": media_id,
+            "music_type": None,
+            "season": season if is_tv else None,
+            "episode_group": None,
+        }
+        payload: Dict[str, Any] = {
+            "name": title,
+            "year": str(work.get("year") or ""),
+            "type": mtype.value,
+            "media_source": source,
+            "media_id": media_id,
+            "season": season if is_tv else None,
+            "state": _SUBSCRIBE_STATE_PENDING,
+            "username": PLUGIN_NAME,
+        }
+        if is_tv:
+            payload["total_episode"] = _RESERVE_TOTAL_EPISODE
+            payload["lack_episode"] = _RESERVE_TOTAL_EPISODE
+        poster = str(work.get("poster") or "").strip()
+        if poster:
+            payload["poster"] = poster
+        subtitle = str(work.get("subtitle") or "").strip()
+        if subtitle:
+            payload["description"] = subtitle
+        try:
+            vote = float(work.get("vote") or 0)
+        except (TypeError, ValueError):
+            vote = 0.0
+        if vote:
+            payload["vote"] = vote
+        if save_path:
+            payload["save_path"] = save_path
+        if downloader:
+            payload["downloader"] = downloader
+        if sites:
+            payload["sites"] = list(sites)
+        try:
+            sid, message = oper.add(identity=identity, payload=payload, username=PLUGIN_NAME)
         except Exception as err:
             return False, str(err)
+        if not sid:
+            return False, str(message or chain_error or "预订写入失败")
+        self._ensure_pending_state(int(sid))
+        logger.info(f"{self.plugin_name} 「{title}」已直接落库为预订（ID {sid}）：{reason}")
+        return True, f"已按「预订」提交（待定，ID {sid}）"
+
+    @staticmethod
+    def _ensure_pending_state(subscribe_id: int) -> None:
+        """回读订阅并把状态校正为待定（P）。
+
+        创建路径会带宿主自己的默认状态，个别版本可能忽略调用方传入的 ``state``；
+        这里回读一次并补写，保证「预订」语义真的落地（待定：允许搜索、不允许完成）。
+        """
+        oper = _subscribe_oper()
+        if oper is None:
+            return
+        try:
+            row = oper.get(subscribe_id)
+            if row is not None and str(getattr(row, "state", "") or "") == _SUBSCRIBE_STATE_PENDING:
+                return
+            oper.update(subscribe_id, {"state": _SUBSCRIBE_STATE_PENDING})
+        except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+            logger.debug(f"{PLUGIN_NAME} 校正预订状态时跳过：{err}")
 
     # ─── 数据读写 ────────────────────────────────────────────────
 
@@ -1667,6 +1949,7 @@ class DoubanActorSubscribe(_PluginBase):
             "auto_types": ",".join(self._auto_types),
             "auto_max_per_run": self._auto_max_per_run,
             "subscribe_save_path": self._subscribe_save_path,
+            "subscribe_downloader": self._subscribe_downloader,
             "subscribe_sites": list(self._subscribe_sites),
             "douban_cookie": self._douban_cookie,
             "douban_cookie_source": self._cookie_source,
@@ -1700,6 +1983,7 @@ class DoubanActorSubscribe(_PluginBase):
         merged["max_works"] = self._clamp_int(merged.get("max_works"), 10, 5, 10)
         merged["auto_max_per_run"] = self._clamp_int(merged.get("auto_max_per_run"), 5, 1, 100)
         merged["subscribe_save_path"] = str(merged.get("subscribe_save_path") or "").strip()
+        merged["subscribe_downloader"] = str(merged.get("subscribe_downloader") or "").strip()
         merged["subscribe_sites"] = self._parse_sites(merged.get("subscribe_sites"))
         merged["douban_cookie"] = str(merged.get("douban_cookie") or "").strip()
         # run_count / pending_refresh / refreshing / Cookie 来源属于运行时状态，不落盘
@@ -1781,6 +2065,107 @@ class DoubanActorSubscribe(_PluginBase):
                 return {"success": False, "message": f"搜索失败：{client.last_error}"}
         return {"success": True, "data": results}
 
+    def api_reserve(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """把「订阅失败的作品」降级为预订（待定 P），供面板兜底。
+
+        面板上的订阅按钮直接调宿主原生 ``POST subscribe/``（这样订阅归属当前登录用户），
+        而宿主接口不接受创建时指定状态，也不允许绕过季集识别，所以未播出 / 尚未收录的
+        作品在那里一定会失败。前端拿到这类失败后会回落到本接口，由插件按豆瓣身份
+        建一条待定订阅占位。
+        """
+        data = payload if isinstance(payload, dict) else {}
+        title = str(data.get("title") or "").strip()
+        media_id = str(data.get("media_id") or "").strip()
+        if not title or not media_id:
+            return {"success": False, "message": "缺少作品标题或豆瓣 ID"}
+        work: Dict[str, Any] = {
+            "title": title,
+            "year": str(data.get("year") or ""),
+            "type": str(data.get("type") or ""),
+            "media_source": str(data.get("media_source") or MediaSource.Douban.value),
+            "media_id": media_id,
+            "poster": str(data.get("poster") or ""),
+            "subtitle": str(data.get("subtitle") or ""),
+            "vote": data.get("vote") or 0,
+        }
+        mtype = MediaType(work["type"]) if work["type"] in _SUBSCRIBABLE_TYPES else None
+        if mtype is None:
+            return {"success": False, "message": "该作品类型不支持订阅"}
+        meta = MetaInfo(title)
+        if work["year"]:
+            meta.year = work["year"]
+        meta.type = mtype
+        prefs = {
+            "save_path": data.get("save_path"),
+            "downloader": data.get("downloader"),
+            "sites": data.get("sites"),
+        }
+        ok, message = self._reserve_subscribe(work, meta, mtype, "面板订阅未成功", prefs)
+        if not ok:
+            return {"success": False, "message": message or "转为预订失败"}
+        return {"success": True, "message": message, "data": {"title": title}}
+
+    def api_unsubscribe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """取消一部作品的订阅：作品卡片上「已订阅」按钮的二次点击。
+
+        粒度和「订阅」按钮保持一致 —— 用户点的是**这一部作品**，因此按豆瓣身份
+        （``media_source`` + ``media_id``，可带 ``season``）把所有对得上的订阅记录删掉，
+        而不是让前端拼一串 media_id/season 去逐个调宿主接口。
+
+        找不到记录时返回失败而不是「已取消」：否则界面会把「查询出错」渲染成
+        「取消成功」，下次刷新又冒出「已订阅」，比直接报错更让人困惑。
+        """
+        data = payload if isinstance(payload, dict) else {}
+        media_id = str(data.get("media_id") or "").strip()
+        if not media_id:
+            return {"success": False, "message": "缺少豆瓣 ID"}
+        source_text = str(data.get("media_source") or MediaSource.Douban.value).strip()
+        try:
+            source = MediaSource(source_text or MediaSource.Douban.value)
+        except Exception:  # pragma: no cover - 宿主枚举实现差异，非法值一律挡回
+            return {"success": False, "message": f"未知的媒体来源：{source_text}"}
+
+        oper = _subscribe_oper()
+        if oper is None:
+            return {"success": False, "message": "宿主未提供订阅入口，无法取消订阅"}
+        try:
+            records = oper.list_by_media_identity(source, media_id) or []
+        except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+            logger.warning(f"{self.plugin_name} 取消订阅时查询失败：{err}")
+            return {"success": False, "message": f"查询订阅失败：{err}"}
+
+        # 可选按季收窄：同一部剧存在整季订阅时，面板给得出季就只删那一季
+        season = data.get("season")
+        if isinstance(season, int):
+            matched = [item for item in records if getattr(item, "season", None) == season]
+            if matched:
+                records = matched
+        if not records:
+            return {"success": False, "message": "未找到该作品的订阅（可能已被删除）"}
+
+        removed = 0
+        failures: List[str] = []
+        for record in records:
+            sid = getattr(record, "id", None)
+            if sid is None:  # pragma: no cover - 宿主记录必带主键
+                continue
+            try:
+                oper.delete(int(sid))
+                removed += 1
+            except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+                failures.append(str(err))
+        if not removed:
+            detail = failures[0] if failures else "未知原因"
+            return {"success": False, "message": f"取消订阅失败：{detail}"}
+
+        title = str(data.get("title") or "").strip() or media_id
+        logger.info(f"{self.plugin_name} 已取消订阅：{title}（{removed} 条）")
+        return {
+            "success": True,
+            "message": f"已取消订阅「{title}」",
+            "data": {"removed": removed},
+        }
+
     def api_ignore(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """忽略一部作品：面板不再展示，自动订阅也会跳过它。
 
@@ -1834,6 +2219,52 @@ class DoubanActorSubscribe(_PluginBase):
             "success": True,
             "message": f"已恢复「{title}」",
             "data": {"ignored_count": len(ignored)},
+        }
+
+    def api_remove_actor(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """从订阅演员中移除一位，并同步删除配置面板里的同一条目。
+
+        面板的作品墙按演员筛选，发现某位演员不再需要时不必再跑回配置页手工删一行。
+        「配置里写的那个字符串」才是这层身份的真身（``actor.key``），所以默认按它精确匹配；
+        若前端只能给出已解析的人物 ID，则用演员缓存里的 ID 兜底匹配。
+
+        移除后走与保存配置完全相同的收尾：``init_plugin`` 会检测到演员列表变更，
+        丢弃该演员的残留快照，并安排一次后台补刷新（不会在请求线程里同步抓豆瓣）。
+        """
+        data = payload if isinstance(payload, dict) else {}
+        target = str(data.get("actor") or "").strip()
+        if not target:
+            return {"success": False, "message": "缺少要移除的演员"}
+
+        entries = list(self._actor_entries)
+        remaining = [item for item in entries if item.strip() != target]
+        if len(remaining) == len(entries):
+            # 兜底：允许只给出已解析的人物 ID（或作品组的 key 就是人物 ID 的情况）
+            actor_id = str(data.get("actor_id") or "").strip()
+            if actor_id:
+                cache = self._load_actor_cache()
+                remaining = [
+                    item
+                    for item in entries
+                    if str((cache.get(item) or {}).get("id") or "").strip() != actor_id
+                ]
+        if len(remaining) == len(entries):
+            return {"success": False, "message": f"配置里已没有演员「{target}」"}
+
+        merged = {**self._config_snapshot(), "actors": "\n".join(remaining)}
+        # 运行时状态不落盘（与 api_update_config 保持一致）
+        for key in ("run_count", "pending_refresh", "refreshing", "douban_cookie_source", "douban_cookie_hint"):
+            merged.pop(key, None)
+        if not self.update_config(merged):
+            return {"success": False, "message": "配置持久化失败"}
+        self.init_plugin(merged)
+
+        display = str(data.get("name") or "").strip() or target
+        logger.info(f"{self.plugin_name} 已移除演员：{display}（剩余 {len(remaining)} 位）")
+        return {
+            "success": True,
+            "message": f"已移除演员「{display}」，配置里的同名条目也已同步删除",
+            "data": self.get_works_payload(),
         }
 
     def api_clear(self) -> Dict[str, Any]:
@@ -1948,6 +2379,7 @@ class DoubanActorSubscribe(_PluginBase):
             "auto_types": "电影,电视剧",
             "auto_max_per_run": 5,
             "subscribe_save_path": "",
+            "subscribe_downloader": "",
             "subscribe_sites": [],
             "douban_cookie": "",
             "onlyonce": False,
