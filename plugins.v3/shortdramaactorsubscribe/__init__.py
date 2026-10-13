@@ -211,6 +211,56 @@ def _clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+# ── 失败原因归一：决定「面板怎么展示」，而不是「有没有失败」 ──
+#
+# 演员作品解析失败绝大多数是**临时的**：豆瓣登录态过期、限流、网络抖动 ——
+# 插件每轮都会重试，所以不该在面板上逐条铺错误（用户明确要求「等待重试」即可）。
+# 只有「豆瓣确实没有影视条目」是稳定结果，重试也不会变，按中性文案说明。
+_DOUBAN_AUTH_MARKERS = ("Cookie 已失效", "要求登录", "need_login")
+_DOUBAN_RATE_MARKERS = ("限流", "稍后会自动重试")
+_DOUBAN_EMPTY_MARKERS = ("没有「影视」作品集", "没有可解析的影视条目", "人物详情为空")
+
+
+def classify_error(message: str) -> str:
+    """把一条失败原因归一成原因码（可单测）。
+
+    - ``douban_auth`` / ``douban_rate``：临时性失败 → 等下一轮自动重试，不必打扰用户
+    - ``douban_empty``：豆瓣确实没有影视条目 → 稳定结果，重试无意义
+    - ``tmdb`` / ``other``：其余来源
+    """
+    text = _clean_text(message)
+    if any(marker in text for marker in _DOUBAN_AUTH_MARKERS):
+        return "douban_auth"
+    if any(marker in text for marker in _DOUBAN_RATE_MARKERS):
+        return "douban_rate"
+    if any(marker in text for marker in _DOUBAN_EMPTY_MARKERS):
+        return "douban_empty"
+    if text.startswith("TMDB"):
+        return "tmdb"
+    return "other"
+
+
+def record_state(record: Dict[str, Any]) -> str:
+    """把一条演员快照归一成展示状态（可单测）。
+
+    - ``""``：正常（拿到了作品）
+    - ``waiting``：本轮没有作品且原因是临时的（登录态 / 限流 / 未知异常）
+      → 面板只给一句「等待自动重试」
+    - ``empty``：本轮没有作品，原因是稳定的（豆瓣确无影视条目、TMDB 未配置）
+      → 中性说明，不是故障，重试也无意义
+
+    临时性优先：只要有一条临时原因，就按「会自己好」处理。
+    """
+    if record.get("works"):
+        return ""
+    kinds = {classify_error(item) for item in (record.get("errors") or [])}
+    if kinds & {"douban_auth", "douban_rate", "other"}:
+        return "waiting"
+    if kinds & {"douban_empty", "tmdb"}:
+        return "empty"
+    return "waiting"
+
+
 def _to_int(value: Any) -> int:
     """宽松整数转换，失败返回 0（用于做种数等站点字段）。"""
     try:
@@ -1349,6 +1399,8 @@ class ShortDramaActorSubscribe(_PluginBase):
     _sidebar_nav = True
     # 同一进程内的重入保护：定时任务与手动触发可能撞在一起
     _lock = threading.Lock()
+    # 豆瓣登录态短路标志（类属性兜底：单测用 object.__new__ 跳过 __init__ 时也能读到）
+    _douban_blocked = False
 
     def __init__(self) -> None:
         super().__init__()
@@ -1357,6 +1409,9 @@ class ShortDramaActorSubscribe(_PluginBase):
         # CookieCloud 取数的进程内缓存（见 _resolve_douban_cookie）
         self._cookie_cache = ""
         self._cookie_cache_at = 0.0
+        # 本轮已判定豆瓣登录态失效（见 _discover_actor）：置位后同一轮内的后续演员
+        # 不再逐个去撞豆瓣，直接复用同一原因，等下一轮自动重试
+        self._douban_blocked = False
 
     # ── 生命周期 ──
 
@@ -2542,18 +2597,27 @@ class ShortDramaActorSubscribe(_PluginBase):
             record["tmdb_id"] = str(existing.get("tmdb_id") or "")
             record["name"] = str(existing.get("name") or key)
 
-        douban = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
         person_id = record["douban_id"] or self._extract_person_id(key)
-        if not person_id:
-            matches = douban.search_person(key)
-            if matches:
-                person_id = matches[0]["id"]
-                record["name"] = matches[0].get("name") or key
-            elif douban.last_error:
-                record["errors"].append(f"豆瓣：{douban.failure_hint()}")
-        if person_id:
-            record["douban_id"] = person_id
-            works.extend(self._douban_works(douban, person_id, record))
+        person_id = person_id or ""
+        if self._douban_blocked:
+            # 同一轮内已有演员确认豆瓣登录态失效：剩下的不再逐个去撞（省配额、省日志），
+            # 直接复用同一原因，等下一轮（CookieCloud 更新后）自动重试。
+            record["errors"].append(f"豆瓣：{_COOKIE_EXPIRED_HINT}")
+        else:
+            douban = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
+            if not person_id:
+                matches = douban.search_person(key)
+                if matches:
+                    person_id = matches[0]["id"]
+                    record["name"] = matches[0].get("name") or key
+                elif douban.last_error:
+                    record["errors"].append(f"豆瓣：{douban.failure_hint()}")
+            if person_id:
+                record["douban_id"] = person_id
+                works.extend(self._douban_works(douban, person_id, record))
+            # 豆瓣明确要求登录 ⇒ 本轮后续演员大概率同样失败，直接短路
+            if douban.last_need_login:
+                self._douban_blocked = True
 
         # ── TMDB ──
         tmdb = _TmdbClient(proxy=self._proxy)
@@ -2572,6 +2636,9 @@ class ShortDramaActorSubscribe(_PluginBase):
             works.extend(credits)
 
         record["works"] = self._merge_works(works)
+        # 展示状态：面板据此决定是「安静等待自动重试」还是「中性说明豆瓣确无影视条目」，
+        # 而不是把 errors 逐条铺给用户（临时性失败插件每轮都会自己重试）。
+        record["state"] = record_state(record)
         return record
 
     @staticmethod
@@ -2687,22 +2754,53 @@ class ShortDramaActorSubscribe(_PluginBase):
         """刷新全部演员的作品快照，并汇总出候选作品列表。"""
         snapshot: Dict[str, Any] = {}
         candidates: Dict[str, Dict[str, Any]] = {}
+        # 每轮重置豆瓣短路标志（上一轮登录态失效不代表这一轮还失效）
+        self._douban_blocked = False
         for key in self._actors:
             try:
                 record = self._discover_actor(key)
             except Exception as err:  # noqa: BLE001 - 单个演员失败不影响其它演员
                 logger.error(f"{PLUGIN_NAME} 解析演员「{key}」失败：{err}")
                 record = {"key": key, "name": key, "works": [], "errors": [str(err)]}
+            record["state"] = record_state(record)
             record["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             snapshot[key] = record
             for work in record.get("works") or []:
                 work = dict(work)
                 work["actor"] = record.get("name") or key
                 candidates[ledger_key(work.get("title") or "", work.get("year") or "")] = work
-            if record.get("errors"):
-                logger.warning(f"{PLUGIN_NAME} 演员「{key}」部分来源失败：{record['errors']}")
+        # 失败提示只在日志里**汇总一条**：解析失败大多是临时的（豆瓣登录态失效 / 限流），
+        # 每一轮都会自动重试，逐条 warning 只会刷屏（用户明确要求「等待重试」即可）。
+        self._log_actor_states(snapshot)
         self.save_data(_DATA_ACTORS, snapshot)
         return list(candidates.values())
+
+    @staticmethod
+    def _log_actor_states(snapshot: Dict[str, Any]) -> None:
+        """把整轮演员状态汇总成最多两条日志（等待重试 / 豆瓣确无作品）。"""
+        waiting: List[str] = []
+        expired = False
+        empty: List[str] = []
+        for key, record in snapshot.items():
+            name = str(record.get("name") or key)
+            state = record.get("state")
+            if state == "waiting":
+                waiting.append(name)
+                kinds = {classify_error(item) for item in (record.get("errors") or [])}
+                if "douban_auth" in kinds:
+                    expired = True
+            elif state == "empty":
+                empty.append(name)
+        if waiting:
+            reason = _COOKIE_EXPIRED_HINT if expired else _RATE_LIMIT_HINT
+            logger.info(
+                f"{PLUGIN_NAME} {len(waiting)} 位演员本轮未取到作品（{reason}），"
+                f"等待下一轮自动重试：{'、'.join(waiting)}"
+            )
+        if empty:
+            logger.info(
+                f"{PLUGIN_NAME} {len(empty)} 位演员在豆瓣没有影视作品集（非故障，不再重试）：{'、'.join(empty)}"
+            )
 
     # ── 主流程 ──
 

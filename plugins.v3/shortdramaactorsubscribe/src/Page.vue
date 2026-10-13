@@ -157,17 +157,22 @@
             :key="row.key"
             size="small"
             variant="tonal"
-            :color="row.errors.length ? 'warning' : undefined"
             :title="actorTitle(row)"
           >
             {{ row.name }}
             <span v-if="row.works.length" class="sdas-dim ml-1">{{ row.works.length }}</span>
-            <v-icon v-if="row.errors.length" icon="mdi-alert-circle-outline" size="14" class="ml-1" />
+            <!-- 等待重试只留一个很轻的沙漏标记（完整原因在 tooltip 里），不再用警示色 -->
+            <v-icon
+              v-else-if="row.state === 'waiting'"
+              icon="mdi-timer-sand"
+              size="13"
+              class="ml-1 sdas-retry-icon"
+            />
           </v-chip>
         </div>
-        <div v-for="row in actorRows.filter((item) => item.errors.length)" :key="`err-${row.key}`" class="text-caption sdas-dim mt-1">
-          · {{ row.name }}：{{ row.errors.join('；') }}
-        </div>
+        <!-- 失败不再逐条铺开：临时性失败（豆瓣登录态失效 / 限流）插件每轮都会自动重试，
+             这里只给一句汇总；「豆瓣没有影视作品集」是稳定结果、不是故障，另算一类。 -->
+        <div v-if="actorsHint" class="text-caption sdas-dim mt-2">{{ actorsHint }}</div>
       </div>
     </v-card>
 
@@ -701,11 +706,44 @@ const actorRows = computed(() => {
       name: record?.name || key,
       works: record?.works || [],
       errors: record?.errors || [],
+      /** 后端归一的状态：''（正常）/ 'waiting'（等自动重试）/ 'empty'（豆瓣确无影视条目） */
+      state: record?.state || '',
       ids: [record?.douban_id ? `豆瓣 ${record.douban_id}` : '', record?.tmdb_id ? `TMDB ${record.tmdb_id}` : '']
         .filter(Boolean)
         .join('｜'),
     }
   })
+})
+
+/**
+ * 是否为「豆瓣登录态失效」类原因（与后端 `classify_error` 的口径一致）。
+ * 只用来决定汇总文案是「等登录态恢复」还是「等下一轮重试」。
+ */
+function isAuthError(message: string): boolean {
+  const text = String(message || '')
+  return ['Cookie 已失效', '要求登录', 'need_login'].some((marker) => text.includes(marker))
+}
+
+/** 等待自动重试的演员（临时性失败：登录态失效 / 限流 / 网络） */
+const waitingActors = computed(() => actorRows.value.filter((row) => row.state === 'waiting'))
+/** 豆瓣确无影视条目的演员（稳定结果，重试也不会变，不是故障） */
+const emptyActors = computed(() => actorRows.value.filter((row) => row.state === 'empty'))
+
+/** 演员区的一句汇总：只在真有需要说明的情况出现，避免逐条刷错误打扰用户 */
+const actorsHint = computed(() => {
+  const parts: string[] = []
+  if (waitingActors.value.length) {
+    const expired = waitingActors.value.some((row) => row.errors.some(isAuthError))
+    parts.push(
+      expired
+        ? `${waitingActors.value.length} 位演员等待豆瓣登录态恢复，将自动重试（重新登录豆瓣并同步 CookieCloud 后恢复）`
+        : `${waitingActors.value.length} 位演员本轮未取到作品，将在下一轮自动重试`
+    )
+  }
+  if (emptyActors.value.length) {
+    parts.push(`${emptyActors.value.length} 位演员在豆瓣没有影视作品集`)
+  }
+  return parts.join('；')
 })
 
 /** 站点 ID → 站点名（配置摘要展示用） */
@@ -1036,6 +1074,12 @@ void API_BASE
 .sdas-switch {
   flex: 0 0 auto;
   margin-right: 4px;
+}
+
+/* 演员 chip 上的「等待重试」标记：刻意做得比正文更淡，
+   失败原因收进 tooltip —— 临时性失败每轮都会重试，不需要靠颜色报警。 */
+.sdas-retry-icon {
+  opacity: 0.55;
 }
 
 .sdas-filter {

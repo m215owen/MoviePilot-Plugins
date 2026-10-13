@@ -117,8 +117,16 @@ export interface ActorRecord {
   tmdb_id?: string
   /** 作品列表 */
   works?: ActorWork[]
-  /** 解析错误（豆瓣限流 / TMDB 未配置等） */
+  /** 解析错误（豆瓣限流 / TMDB 未配置等）。后端仍会给全量原因，
+   *  面板只在 tooltip 里展示，不再逐条铺开 —— 临时性失败等下一轮自动重试。 */
   errors?: string[]
+  /**
+   * 后端归一出来的展示状态：
+   * - 缺省 / 空串：正常（拿到了作品）
+   * - `waiting`：本轮没拿到作品且原因是临时的 → 等下一轮自动重试
+   * - `empty`：豆瓣确实没有影视条目（稳定结果，非故障）
+   */
+  state?: string
   /** 上次解析时间 */
   time?: string
 }
