@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import ConfigPanel from './__federation_expose_Config--yO8VYI2.js';
+import ConfigPanel from './__federation_expose_Config-PiCSsvVH.js';
 import { p as proxyImage, m as mediaPageUrl, c as resourceSearchUrl, _ as _export_sfc, f as formatTime, d as formatCooldown, r as resolveApi, e as fetchWorks, P as PLUGIN_ID, g as refreshWorks, s as subscribeWork, a as fetchStatus, h as fetchConfig, b as runOnce, o as organizeNow, i as saveConfig, j as removeLedgerEntry, k as clearLedger, l as clearCooldown } from './_plugin-vue_export-helper-BPSYN_be.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
@@ -278,7 +278,7 @@ const _hoisted_9 = {
   key: 0,
   class: "text-caption sdas-dim mt-2"
 };
-const _hoisted_10 = { class: "text-caption sdas-dim" };
+const _hoisted_10 = ["title"];
 const _hoisted_11 = { class: "sdas-actor-chips" };
 const _hoisted_12 = { class: "ml-1 sdas-dim" };
 const _hoisted_13 = {
@@ -394,6 +394,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     const settingsNotice = ref("");
     const actorsExpanded = ref(false);
     const worksSummary = computed(() => works.value.summary);
+    const snapshotHours = computed(() => Number(remoteConfig.value?.snapshot_hours) || 24);
+    const retryMinutes = computed(() => Number(remoteConfig.value?.retry_minutes) || 20);
+    const snapshotHint = computed(
+      () => `演员作品快照每 ${snapshotHours.value} 小时整体刷新一次（轮询期间直接用缓存，避免频繁请求豆瓣）；解析失败的演员 ${retryMinutes.value} 分钟后自动重试。点「刷新作品」可立即重新拉取。`
+    );
     const actorFilters = computed(
       () => Array.from(new Set(works.value.items.map((item) => String(item.actor || "")).filter(Boolean))).map(
         (name) => ({
@@ -541,6 +546,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           { label: "运行间隔", value: `${config.interval_hours || 6} 小时轮询` }
         );
       }
+      rows.push({
+        label: "快照刷新",
+        value: `${config.snapshot_hours || 24} 小时整体刷新一次，失败 ${config.retry_minutes || 20} 分钟后重试`
+      });
       rows.push({ label: "豆瓣登录态", value: cookieLabel(config.douban_cookie_source) });
       return rows;
     });
@@ -1004,14 +1013,17 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   _: 1
                 })) : _createCommentVNode("", true),
                 _createVNode(_component_v_spacer),
-                _createElementVNode("span", _hoisted_10, " 快照 " + _toDisplayString(works.value.refreshed_at ? _unref(formatTime)(works.value.refreshed_at) : "未刷新"), 1),
+                _createElementVNode("span", {
+                  class: "text-caption sdas-dim",
+                  title: snapshotHint.value
+                }, " 快照 " + _toDisplayString(works.value.refreshed_at ? _unref(formatTime)(works.value.refreshed_at) : "未刷新"), 9, _hoisted_10),
                 _createVNode(_component_v_btn, {
                   size: "small",
                   variant: "tonal",
                   color: "primary",
                   "prepend-icon": "mdi-cloud-refresh-outline",
                   loading: refreshingWorks.value,
-                  title: "只去 TMDB / 豆瓣 拉取演员作品，不触发下载",
+                  title: "立即重新拉取演员作品（强制重解析，忽略快照缓存；不触发下载）",
                   onClick: doRefreshWorks
                 }, {
                   default: _withCtx(() => [..._cache[26] || (_cache[26] = [
@@ -1449,6 +1461,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Panel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-e6d74557"]]);
+const Panel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-23b7842e"]]);
 
 export { Panel as default };

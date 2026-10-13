@@ -27,6 +27,10 @@ export interface PluginConfig {
   transfer_type: string
   /** 订阅轮询间隔（小时） */
   interval_hours: number
+  /** 演员作品快照的整体刷新间隔（小时，默认 24）：期间轮询直接用缓存，省豆瓣额度 */
+  snapshot_hours: number
+  /** 解析失败后的重试间隔（分钟，默认 20）：登录态恢复后能很快自愈 */
+  retry_minutes: number
   /** 是否启用整理入库 */
   organize_enabled: boolean
   /** 整理扫描间隔（分钟） */

@@ -59,6 +59,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       library_path: "",
       transfer_type: "link",
       interval_hours: 6,
+      snapshot_hours: 24,
+      retry_minutes: 20,
       organize_enabled: false,
       organize_interval_minutes: 30,
       notify: true,
@@ -284,7 +286,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 icon: "mdi-movie-star-outline",
                 class: "mr-2"
               }),
-              _cache[19] || (_cache[19] = _createElementVNode("h3", { class: "ma-0" }, "短剧演员订阅 · 设置", -1)),
+              _cache[21] || (_cache[21] = _createElementVNode("h3", { class: "ma-0" }, "短剧演员订阅 · 设置", -1)),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_btn, {
                 icon: "mdi-close",
@@ -300,7 +302,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               density: "compact",
               class: "mb-3"
             }, {
-              default: _withCtx(() => [..._cache[20] || (_cache[20] = [
+              default: _withCtx(() => [..._cache[22] || (_cache[22] = [
                 _createTextVNode(" 本插件", -1),
                 _createElementVNode("b", null, "不走宿主订阅系统", -1),
                 _createTextVNode("：短剧在 TMDB / 豆瓣 大量没有条目，宿主识别器建不起媒体身份。 这里改为「剧名 → 站点搜索」直达资源：发现源合并 TMDB 与豆瓣，同名以年份消歧 （年份缺失放行），同剧多资源按 做种数 → 体积 → 分辨率 择优下一条。 ", -1)
@@ -383,7 +385,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[21] || (_cache[21] = _createTextVNode(" 订阅的演员 ", -1)),
+              _cache[23] || (_cache[23] = _createTextVNode(" 订阅的演员 ", -1)),
               _createElementVNode("span", _hoisted_4, "共 " + _toDisplayString(actorItems.value.length) + " 位", 1)
             ]),
             _createElementVNode("div", _hoisted_5, [
@@ -405,7 +407,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 disabled: !actorDraft.value.trim(),
                 onClick: addActorDraft
               }, {
-                default: _withCtx(() => [..._cache[22] || (_cache[22] = [
+                default: _withCtx(() => [..._cache[24] || (_cache[24] = [
                   _createTextVNode(" 添加 ", -1)
                 ])]),
                 _: 1
@@ -422,7 +424,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               placeholder: "多位演员用逗号分隔，例如：马秋元，王格格，申浩男",
               class: "sdas-actor-textarea mb-2"
             }, null, 8, ["modelValue"]),
-            _cache[35] || (_cache[35] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 填「人物 ID」可跳过按名称搜索（豆瓣搜索额度很紧，演员多时优先填 ID）。 发现源同时查 TMDB 与豆瓣，两边结果按剧名 + 年份并集。 ", -1)),
+            _cache[37] || (_cache[37] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 填「人物 ID」可跳过按名称搜索（豆瓣搜索额度很紧，演员多时优先填 ID）。 发现源同时查 TMDB 与豆瓣，两边结果按剧名 + 年份并集。 ", -1)),
             _createVNode(_component_v_text_field, {
               modelValue: searchName.value,
               "onUpdate:modelValue": _cache[7] || (_cache[7] = ($event) => searchName.value = $event),
@@ -440,7 +442,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   loading: searching.value,
                   onClick: doSearchActor
                 }, {
-                  default: _withCtx(() => [..._cache[23] || (_cache[23] = [
+                  default: _withCtx(() => [..._cache[25] || (_cache[25] = [
                     _createTextVNode(" 搜索 ", -1)
                   ])]),
                   _: 1
@@ -492,7 +494,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       class: "ml-2",
                       onClick: ($event) => appendActor(item.id)
                     }, {
-                      default: _withCtx(() => [..._cache[24] || (_cache[24] = [
+                      default: _withCtx(() => [..._cache[26] || (_cache[26] = [
                         _createTextVNode(" 添加 ID ", -1)
                       ])]),
                       _: 1
@@ -509,7 +511,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[25] || (_cache[25] = _createTextVNode(" 搜索范围与下载 ", -1))
+              _cache[27] || (_cache[27] = _createTextVNode(" 搜索范围与下载 ", -1))
             ]),
             _createVNode(_component_v_row, { dense: "" }, {
               default: _withCtx(() => [
@@ -552,7 +554,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   _: 1
                 }),
                 _createVNode(_component_v_col, { cols: "12" }, {
-                  default: _withCtx(() => [..._cache[26] || (_cache[26] = [
+                  default: _withCtx(() => [..._cache[28] || (_cache[28] = [
                     _createElementVNode("div", { class: "text-caption sdas-dim" }, " 下载器与下载路径的候选来自宿主「系统设置 → 下载器 / 目录管理」， 默认值已按系统配置预填，无需手抄路径。 ", -1)
                   ])]),
                   _: 1
@@ -581,7 +583,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   size: "18",
                   class: "mr-1"
                 }),
-                _cache[27] || (_cache[27] = _createTextVNode(" 下载与入库 ", -1))
+                _cache[29] || (_cache[29] = _createTextVNode(" 下载与入库 ", -1))
               ]),
               shortDramaDirectory.value ? (_openBlock(), _createBlock(_component_v_chip, {
                 key: 0,
@@ -589,7 +591,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 variant: "tonal",
                 color: "primary"
               }, {
-                default: _withCtx(() => [..._cache[28] || (_cache[28] = [
+                default: _withCtx(() => [..._cache[30] || (_cache[30] = [
                   _createTextVNode(" 检测到系统「短剧」目录 ", -1)
                 ])]),
                 _: 1
@@ -602,7 +604,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 disabled: !options.defaults.directory,
                 onClick: applySystemDefaults
               }, {
-                default: _withCtx(() => [..._cache[29] || (_cache[29] = [
+                default: _withCtx(() => [..._cache[31] || (_cache[31] = [
                   _createTextVNode(" 采用系统推荐路径 ", -1)
                 ])]),
                 _: 1
@@ -616,7 +618,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               "hide-details": "",
               density: "compact"
             }, null, 8, ["modelValue"]),
-            _cache[36] || (_cache[36] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, [
+            _cache[38] || (_cache[38] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, [
               _createTextVNode(" 默认"),
               _createElementVNode("b", null, "关闭"),
               _createTextVNode("：本插件只负责「发现 → 下载」，入库交给外部整理器 （如 shortdramaorganizer）。同一台机器上跑两个整理器会重复入库；确实没有外部整理器时再打开。 ")
@@ -684,6 +686,46 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   ]),
                   _: 1
                 }),
+                _createVNode(_component_v_col, {
+                  cols: "6",
+                  md: "4"
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_text_field, {
+                      modelValue: local.snapshot_hours,
+                      "onUpdate:modelValue": _cache[15] || (_cache[15] = ($event) => local.snapshot_hours = $event),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "1",
+                      max: "720",
+                      label: "快照刷新间隔（小时）",
+                      density: "comfortable",
+                      hint: "演员作品清单多久重新拉一次；期间轮询直接用缓存，避免频繁请求豆瓣",
+                      "persistent-hint": ""
+                    }, null, 8, ["modelValue"])
+                  ]),
+                  _: 1
+                }),
+                _createVNode(_component_v_col, {
+                  cols: "6",
+                  md: "4"
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_text_field, {
+                      modelValue: local.retry_minutes,
+                      "onUpdate:modelValue": _cache[16] || (_cache[16] = ($event) => local.retry_minutes = $event),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "1",
+                      max: "1440",
+                      label: "失败重试间隔（分钟）",
+                      density: "comfortable",
+                      hint: "解析失败的演员多久后单独重试一次（豆瓣登录态恢复后能很快自愈）",
+                      "persistent-hint": ""
+                    }, null, 8, ["modelValue"])
+                  ]),
+                  _: 1
+                }),
                 local.organize_enabled ? (_openBlock(), _createBlock(_component_v_col, {
                   key: 1,
                   cols: "6",
@@ -692,7 +734,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_select, {
                       modelValue: local.transfer_type,
-                      "onUpdate:modelValue": _cache[15] || (_cache[15] = ($event) => local.transfer_type = $event),
+                      "onUpdate:modelValue": _cache[17] || (_cache[17] = ($event) => local.transfer_type = $event),
                       items: options.transfer_types,
                       label: "整理方式",
                       density: "comfortable"
@@ -708,7 +750,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_text_field, {
                       modelValue: local.organize_interval_minutes,
-                      "onUpdate:modelValue": _cache[16] || (_cache[16] = ($event) => local.organize_interval_minutes = $event),
+                      "onUpdate:modelValue": _cache[18] || (_cache[18] = ($event) => local.organize_interval_minutes = $event),
                       modelModifiers: { number: true },
                       type: "number",
                       min: "5",
@@ -729,7 +771,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[30] || (_cache[30] = _createTextVNode(" 豆瓣 Cookie（提高搜索额度） ", -1))
+              _cache[32] || (_cache[32] = _createTextVNode(" 豆瓣 Cookie（提高搜索额度） ", -1))
             ]),
             _createVNode(_component_v_alert, {
               type: "info",
@@ -737,7 +779,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               density: "compact",
               class: "mb-2"
             }, {
-              default: _withCtx(() => [..._cache[31] || (_cache[31] = [
+              default: _withCtx(() => [..._cache[33] || (_cache[33] = [
                 _createTextVNode(" 默认", -1),
                 _createElementVNode("b", null, "自动", -1),
                 _createTextVNode("从宿主「系统设置 → CookieCloud」读取豆瓣登录态，这里无需填写。 仅当 CookieCloud 没同步豆瓣、或想临时换账号时才手工粘贴覆盖。 ", -1)
@@ -746,7 +788,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             }),
             _createVNode(_component_v_textarea, {
               modelValue: local.douban_cookie,
-              "onUpdate:modelValue": _cache[17] || (_cache[17] = ($event) => local.douban_cookie = $event),
+              "onUpdate:modelValue": _cache[19] || (_cache[19] = ($event) => local.douban_cookie = $event),
               label: "豆瓣 Cookie（留空 = 自动用宿主 CookieCloud）",
               placeholder: "bid=xxx; dbcl2=xxx; ck=xxx",
               rows: "2",
@@ -762,22 +804,22 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 loading: saving.value,
                 onClick: saveConfig$1
               }, {
-                default: _withCtx(() => [..._cache[32] || (_cache[32] = [
+                default: _withCtx(() => [..._cache[34] || (_cache[34] = [
                   _createTextVNode("保存配置", -1)
                 ])]),
                 _: 1
               }, 8, ["loading"]),
               _createVNode(_component_v_btn, {
                 variant: "text",
-                onClick: _cache[18] || (_cache[18] = ($event) => emit("switch"))
+                onClick: _cache[20] || (_cache[20] = ($event) => emit("switch"))
               }, {
-                default: _withCtx(() => [..._cache[33] || (_cache[33] = [
+                default: _withCtx(() => [..._cache[35] || (_cache[35] = [
                   _createTextVNode("查看详情", -1)
                 ])]),
                 _: 1
               }),
               _createVNode(_component_v_spacer),
-              _cache[34] || (_cache[34] = _createElementVNode("span", { class: "text-caption sdas-dim" }, "保存后立即生效（后台会重新初始化插件）", -1))
+              _cache[36] || (_cache[36] = _createElementVNode("span", { class: "text-caption sdas-dim" }, "保存后立即生效（后台会重新初始化插件）", -1))
             ])
           ]),
           _: 1
@@ -787,6 +829,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const ConfigPanel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-166b336a"]]);
+const ConfigPanel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-6b7fe034"]]);
 
 export { ConfigPanel as default };

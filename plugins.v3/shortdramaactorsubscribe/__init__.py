@@ -115,6 +115,18 @@ _DATA_MISS = "misses"
 # 冷却期内直接跳过；已下载的剧由账本负责去重，冷却表只覆盖「搜过但没下到」的情形。
 _MISS_COOLDOWN_HOURS = 24
 
+# 演员作品快照的刷新节奏（用户 2026-10-14 定稿：快照一天刷一次、失败 20 分钟后重试）。
+#
+# · 快照**整体一天刷一次**：豆瓣匿名额度极紧（约 5 次搜索即 403），轮询每 6 小时把
+#   全部演员重解析一遍纯属浪费，还极易撞限流；同一份快照反复使用不影响订阅语义 ——
+#   新作品最多晚一天被发现，而站点的未命中冷却本来就是 24 小时。
+# · 「上一轮解析失败」的演员**20 分钟后单独重试**：登录态失效 / 限流是可自愈的，
+#   等满一天才恢复体验太差，所以这类记录按更短的间隔单独重试。
+_DEFAULT_SNAPSHOT_HOURS = 24
+_DEFAULT_RETRY_MINUTES = 20
+# 快照时间戳格式（与 `time` 字段一致）
+_STAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 # 一次性任务 ID
 _ONCE_JOB_ID = "refresh_once"
 # 只刷新作品快照（不下载）的一次性任务 ID，与上面分开以免互相覆盖
@@ -259,6 +271,70 @@ def record_state(record: Dict[str, Any]) -> str:
     if kinds & {"douban_empty", "tmdb"}:
         return "empty"
     return "waiting"
+
+
+def parse_stamp(value: Any) -> Optional[datetime]:
+    """解析快照里的时间戳（``YYYY-MM-DD HH:MM:SS``）；不可解析返回 None。"""
+    text = _clean_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, _STAMP_FORMAT)
+    except ValueError:
+        return None
+
+
+def snapshot_age_seconds(record: Dict[str, Any], now: Optional[datetime] = None) -> Optional[float]:
+    """一条演员快照距今多少秒；缺时间戳 / 格式不对返回 None（视为「该刷新」）。"""
+    parsed = parse_stamp((record or {}).get("time"))
+    if parsed is None:
+        return None
+    return max(0.0, ((now or datetime.now()) - parsed).total_seconds())
+
+
+def record_needs_refresh(
+    record: Dict[str, Any],
+    ttl_seconds: float,
+    retry_seconds: float,
+    now: Optional[datetime] = None,
+) -> bool:
+    """一条演员快照是否到了该重新解析的时间点（可单测）。
+
+    - 没有记录 / 时间戳不可解析 → 要（新加的演员立刻解析）
+    - ``waiting``（临时性失败：登录态失效 / 限流）→ 按**失败重试间隔**判定
+    - 其余（正常拿到作品、``empty``）→ 按**快照刷新间隔**判定
+
+    ⚠️ 返回 True 只代表「时间到了」，不代表一定会成功；失败会被重新写成 ``waiting``
+    并继续按重试间隔等下一轮，因此不会出现「失败一次就锁一天」。
+    """
+    if not isinstance(record, dict):
+        return True
+    age = snapshot_age_seconds(record, now)
+    if age is None:
+        return True
+    state = _clean_text(record.get("state"))
+    if state == "waiting":
+        return age >= retry_seconds
+    if not state and not record.get("works"):
+        # 老快照（还没有 state 字段）里没作品的记录：分不清是「失败」还是「确无作品」，
+        # 按可重试处理 —— 重解析一次就会写上正确的 state，之后自然归位。
+        return age >= retry_seconds
+    return age >= ttl_seconds
+
+
+def is_retry_candidate(record: Dict[str, Any]) -> bool:
+    """该记录是否属于「解析失败、值得按短间隔重试」的一类（可单测）。
+
+    - 还没有记录（新加的演员）→ 是：立刻补上，不必等下一轮 6 小时的轮询
+    - ``state == "waiting"``（登录态失效 / 限流）→ 是
+    - 老快照（还没有 ``state``）里没作品的记录 → 是（重解析一次就会写上正确的 state）
+    - ``empty``（豆瓣确无影视条目）或已有作品 → 否：这两类走快照的整体刷新节奏
+    """
+    if not isinstance(record, dict):
+        return True
+    if _clean_text(record.get("state")) == "waiting":
+        return True
+    return not record.get("state") and not record.get("works")
 
 
 def _to_int(value: Any) -> int:
@@ -1387,6 +1463,9 @@ class ShortDramaActorSubscribe(_PluginBase):
     _library_path = ""
     _transfer_type = "link"
     _interval_hours = 6
+    # 快照整体刷新间隔（小时）与解析失败重试间隔（分钟）：默认一天 / 20 分钟
+    _snapshot_hours = _DEFAULT_SNAPSHOT_HOURS
+    _retry_minutes = _DEFAULT_RETRY_MINUTES
     # ⚠️ 整理入库默认**关闭**：用户已另配外部整理器（shortdramaorganizer）监听同一个
     # 下载目录并按文件事件入库，两个整理器同时工作会重复入库。本插件只负责「发现 → 下载」，
     # 入库交给外部整理器；需要本插件自己整理时再把开关打开（代码与验收用例都保留）。
@@ -1430,6 +1509,13 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._library_path = config_text(config.get("library_path"))
         self._transfer_type = config_text(config.get("transfer_type")) or "link"
         self._interval_hours = max(1, _to_int(config.get("interval_hours")) or 6)
+        # 快照刷新间隔：默认一天（豆瓣额度紧）；失败重试默认 20 分钟（能自愈的失败不必等一天）
+        self._snapshot_hours = max(
+            1, _to_int(config.get("snapshot_hours")) or _DEFAULT_SNAPSHOT_HOURS
+        )
+        self._retry_minutes = max(
+            1, _to_int(config.get("retry_minutes")) or _DEFAULT_RETRY_MINUTES
+        )
         self._organize_enabled = bool(config.get("organize_enabled", False))
         self._organize_interval_minutes = max(5, _to_int(config.get("organize_interval_minutes")) or 30)
         self._notify = bool(config.get("notify", True))
@@ -1493,6 +1579,8 @@ class ShortDramaActorSubscribe(_PluginBase):
             "library_path": self._library_path,
             "transfer_type": self._transfer_type,
             "interval_hours": self._interval_hours,
+            "snapshot_hours": self._snapshot_hours,
+            "retry_minutes": self._retry_minutes,
             "organize_enabled": self._organize_enabled,
             "organize_interval_minutes": self._organize_interval_minutes,
             "notify": self._notify,
@@ -1516,6 +1604,8 @@ class ShortDramaActorSubscribe(_PluginBase):
             "library_path": "",
             "transfer_type": "link",
             "interval_hours": 6,
+            "snapshot_hours": _DEFAULT_SNAPSHOT_HOURS,
+            "retry_minutes": _DEFAULT_RETRY_MINUTES,
             "organize_enabled": False,
             "organize_interval_minutes": 30,
             "notify": True,
@@ -1610,7 +1700,16 @@ class ShortDramaActorSubscribe(_PluginBase):
     # ── 后台能力 ──
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """注册定时服务：订阅轮询；整理扫描仅在「启用整理入库」时注册。
+        """注册定时服务：订阅轮询 + 解析失败重试；整理扫描仅在「启用整理入库」时注册。
+
+        两个发现层服务的节奏刻意分开（用户定稿 2026-10-14）：
+
+        * **订阅轮询**（``interval_hours``，默认 6 小时）：完整一轮 = 发现 + 搜索 + 下载；
+          其中发现层只在快照到期（``snapshot_hours``，默认一天）时才真的去请求豆瓣 / TMDB，
+          其余轮次直接用缓存，因此轮询频繁也不会额外消耗豆瓣额度。
+        * **失败重试**（``retry_minutes``，默认 20 分钟）：只重解析上一轮失败的演员，
+          不搜索、不下载 —— 登录态 / 限流这类失败能很快自愈，不必等满一天。
+          没有到期的演员时完全静默（不写盘、不打日志、不碰网络）。
 
         整理默认关闭（入库交给外部整理器），此时**不注册**整理服务 ——
         既不会空转，也不会在日志里留下无意义的扫描记录。
@@ -1631,6 +1730,16 @@ class ShortDramaActorSubscribe(_PluginBase):
                     "name": f"{self.plugin_name}·订阅轮询",
                     "trigger": IntervalTrigger(hours=self._interval_hours),
                     "func": self.execute_task,
+                    "func_kwargs": {"trigger": "interval"},
+                }
+            )
+        if self._actors:
+            services.append(
+                {
+                    "id": f"{self.__class__.__name__}.Retry",
+                    "name": f"{self.plugin_name}·解析失败重试",
+                    "trigger": IntervalTrigger(minutes=self._retry_minutes),
+                    "func": self.retry_failed_actors,
                     "func_kwargs": {"trigger": "interval"},
                 }
             )
@@ -1809,6 +1918,14 @@ class ShortDramaActorSubscribe(_PluginBase):
         merged["library_path"] = config_text(merged.get("library_path"))
         merged["transfer_type"] = config_text(merged.get("transfer_type")) or "link"
         merged["interval_hours"] = max(1, _to_int(merged.get("interval_hours")) or 6)
+        # 兜底值必须与类属性 / _default_config 一致：payload 里缺这两个键时（旧前端、
+        # 或用户只改了一个开关就保存）不能被悄悄改成别的节奏
+        merged["snapshot_hours"] = max(
+            1, _to_int(merged.get("snapshot_hours")) or _DEFAULT_SNAPSHOT_HOURS
+        )
+        merged["retry_minutes"] = max(
+            1, _to_int(merged.get("retry_minutes")) or _DEFAULT_RETRY_MINUTES
+        )
         merged["organize_interval_minutes"] = max(5, _to_int(merged.get("organize_interval_minutes")) or 30)
         merged["max_works"] = min(10, max(1, _to_int(merged.get("max_works")) or 10))
         merged["douban_cookie"] = str(merged.get("douban_cookie") or "").strip()
@@ -2215,7 +2332,9 @@ class ShortDramaActorSubscribe(_PluginBase):
     def refresh_works_task(self, trigger: str = "manual") -> bool:
         """只跑发现层：刷新演员作品快照并落库，不触发任何下载。
 
-        与 ``execute_task`` 共用同一把锁，避免和整轮任务同时打豆瓣/TMDB。
+        用户点「刷新作品」就是要看最新的，因此**强制重解析**（``force=True``），
+        不受「快照一天刷一次」的缓存约束。与 ``execute_task`` 共用同一把锁，
+        避免和整轮任务同时打豆瓣/TMDB。
         """
         if not self.get_state() or not self._actors:
             return False
@@ -2224,7 +2343,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             return False
         self._running = True
         try:
-            candidates = self._refresh_actors()
+            candidates = self._refresh_actors(force=True)
             logger.info(f"{PLUGIN_NAME} 作品快照已刷新，共 {len(candidates)} 部候选")
             return True
         except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务挂掉
@@ -2750,30 +2869,140 @@ class ShortDramaActorSubscribe(_PluginBase):
                     current[field] = item[field]
         return list(merged.values())
 
-    def _refresh_actors(self) -> List[Dict[str, Any]]:
-        """刷新全部演员的作品快照，并汇总出候选作品列表。"""
-        snapshot: Dict[str, Any] = {}
+    # ── 发现层节奏 ──
+
+    def snapshot_ttl_seconds(self) -> float:
+        """快照整体刷新间隔（秒）。"""
+        return max(1, _to_int(self._snapshot_hours) or _DEFAULT_SNAPSHOT_HOURS) * 3600.0
+
+    def retry_seconds(self) -> float:
+        """解析失败后的重试间隔（秒）。"""
+        return max(1, _to_int(self._retry_minutes) or _DEFAULT_RETRY_MINUTES) * 60.0
+
+    def _due_actor_keys(self, cached: Dict[str, Any]) -> List[str]:
+        """当前到期待解析的演员（新加的 / 快照过期 / 失败已到重试点）。"""
+        ttl = self.snapshot_ttl_seconds()
+        retry = self.retry_seconds()
+        return [
+            key for key in self._actors if record_needs_refresh(cached.get(key), ttl, retry)
+        ]
+
+    @staticmethod
+    def _candidates_from(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """把快照摊平成候选作品列表（键与账本一致，后见覆盖先见）。"""
         candidates: Dict[str, Dict[str, Any]] = {}
+        for key, record in snapshot.items():
+            if not isinstance(record, dict):
+                continue
+            for work in record.get("works") or []:
+                work = dict(work)
+                work["actor"] = record.get("name") or key
+                candidates[ledger_key(work.get("title") or "", work.get("year") or "")] = work
+        return list(candidates.values())
+
+    def _refresh_actors(
+        self, force: bool = False, only: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """汇总候选作品；只重解析「到期」的演员，其余直接沿用缓存。
+
+        用户定的口径：快照**整体一天刷新一次**（``snapshot_hours``），只有「上一轮解析
+        失败」的演员会在 ``retry_minutes``（默认 20 分钟）后单独重试。这样正常状态下一天
+        只去豆瓣拉一次（额度极紧），失败又能在 20 分钟内自愈。
+
+        - ``force=True``（手动「刷新作品」/「立即运行」）无视缓存全部重解析；
+        - ``only=[…]`` 只重解析指定演员（失败重试任务用，避免顺手把整表刷一遍）。
+
+        全部命中缓存时**不写盘也不打日志** —— 定时轮询每轮都会走这里，静默是常态；
+        否则 20 分钟一次的重试任务会把「等待重试」那几条汇总日志刷满。
+        """
+        cached = {
+            key: value for key, value in self._load_actors().items() if key in self._actors
+        }
+        if force:
+            due = list(self._actors)
+        elif only is not None:
+            wanted = set(only)
+            due = [key for key in self._actors if key in wanted]
+        else:
+            due = self._due_actor_keys(cached)
+        if not due:
+            return self._candidates_from(cached)
+
+        snapshot: Dict[str, Any] = dict(cached)
         # 每轮重置豆瓣短路标志（上一轮登录态失效不代表这一轮还失效）
         self._douban_blocked = False
-        for key in self._actors:
+        for key in due:
             try:
                 record = self._discover_actor(key)
             except Exception as err:  # noqa: BLE001 - 单个演员失败不影响其它演员
                 logger.error(f"{PLUGIN_NAME} 解析演员「{key}」失败：{err}")
                 record = {"key": key, "name": key, "works": [], "errors": [str(err)]}
             record["state"] = record_state(record)
-            record["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            record["time"] = datetime.now().strftime(_STAMP_FORMAT)
             snapshot[key] = record
-            for work in record.get("works") or []:
-                work = dict(work)
-                work["actor"] = record.get("name") or key
-                candidates[ledger_key(work.get("title") or "", work.get("year") or "")] = work
-        # 失败提示只在日志里**汇总一条**：解析失败大多是临时的（豆瓣登录态失效 / 限流），
-        # 每一轮都会自动重试，逐条 warning 只会刷屏（用户明确要求「等待重试」即可）。
+        # 只保留配置里现有的演员（用户删掉的演员其作品不该再出现在作品墙）
+        snapshot = {key: snapshot[key] for key in self._actors if key in snapshot}        # 失败提示只在日志里**汇总一条**：解析失败大多是临时的（豆瓣登录态失效 / 限流），
+        # 到期会自动重试，逐条 warning 只会刷屏（用户明确要求「等待重试」即可）。
         self._log_actor_states(snapshot)
         self.save_data(_DATA_ACTORS, snapshot)
-        return list(candidates.values())
+        if only is None and len(due) < len(self._actors):
+            logger.info(
+                f"{PLUGIN_NAME} 快照：重新解析 {len(due)} 位演员、沿用缓存 "
+                f"{len(self._actors) - len(due)} 位（整体每 {self._snapshot_hours} 小时刷新，"
+                f"解析失败 {self._retry_minutes} 分钟后重试）"
+            )
+        return self._candidates_from(snapshot)
+
+    def retry_failed_actors(self, trigger: str = "interval") -> bool:
+        """失败重试任务：只重解析「到期的失败演员」，不搜索、不下载。
+
+        与完整轮询分开，是因为两者时间尺度不同：快照一天刷一次，而失败的演员
+        20 分钟后就该再试一次（豆瓣登录态一恢复就能自己好，不必等满一天）。
+        整表按 TTL 到期的那次刷新仍由订阅轮询负责，这里只碰 ``is_retry_candidate``
+        认定的失败记录（含「新加的演员」——第一次解析失败不该等 6 小时）。
+
+        没有到期的演员时**完全静默**：不写盘、不打日志、不碰网络。
+        重试成功后新发现的作品会立刻出现在作品墙（状态「待订阅」），
+        真正下载交给下一轮轮询或用户手动点「订阅」，避免这里顺手跑全站搜索。
+        """
+        if not self.get_state() or not self._actors:
+            return False
+        cached = self._load_actors()
+        # 只处理「失败」类记录（``is_retry_candidate``）：整表按 TTL（一天）到期的那次
+        # 刷新交给订阅轮询任务，两个任务职责不重叠 —— 否则日志里会出现「重试任务」却
+        # 顺手把全表刷了一遍的怪现象，排查时很难解释。
+        due = [
+            key for key in self._due_actor_keys(cached) if is_retry_candidate(cached.get(key))
+        ]
+        if not due:
+            return False
+        if not self._lock.acquire(blocking=False):
+            # 整轮任务正在跑：它自己会顺带把到期的演员解析掉，这次跳过即可
+            return False
+        try:
+            before = {
+                key: str((cached.get(key) or {}).get("state") or "")
+                for key in self._actors
+                if isinstance(cached.get(key), dict)
+            }
+            candidates = self._refresh_actors(only=due)
+            after = self._load_actors()
+            recovered = [
+                key
+                for key, state in before.items()
+                if state == "waiting" and str((after.get(key) or {}).get("state") or "") != "waiting"
+            ]
+            logger.info(
+                f"{PLUGIN_NAME} 解析失败重试完成（{trigger}）：重试 {len(due)} 位演员"
+                f"（{'、'.join(due)}），候选 {len(candidates)} 部"
+                + (f"，已恢复 {len(recovered)} 位：{'、'.join(recovered)}" if recovered else "")
+            )
+            return True
+        except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务挂掉
+            logger.error(f"{PLUGIN_NAME} 失败重试异常：{err}")
+            return False
+        finally:
+            self._lock.release()
 
     @staticmethod
     def _log_actor_states(snapshot: Dict[str, Any]) -> None:
@@ -2822,7 +3051,10 @@ class ShortDramaActorSubscribe(_PluginBase):
         started = time.time()
         try:
             logger.info(f"{PLUGIN_NAME} 开始执行（触发方式：{trigger}）")
-            candidates = self._refresh_actors()
+            # 只有定时轮询走「快照缓存」：快照一天才刷一次，中间几轮直接用缓存，
+            # 省下极紧的豆瓣额度；手动触发（立即运行 / 命令 / 一次性）一律强制重解析，
+            # 用户点了按钮却看不到新作品才叫奇怪。
+            candidates = self._refresh_actors(force=trigger != "interval")
             ledger = self._load_ledger()
             misses = self._load_misses()
             searcher = _SiteSearcher(self._sites, prefer_short_drama_category=self._prefer_short_drama_category)

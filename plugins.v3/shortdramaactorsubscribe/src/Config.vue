@@ -245,6 +245,30 @@
             density="comfortable"
           />
         </v-col>
+        <v-col cols="6" md="4">
+          <v-text-field
+            v-model.number="local.snapshot_hours"
+            type="number"
+            min="1"
+            max="720"
+            label="快照刷新间隔（小时）"
+            density="comfortable"
+            hint="演员作品清单多久重新拉一次；期间轮询直接用缓存，避免频繁请求豆瓣"
+            persistent-hint
+          />
+        </v-col>
+        <v-col cols="6" md="4">
+          <v-text-field
+            v-model.number="local.retry_minutes"
+            type="number"
+            min="1"
+            max="1440"
+            label="失败重试间隔（分钟）"
+            density="comfortable"
+            hint="解析失败的演员多久后单独重试一次（豆瓣登录态恢复后能很快自愈）"
+            persistent-hint
+          />
+        </v-col>
         <v-col v-if="local.organize_enabled" cols="6" md="4">
           <v-select
             v-model="local.transfer_type"
@@ -345,6 +369,8 @@ const defaults: PluginConfig = {
   library_path: '',
   transfer_type: 'link',
   interval_hours: 6,
+  snapshot_hours: 24,
+  retry_minutes: 20,
   organize_enabled: false,
   organize_interval_minutes: 30,
   notify: true,

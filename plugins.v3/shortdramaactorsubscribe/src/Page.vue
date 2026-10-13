@@ -161,7 +161,7 @@
           已下载 {{ worksSummary.downloaded }}
         </v-chip>
         <v-spacer />
-        <span class="text-caption sdas-dim">
+        <span class="text-caption sdas-dim" :title="snapshotHint">
           快照 {{ works.refreshed_at ? formatTime(works.refreshed_at) : '未刷新' }}
         </span>
         <v-btn
@@ -170,7 +170,7 @@
           color="primary"
           prepend-icon="mdi-cloud-refresh-outline"
           :loading="refreshingWorks"
-          title="只去 TMDB / 豆瓣 拉取演员作品，不触发下载"
+          title="立即重新拉取演员作品（强制重解析，忽略快照缓存；不触发下载）"
           @click="doRefreshWorks"
         >
           刷新作品
@@ -594,6 +594,18 @@ const actorsExpanded = ref(false)
 
 const worksSummary = computed(() => works.value.summary)
 
+/** 快照刷新节奏（小时 / 分钟），来自插件配置，用于作品墙的说明文案 */
+const snapshotHours = computed(() => Number(remoteConfig.value?.snapshot_hours) || 24)
+const retryMinutes = computed(() => Number(remoteConfig.value?.retry_minutes) || 20)
+
+/** 悬停说明：快照不是每轮都重拉（豆瓣额度极紧），失败另有更短的自愈节奏 */
+const snapshotHint = computed(
+  () =>
+    `演员作品快照每 ${snapshotHours.value} 小时整体刷新一次（轮询期间直接用缓存，` +
+    `避免频繁请求豆瓣）；解析失败的演员 ${retryMinutes.value} 分钟后自动重试。` +
+    `点「刷新作品」可立即重新拉取。`
+)
+
 /** 演员筛选项：由作品数据自身推导，避免与配置里的写法不一致 */
 const actorFilters = computed(() =>
   Array.from(new Set(works.value.items.map((item) => String(item.actor || '')).filter(Boolean))).map(
@@ -786,6 +798,10 @@ const configRows = computed(() => {
       { label: '运行间隔', value: `${config.interval_hours || 6} 小时轮询` }
     )
   }
+  rows.push({
+    label: '快照刷新',
+    value: `${config.snapshot_hours || 24} 小时整体刷新一次，失败 ${config.retry_minutes || 20} 分钟后重试`,
+  })
   rows.push({ label: '豆瓣登录态', value: cookieLabel(config.douban_cookie_source) })
   return rows
 })
