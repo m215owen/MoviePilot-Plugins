@@ -136,42 +136,11 @@
           <span class="text-caption sdas-dim sdas-label">{{ item.label }}</span>
           <span class="text-body-2">{{ item.value }}</span>
         </div>
-      </div>
-    </v-card>
-
-    <!-- 演员快照 -->
-    <v-card variant="outlined" class="mb-3">
-      <div class="d-flex align-center pa-3 pb-1">
-        <v-icon icon="mdi-account-multiple-outline" size="18" class="mr-2" />
-        <span class="text-subtitle-2">演员（{{ actorRows.length }}）</span>
-        <v-spacer />
-        <span class="text-caption sdas-dim">
-          上次运行：{{ formatTime(summary.last_run) }}
-        </span>
-      </div>
-      <div class="px-3 pb-3">
-        <div v-if="!actorRows.length" class="text-caption sdas-dim">尚未配置演员</div>
-        <div class="d-flex flex-wrap" style="gap: 6px">
-          <v-chip
-            v-for="row in actorRows"
-            :key="row.key"
-            size="small"
-            variant="tonal"
-            :title="actorTitle(row)"
-          >
-            {{ row.name }}
-            <span v-if="row.works.length" class="sdas-dim ml-1">{{ row.works.length }}</span>
-            <!-- 等待重试只留一个很轻的沙漏标记（完整原因在 tooltip 里），不再用警示色 -->
-            <v-icon
-              v-else-if="row.state === 'waiting'"
-              icon="mdi-timer-sand"
-              size="13"
-              class="ml-1 sdas-retry-icon"
-            />
-          </v-chip>
+        <div class="d-flex align-start py-1">
+          <span class="text-caption sdas-dim sdas-label">上次运行</span>
+          <span class="text-body-2">{{ formatTime(summary.last_run) }}</span>
         </div>
-        <!-- 失败不再逐条铺开：临时性失败（豆瓣登录态失效 / 限流）插件每轮都会自动重试，
-             这里只给一句汇总；「豆瓣没有影视作品集」是稳定结果、不是故障，另算一类。 -->
+        <!-- 演员清单在本页不列（主面板的筛选 chip 已承担），只留解析状态汇总 -->
         <div v-if="actorsHint" class="text-caption sdas-dim mt-2">{{ actorsHint }}</div>
       </div>
     </v-card>
@@ -228,7 +197,7 @@
               size="small"
               variant="tonal"
               :color="workActor === item.value ? 'primary' : undefined"
-              :title="`只看「${item.value}」的作品`"
+              :title="actorTitle(item.value)"
               @click="workActor = item.value"
             >
               {{ item.value }}
@@ -270,6 +239,11 @@
             筛出 {{ filteredWorks.length }} 部
           </span>
         </div>
+
+        <!-- 演员解析状态只留一句汇总（演员清单本身由上面的筛选 chip 承担，不再另开一块，
+             否则同一批演员名在页面上出现两遍）。失败不逐条铺开：临时性失败（豆瓣登录态失效 /
+             限流）插件每轮都会自动重试；「豆瓣没有影视作品集」是稳定结果、不是故障。 -->
+        <div v-if="actorsHint" class="text-caption sdas-dim mt-2">{{ actorsHint }}</div>
       </v-card-text>
 
       <v-alert
@@ -825,13 +799,11 @@ const visibleLedger = computed<LedgerEntry[]>(() => {
   )
 })
 
-function actorTitle(row: {
-  name: string
-  ids: string
-  works: { length: number }
-  errors: string[]
-}): string {
-  const parts = [row.name]
+/** 演员 chip 的悬停提示：演员清单本身不再单独占一块，ID / 作品数 / 失败原因都收在这里 */
+function actorTitle(name: string): string {
+  const row = actorRows.value.find((item) => item.name === name)
+  if (!row) return `只看「${name}」的作品`
+  const parts = [`只看「${name}」的作品`]
   if (row.ids) parts.push(row.ids)
   parts.push(`${row.works.length} 部作品`)
   if (row.errors.length) parts.push(row.errors.join('；'))
@@ -1074,12 +1046,6 @@ void API_BASE
 .sdas-switch {
   flex: 0 0 auto;
   margin-right: 4px;
-}
-
-/* 演员 chip 上的「等待重试」标记：刻意做得比正文更淡，
-   失败原因收进 tooltip —— 临时性失败每轮都会重试，不需要靠颜色报警。 */
-.sdas-retry-icon {
-  opacity: 0.55;
 }
 
 .sdas-filter {
