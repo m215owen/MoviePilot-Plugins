@@ -26,9 +26,10 @@ from sqlalchemy import Index, Integer, String, UniqueConstraint, delete, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.sdk.database import plugin_declarative_base
+from app.sdk.logging import logger
 
-from .constants import MAX_URLS_PER_KEYWORD
-from .parser import _normalize_title, canonical_page_url
+from .constants import EXACT_TITLE_SCORE, MAX_URLS_PER_KEYWORD, PLUGIN_NAME
+from .parser import _clean, _match_title, _normalize_title, canonical_page_url
 
 __all__ = ["PluginBase", "SiteUrl", "UrlStore"]
 
@@ -170,11 +171,16 @@ class UrlStore:
                     if row.get("backend"):
                         existing.backend = str(row["backend"])
             session.flush()  # 让新插入的行拿到 id，合并阶段才看得到它们
-            self._consolidate(session, pages)
-            self._trim(session, rows)
+            merged = self._consolidate(session, pages)
+            trimmed = self._trim(session, rows)
             session.commit()
         finally:
             session.close()
+        if merged or trimmed:
+            logger.debug(
+                f"{PLUGIN_NAME} URL 库入库整理：合并同页面 {merged} 条"
+                + (f"、超出上限清理 {trimmed} 条" if trimmed else "")
+            )
         return added
 
     # ── 去重（同一个页面只留一条） ─────────────────────────────────
@@ -248,17 +254,52 @@ class UrlStore:
             removed = self._consolidate(session, pages)
             if removed:
                 session.commit()
+                logger.info(f"{PLUGIN_NAME} URL 库整库去重：合并同页面 {removed} 条")
             return removed
         finally:
             session.close()
 
+    def prune_mismatched(self) -> int:
+        """删掉「片名与键**不完全相等**」的作品行，返回删除条数。
+
+        v2.0.0 曾把搜索引擎返回的作品**一律按搜索词**建档；而引擎召回不稳 —— 实测搜
+        「相亲对象是迟来的心动」返回的是「深渊之花」「照片是舍友，網戀對象是繼承人」等
+        五部毫不相干的剧 ⇒ 库里攒下一批「键是这个搜索词、内容却是别的剧」的错行，
+        日志报「库命中 5」，其实一条都对不上。
+
+        v2.1.1 起入库时就只收**完全匹配**的（见 ``ShortDramaBaikeSource._discover``），
+        这里负责清理**已经存下来**的那些：作品行的片名与它的键、与触发它的搜索词
+        都不相等，就说明这条是张冠李戴。幂等，可反复执行。
+
+        ⚠️ 只动 ``work`` 行：演员行按自己的名字建档，不存在这种错行。
+        """
+        session = self._session()
+        try:
+            stale = [
+                row
+                for row in session.execute(
+                    select(SiteUrl).where(SiteUrl.kind == "work")
+                ).scalars().all()
+                if _clean(row.label)
+                and _match_title(row.label, row.keyword or "") < EXACT_TITLE_SCORE
+                and _match_title(row.label, row.display or "") < EXACT_TITLE_SCORE
+            ]
+            if not stale:
+                return 0
+            session.execute(delete(SiteUrl).where(SiteUrl.id.in_([row.id for row in stale])))
+            session.commit()
+            return len(stale)
+        finally:
+            session.close()
+
     @staticmethod
-    def _trim(session: Session, rows: Sequence[Dict[str, Any]]) -> None:
-        """把每个关键词的记录数收到上限内（保留命中次数高的）。
+    def _trim(session: Session, rows: Sequence[Dict[str, Any]]) -> int:
+        """把每个关键词的记录数收到上限内（保留命中次数高的），返回删掉的条数。
 
         站点上一部剧可能有十几季，一一入库会把库撑成垃圾场；``MAX_URLS_PER_KEYWORD``
         之外的低频记录直接不留 —— 需要时再搜一次就会重新发现。
         """
+        removed = 0
         keys = {(str(row.get("kind") or "work"), str(row["keyword"])) for row in rows}
         for kind, keyword in keys:
             records = list(
@@ -270,6 +311,8 @@ class UrlStore:
             )
             for extra in records[MAX_URLS_PER_KEYWORD:]:
                 session.delete(extra)
+                removed += 1
+        return removed
 
     def touch(self, ids: Sequence[int]) -> None:
         """把用过的记录命中数 +1 并刷新使用时间。"""

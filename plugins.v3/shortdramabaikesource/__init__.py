@@ -70,7 +70,9 @@ from .constants import (
     DEFAULT_WEB_INDEX_BACKEND,
     DETAIL_PATH,
     DISCOVER_TITLE_ENRICH_LIMIT,
+    EXACT_TITLE_SCORE,
     IMAGE_DOMAINS,
+    LANG_PATH,
     MAX_ACTOR_CANDIDATES,
     MAX_CANDIDATES,
     MEDIA_ID_PREFIX,
@@ -213,6 +215,8 @@ class ShortDramaBaikeSource(_PluginBase):
             f"（后端 {self._web_index_backend}）"
             f"｜URL 库={stats.get('total', 0)} 条"
             f"（作品 {stats.get('work', 0)} / 演员 {stats.get('actor', 0)}）"
+            f"｜顺带入库={'开' if self._follow_links else '关'}"
+            f"｜缓存={'关' if self._cache_ttl <= 0 else f'{self._cache_ttl}s'}"
             + (f"｜去重合并 {merged} 条重复记录" if merged else "")
         )
 
@@ -222,7 +226,11 @@ class ShortDramaBaikeSource(_PluginBase):
     def stop_service(self) -> None:
         """停止插件：清空内存缓存（URL 库是持久数据，不动）。"""
         with self._cache_lock:
+            kept = len(self._cache)
             self._cache.clear()
+        logger.info(
+            f"{PLUGIN_NAME} 已停止：清空 {kept} 条内存缓存（URL 库是持久数据，保留）"
+        )
 
     def get_render_mode(self) -> Tuple[str, Optional[str]]:
         """声明使用 Vue 联邦远程组件渲染，产物目录为 ``dist/assets``。
@@ -309,8 +317,10 @@ class ShortDramaBaikeSource(_PluginBase):
             return 0
         try:
             return store.add(rows)
-        except Exception as err:  # pragma: no cover - 数据库异常
-            logger.debug(f"{PLUGIN_NAME} URL 入库失败：{err}")
+        except Exception as err:
+            # ⚠️ 入库失败是**静默降级**：本次结果照常返回，但下一次搜索还得再问一次引擎。
+            # 不记日志的话只会表现为「引擎召回时好时坏」，很难想到是库写不进去。
+            logger.warning(f"{PLUGIN_NAME} URL 入库失败（{len(rows)} 条）：{err}")
             return 0
 
     def _store_count(self) -> Dict[str, Any]:
@@ -333,10 +343,16 @@ class ShortDramaBaikeSource(_PluginBase):
         if store is None:
             return 0
         try:
-            return store.dedupe()
+            merged = store.dedupe()
+            # 顺手清掉历史遗留的「张冠李戴」行（键是搜索词、内容却是别的剧，见
+            # ``UrlStore.prune_mismatched``）—— 它们会让日志虚报「库命中」
+            pruned = store.prune_mismatched()
         except Exception as err:  # pragma: no cover - 数据库异常
-            logger.debug(f"{PLUGIN_NAME} URL 库去重失败：{err}")
+            logger.warning(f"{PLUGIN_NAME} URL 库去重失败：{err}")
             return 0
+        if pruned:
+            logger.info(f"{PLUGIN_NAME} URL 库清理错行：删除 {pruned} 条（片名与键对不上）")
+        return merged
 
     @staticmethod
     def _as_entry(kind: str, keyword: str, native_id: str, label: str, url: str,
@@ -413,8 +429,20 @@ class ShortDramaBaikeSource(_PluginBase):
             except Exception as err:  # pragma: no cover - 数据库异常
                 logger.debug(f"{PLUGIN_NAME} 读 URL 库失败：{err}")
         if works and actors:
+            # 这两条用 INFO：默认日志级别是 INFO（宿主 LOG_LEVEL），而它们正是
+            # 「为什么这次没出网 / 为什么没结果」的答案 —— 放到 DEBUG 在真机上根本看不到
+            logger.info(
+                f"{PLUGIN_NAME}「{query}」URL 库命中：作品 {len(works)} / "
+                f"演员 {len(actors)}（零引擎请求）"
+            )
             return works, actors
         if not force and not self._should_search(key):
+            # 两类里缺了哪一类、为什么这次不问引擎 —— 「库里没有」与「刚查过被挡住」
+            # 表现一样（都是没结果），日志里必须分得开
+            logger.info(
+                f"{PLUGIN_NAME}「{query}」库里只有 作品 {len(works)} / 演员 {len(actors)}，"
+                f"本次不问引擎：{self._search_skip_reason(key)}"
+            )
             return works, actors
         found_works, found_actors = self._discover(query)
         # ⚠️ 必须**合并**而不是「库里有就用库里的」：库里只要有一条命中（例如那条是从
@@ -464,6 +492,17 @@ class ShortDramaBaikeSource(_PluginBase):
         last = self._searched_at.get(key)
         return last is None or (time.time() - last) >= SEARCH_RETRY_INTERVAL
 
+    def _search_skip_reason(self, key: str) -> str:
+        """「这次不问引擎」的真实原因 —— 开关关着 / 环境缺依赖 / 刚查过，三者都要说得清。"""
+        if not self._web_index_search:
+            return "站外索引已关闭"
+        if not self._web_index.available:
+            return "宿主环境缺少 ddgs"
+        last = self._searched_at.get(key)
+        if last is None:
+            return "（无需跳过）"
+        return f"{int(time.time() - last)}s 前刚检索过（间隔需 {int(SEARCH_RETRY_INTERVAL)}s）"
+
     def _discover(self, keyword: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """检索一次引擎，**两类 URL 一起抽、一起入库**，返回入库后的记录。
 
@@ -475,20 +514,45 @@ class ShortDramaBaikeSource(_PluginBase):
         host = self._domain_host()
         rows = self._web_index.search(keyword, host, self._web_index_backend)
         if not rows:
-            logger.info(f"{PLUGIN_NAME} 站外索引没搜到「{keyword}」")
+            # 引擎侧的原因（后端报错 / 环境缺依赖 / 被节流）已在 discover 模块里记过，
+            # 这里只补一句「结论」，让「搜了但没结果」与「压根没搜」在日志里分得开
+            logger.info(f"{PLUGIN_NAME} 站外索引「{keyword}」没有返回任何结果")
             return [], []
         raw_works, raw_actors = extract_urls(rows, host)
+        if not raw_works and not raw_actors:
+            logger.info(
+                f"{PLUGIN_NAME} 站外索引「{keyword}」返回 {len(rows)} 条，"
+                f"但都不是作品页 / 演员页 —— 图集页、榜单页与外域地址一律剔除"
+            )
+            return [], []
         raw_works = raw_works[:MAX_CANDIDATES]
         raw_actors = raw_actors[:MAX_ACTOR_CANDIDATES]
         self._enrich_labels(keyword, raw_works, raw_actors)
         entries: List[Dict[str, Any]] = []
+        stored = 0
         for row in raw_works:
-            # 作品按**用户搜的那个词**建档（搜片名时它就是片名；引擎标题可能带繁体或后缀，
-            # 拿它当键会让同一个词下次查不回来），真标题放 label 里展示
+            title = _clean(row.get("label") or "")
+            if not title:
+                continue
+            # ⚠️ **只有完全匹配的才建库**。引擎的召回本来就不稳：实测搜「相亲对象是迟来的
+            # 心动」返回的是「深渊之花」「照片是舍友，網戀對象是繼承人」等五部**毫不相干**
+            # 的剧。以前一律按搜索词建档入库 ⇒ 库里攒下一批「键是这个搜索词、内容却是别的
+            # 剧」的错行，下次搜同一个词虚报「库命中 5」，其实一条都对不上。
+            # 宁可漏（漏了下回再搜一次就补上），不可错（错了会一直污染库）。
+            #
+            # 注意这只卡**入库** —— 候选照旧全部返回，交上层按片名打分排序
+            # （``api_lookup`` / ``search_medias`` 都会按同一条门槛再筛一遍）。
+            if _match_title(title, keyword) < EXACT_TITLE_SCORE:
+                continue
+            stored += 1
+            # 作品按**自己的片名**建档（引擎标题已剥过后缀、繁体的也补抓成了简体），
+            # 触发这次发现的搜索词记在 display 里 —— 同一个词下一次照样查得回来。
             entries.append(self._as_entry(
-                "work", keyword, row["native_id"], row.get("label", ""), row["url"],
+                "work", title, row["native_id"], title, row["url"],
                 "search", self._web_index_backend, display=keyword,
             ))
+        # 演员**不**按这个门槛过滤：它多半是搜一部剧时顺带发现的（本插件「URL 会自己
+        # 长大」靠的就是这个），而且它按自己的名字建档，不会污染库。
         for row in raw_actors:
             # 演员按**自己的名字**建档：它多半是搜片名时顺带发现的，挂在片名下就查不回来，
             # 还会跟「解析作品页顺带写一条演员行」那条重复
@@ -500,7 +564,8 @@ class ShortDramaBaikeSource(_PluginBase):
         added = self._remember(entries)
         logger.info(
             f"{PLUGIN_NAME} 站外索引「{keyword}」命中 {len(raw_works)} 部作品 / "
-            f"{len(raw_actors)} 位演员，入库 {added} 条"
+            f"{len(raw_actors)} 位演员｜与搜索词完全匹配 {stored} 部，入库 {added} 条"
+            + ("" if stored else "（其余只是字面沾边，不建库）" if raw_works else "")
         )
         works = [
             {"url": row["url"], "label": row.get("label", ""), "native_id": row["native_id"],
@@ -551,7 +616,11 @@ class ShortDramaBaikeSource(_PluginBase):
                     label = _clean(((self._fetch_detail(native_id, url) or {})).get("title") or "")
                 else:
                     label = _clean(((self._fetch_actor(native_id, url) or {})).get("name") or "")
-                if label:
+                if label and label != _clean(str(row.get("label") or "")):
+                    logger.info(
+                        f"{PLUGIN_NAME} 候选 {kind}:{native_id} 标题『{row.get('label')}』"
+                        f"补抓简体页后换成『{label}』"
+                    )
                     row["label"] = label
 
     @staticmethod
@@ -591,6 +660,7 @@ class ShortDramaBaikeSource(_PluginBase):
             return None
         cached = self._cache_get(f"detail:{native_id}")
         if cached is not None:
+            logger.debug(f"{PLUGIN_NAME} 作品 {native_id} 命中详情缓存（零请求）")
             return dict(cached)
         target = canonical_page_url(
             _clean(url) or f"{self._domain.rstrip('/')}{DETAIL_PATH.format(id=native_id)}",
@@ -598,12 +668,24 @@ class ShortDramaBaikeSource(_PluginBase):
         )
         html, status = self._get(target)
         if not html:
-            logger.debug(f"{PLUGIN_NAME} 详情页取不到内容：{target}（status={status}）")
+            logger.warning(f"{PLUGIN_NAME} 详情页取不到内容：{target}（status={status}）")
             return None
         record = parse_org_detail(html, native_id, self._domain)
         if not record.get("title"):
+            # 页面拿到了却解析不出标题 ⇒ 站点改版（或抓到的是挑战页 / 错误页）。
+            # 静默返回 None 只会表现为「这部剧搜不到」，必须留下现场。
+            logger.warning(
+                f"{PLUGIN_NAME} 详情页解析不出标题：{target}"
+                f"（正文 {len(html)} 字节，解析出 {len(record)} 个字段）"
+            )
             return None
         self._cache_set(f"detail:{native_id}", record)
+        logger.debug(
+            f"{PLUGIN_NAME} 作品 {native_id}《{record.get('title')}》解析完成："
+            f"{len(record)} 个字段 / 演员 {len(record.get('actors') or [])} 位"
+            f" / 剧照 {len(record.get('stills') or [])} 张"
+            f" / 推荐 {len(record.get('related') or [])} 条"
+        )
         # 顺手把地址与演员链接沉淀进 URL 库。演员行按**演员名**建档、``display`` 记这部
         # 剧 —— 面板上要看得出一位演员是搜哪部剧时带出来的
         if self._follow_links:
@@ -634,6 +716,7 @@ class ShortDramaBaikeSource(_PluginBase):
             return None
         cached = self._cache_get(f"actor:{actor_id}")
         if cached is not None:
+            logger.debug(f"{PLUGIN_NAME} 演员 {actor_id} 命中档案缓存（零请求）")
             return dict(cached)
         target = canonical_page_url(
             _clean(url) or f"{self._domain.rstrip('/')}{ACTOR_PATH.format(id=actor_id)}",
@@ -641,12 +724,30 @@ class ShortDramaBaikeSource(_PluginBase):
         )
         html, status = self._get(target)
         if not html:
-            logger.debug(f"{PLUGIN_NAME} 演员页取不到内容：{target}（status={status}）")
+            logger.warning(f"{PLUGIN_NAME} 演员页取不到内容：{target}（status={status}）")
             return None
         profile = parse_org_actor(html, actor_id, self._domain)
         if not profile.get("name"):
+            logger.warning(
+                f"{PLUGIN_NAME} 演员页解析不出姓名：{target}"
+                f"（正文 {len(html)} 字节，解析出 {len(profile)} 个字段）"
+            )
             return None
         self._cache_set(f"actor:{actor_id}", profile)
+        if not (profile.get("works") or []):
+            # ⚠️ 这是本插件**最难发现**的一类故障：资料字段全对、只有作品为 0。
+            # 真因几乎总是抓到了繁体页（/zh-Hant 或没带 /zh-Hans 被 301），页面里作品
+            # 链接写成 /zh-Hant/drama/… 而卡片正则只认简体 —— 不点破就会一直查下去。
+            logger.warning(
+                f"{PLUGIN_NAME} 演员 {actor_id}「{profile.get('name')}」解析出 0 部作品："
+                f"{target} —— 多半是抓到了繁体页，检查地址是否带 {LANG_PATH} 前缀"
+            )
+        else:
+            logger.debug(
+                f"{PLUGIN_NAME} 演员 {actor_id}「{profile.get('name')}」解析完成："
+                f"作品 {profile.get('works_count') or len(profile.get('works') or [])} 部"
+                f" / 合作演员 {len(profile.get('coactors') or [])} 位"
+            )
         if self._follow_links:
             # 作品行按片名建档、``display`` 记这位演员 —— 面板上要看得出一部作品是从谁的
             # 演员页顺带发现的
@@ -797,7 +898,15 @@ class ShortDramaBaikeSource(_PluginBase):
                 year=_clean(getattr(meta, "year", "")),
             )
         if record is None:
+            logger.debug(
+                f"{PLUGIN_NAME} 识别未命中：media_id={_clean(media_id) or '-'}"
+                f" 片名={_clean(getattr(meta, 'title', '') or getattr(meta, 'name', '')) or '-'}"
+            )
             return None
+        logger.debug(
+            f"{PLUGIN_NAME} 识别命中：{record.get('media_id')}《{record.get('title')}》"
+            f"（完整度 {self._richness(record)}）"
+        )
         return build_media_info(record, facts=self._detail_facts)
 
     async def async_recognize_media(self, *args: Any, **kwargs: Any) -> Any:
@@ -829,6 +938,7 @@ class ShortDramaBaikeSource(_PluginBase):
         year = _clean(getattr(meta, "year", ""))
         works, _ = self._resolve(query)
         if not works:
+            logger.debug(f"{PLUGIN_NAME} 检索「{query}」没有拿到作品候选")
             return []
         scored: List[Tuple[int, Dict[str, Any]]] = []
         for row in works:
@@ -866,6 +976,13 @@ class ShortDramaBaikeSource(_PluginBase):
             if info is not None:
                 pairs.append((score, self._richness(record), index, info))
         pairs.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        if pairs:
+            logger.info(
+                f"{PLUGIN_NAME} 检索「{query}」命中 {len(pairs)} 条候选"
+                f"（最高分 {pairs[0][0]}，完整度 {pairs[0][1]}）"
+            )
+        else:
+            logger.debug(f"{PLUGIN_NAME} 检索「{query}」候选全部与片名对不上，已剔除")
         return [info for _, _, _, info in pairs]
 
     async def async_search_medias(self, *args: Any, **kwargs: Any) -> List[Any]:
@@ -919,6 +1036,7 @@ class ShortDramaBaikeSource(_PluginBase):
             return []
         _, actors = self._resolve(query)
         if not actors:
+            logger.debug(f"{PLUGIN_NAME} 演员检索「{query}」没有候选")
             return []
         ranked: List[Tuple[int, Dict[str, Any]]] = []
         for row in actors:
@@ -940,6 +1058,7 @@ class ShortDramaBaikeSource(_PluginBase):
                 "url": _clean(row.get("url") or ""),
                 "source": "web_index",
             })
+        logger.debug(f"{PLUGIN_NAME} 演员检索「{query}」回 {len(results)} 位候选")
         return results
 
     async def async_search_actors(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
@@ -970,8 +1089,17 @@ class ShortDramaBaikeSource(_PluginBase):
             return []
         profile = self._resolve_actor(actor_id=actor_id, name=name)
         if not profile:
+            logger.debug(
+                f"{PLUGIN_NAME} 取不到演员档案：actor_id={_clean(actor_id) or '-'}"
+                f" 姓名={_clean(name) or '-'}"
+            )
             return []
-        return [dict(work) for work in (profile.get("works") or [])]
+        works = [dict(work) for work in (profile.get("works") or [])]
+        logger.debug(
+            f"{PLUGIN_NAME} 演员「{profile.get('name')}」（{profile.get('actor_id') or _clean(actor_id)}）"
+            f"回 {len(works)} 部作品"
+        )
+        return works
 
     async def async_actor_works(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self.actor_works, *args, **kwargs)
@@ -1126,6 +1254,9 @@ class ShortDramaBaikeSource(_PluginBase):
                 "score": score,
             })
         hit = bool(titles or cast)
+        if not hit:
+            # 面板 0 命中是最常被反馈的现象，把**原因**留在日志里（界面上只给一句提示）
+            logger.info(f"{PLUGIN_NAME} 面板搜索「{query}」0 命中：{self._miss_reason(query)}")
         return {
             "success": hit,
             "message": "" if hit else self._miss_reason(query),
@@ -1291,6 +1422,13 @@ class ShortDramaBaikeSource(_PluginBase):
         }
         self.update_config(normalized)
         self.init_plugin(normalized)
+        # 配置保存会重跑 init_plugin（去重 / 重新注册图片域名），记一条便于事后回溯
+        # 「用户什么时候改过设置」—— 很多现象（库突然变少、搜索突然没结果）都源自这里
+        logger.info(
+            f"{PLUGIN_NAME} 配置已更新：启用={normalized['enabled']} "
+            f"域名={normalized['domain']} 站外索引={normalized['web_index_backend']}"
+            f"｜顺带入库={normalized['follow_links']}"
+        )
         return {"success": True, "config": normalized}
 
     def api_probe(self, keyword: str = "魏依珂") -> Dict[str, Any]:
@@ -1430,10 +1568,12 @@ class ShortDramaBaikeSource(_PluginBase):
         status = getattr(response, "status_code", None)
         text = getattr(response, "text", "") or ""
         if is_cloudflare_challenge(text, status):
-            logger.debug(f"{PLUGIN_NAME} {url} 撞到站点风控（status={status}）")
+            # 站点风控收紧是**会变的**（实测站内检索页现在恒 403），默认日志级别下
+            # 也得看得见，否则只表现为「搜什么都没有」
+            logger.warning(f"{PLUGIN_NAME} {url} 撞到站点风控（status={status}）")
             return "", status
         if status is not None and status >= 400:
-            logger.debug(f"{PLUGIN_NAME} {url} 返回 {status}")
+            logger.debug(f"{PLUGIN_NAME} {url} 返回 {status}（正文 {len(text)} 字节）")
             return "", status
         return text, status
 
@@ -1553,9 +1693,13 @@ class ShortDramaBaikeSource(_PluginBase):
         domains = getattr(_settings, "SECURITY_IMAGE_DOMAINS", None)
         if not isinstance(domains, list):
             return
+        added = []
         for domain in IMAGE_DOMAINS:
             if domain not in domains:
                 domains.append(domain)
+                added.append(domain)
+        if added:
+            logger.debug(f"{PLUGIN_NAME} 已把图片域名补进宿主白名单：{', '.join(added)}")
 
 
 def _as_int(value: Any, default: Optional[int] = None) -> Optional[int]:

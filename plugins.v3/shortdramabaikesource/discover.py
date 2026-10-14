@@ -14,8 +14,11 @@ import threading
 import time
 from typing import Any, Dict, Iterable, List, Tuple
 
+from app.sdk.logging import logger
+
 from .constants import (
     DEFAULT_WEB_INDEX_BACKEND,
+    PLUGIN_NAME,
     WEB_INDEX_MAX_RESULTS,
     WEB_INDEX_MIN_INTERVAL,
     WEB_INDEX_TIMEOUT,
@@ -52,6 +55,9 @@ class WebIndex:
         self._lock = threading.Lock()
         self._last_at = 0.0
         self._min_interval = min_interval
+        # 「宿主缺 ddgs」只在**首次**检索时报一次：这是环境级问题，每次调用都报会把
+        # 面板搜索的日志刷成同一句话
+        self._warned_unavailable = False
 
     @property
     def available(self) -> bool:
@@ -82,34 +88,62 @@ class WebIndex:
         """
         keyword = _clean(keyword)
         host = _clean(host).lower()
-        if not keyword or not host or not _engine_available():
+        if not keyword or not host:
+            return []
+        if not _engine_available():
+            # 宿主没装 ddgs ⇒ 整条发现通道停用。不记一条日志的话，界面上只是「没搜到」，
+            # 很容易被当成站点没收录（真因是环境缺依赖）。
+            if not self._warned_unavailable:
+                self._warned_unavailable = True
+                logger.warning(
+                    f"{PLUGIN_NAME} 站外索引不可用（宿主环境缺少 ddgs），"
+                    f"片名与演员名都发现不了新 URL —— 只能用 URL 库里已有的记录"
+                )
             return []
 
         now = time.time()
         with self._lock:
-            if now - self._last_at < self._min_interval:
+            waited = now - self._last_at
+            if waited < self._min_interval:
+                logger.info(
+                    f"{PLUGIN_NAME} 站外索引「{keyword}」距上次仅 {waited:.1f}s"
+                    f"（< {self._min_interval:.0f}s），本次放弃"
+                )
                 return []
             self._last_at = now
 
+        started = time.time()
+        used = backend or DEFAULT_WEB_INDEX_BACKEND
         try:
             with _DDGS(timeout=WEB_INDEX_TIMEOUT) as client:
                 raw = list(
                     client.text(
                         f"site:{host} {keyword}",
-                        backend=backend or DEFAULT_WEB_INDEX_BACKEND,
+                        backend=used,
                         max_results=max_results,
                     )
                 )
-        except Exception:
+        except Exception as err:
+            # ⚠️ 这里以前是完全静默的：实测某些后端（google）恒抛 ``No results``，
+            # 界面上只显示「没搜到」，看日志也查不出是**引擎报错**而不是站点没收录。
+            logger.warning(
+                f"{PLUGIN_NAME} 站外索引「{keyword}」失败（后端 {used}）："
+                f"{type(err).__name__}: {err}"
+            )
             return []
 
-        return [
+        rows = [
             {
                 "title": _strip_org_suffix(_clean(row.get("title") or "")),
                 "href": _clean(row.get("href") or row.get("url") or ""),
             }
             for row in raw
         ]
+        logger.info(
+            f"{PLUGIN_NAME} 站外索引「{keyword}」后端 {used} 返回 {len(rows)} 条"
+            f"（耗时 {time.time() - started:.1f}s）"
+        )
+        return rows
 
 
 def extract_urls(
@@ -136,6 +170,7 @@ def extract_urls(
     works: List[Dict[str, Any]] = []
     actors: List[Dict[str, Any]] = []
     seen: set = set()
+    usable = 0
     for row in rows:
         href = _clean(row.get("href") or "")
         title = _clean(row.get("title") or "")
@@ -144,6 +179,7 @@ def extract_urls(
         simplified = href_points_to_simplified(href)
         native_id = web_index_native_id(href, host)
         if native_id:
+            usable += 1
             key = ("work", native_id)
             if key not in seen:
                 seen.add(key)
@@ -152,9 +188,18 @@ def extract_urls(
             continue
         actor_id = web_index_actor_id(href, host)
         if actor_id:
+            usable += 1
             key = ("actor", actor_id)
             if key not in seen:
                 seen.add(key)
                 actors.append({"native_id": actor_id, "label": title,
                                "url": canonical_page_url(href), "simplified": simplified})
+    # 「引擎返回 N 条、能用的只有 M 条」必须看得见：结果里混着图集页 / 榜单页 / 外域地址，
+    # 而界面上只会显示去重后的 M 条 —— 少了这一行，召回差怪不到引擎头上。
+    logger.info(
+        f"{PLUGIN_NAME} 站外索引结果分类：作品 {len(works)} / 演员 {len(actors)}"
+        f"（可用 {usable} 条，其中重复 {usable - len(works) - len(actors)} 条）"
+        f"｜繁体或无前缀地址 "
+        f"{sum(1 for row in works + actors if not row['simplified'])} 条（标题待补抓）"
+    )
     return works, actors
