@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { m as mergeWorks, s as sortWorks, w as workKey, e as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, c as unsubscribeWork, i as ignoreWork, _ as _export_sfc } from './_plugin-vue_export-helper-Bu1j1gfm.js';
+import { m as mergeWorks, s as sortWorks, w as workKey, e as formatTime, r as resolveApi, A as API_BASE, u as unwrap, f as fetchSubscribedKeys, P as PLUGIN_ID, a as waitForRefresh, b as submitSubscribe, c as unsubscribeWork, i as ignoreWork, _ as _export_sfc } from './_plugin-vue_export-helper-WuUIO6Z9.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -189,7 +189,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       size: "20",
                       class: "mr-2"
                     }),
-                    _cache[0] || (_cache[0] = _createElementVNode("span", { class: "text-body-1" }, "豆瓣演员订阅", -1)),
+                    _cache[0] || (_cache[0] = _createElementVNode("span", { class: "text-body-1" }, "TMDB演员订阅", -1)),
                     _createVNode(_component_v_spacer),
                     __props.allowRefresh ? (_openBlock(), _createBlock(_component_v_btn, {
                       key: 0,
@@ -293,6 +293,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-63cdaf22"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-07ffe4fb"]]);
 
 export { Dashboard as default };

@@ -2,7 +2,7 @@
   <div class="das-root pa-4">
     <div class="d-flex align-center mb-3 flex-wrap" style="gap: 12px">
       <v-icon icon="mdi-chart-timeline-variant" class="mr-1" />
-      <h2 class="text-h6 ma-0">豆瓣演员订阅 · 运行状态</h2>
+      <h2 class="text-h6 ma-0">TMDB演员订阅 · 运行状态</h2>
       <v-chip size="small" variant="tonal">{{ pluginId || 'DoubanActorSubscribe' }} / {{ navKey || 'settings' }}</v-chip>
       <v-spacer />
       <v-btn size="small" variant="tonal" color="primary" icon="mdi-refresh" :loading="loading" @click="load" />
@@ -57,7 +57,7 @@
             v-model="actorsText"
             label="订阅的演员"
             placeholder="多位演员用逗号分隔，例如：刘德华，吴京，张译"
-            hint="演员名或豆瓣人物 ID/主页链接均可，用逗号分隔（也支持换行 / 顿号）。填 ID 或链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。"
+            hint="演员名或 TMDB 人物 ID/主页链接均可，用逗号分隔（也支持换行 / 顿号）。填 ID 或链接可跳过搜索，解析结果也更精确。"
             persistent-hint
             rows="4"
             no-resize
@@ -118,7 +118,7 @@
                       :href="recordHref(row)"
                       target="_blank"
                       rel="noopener"
-                      :title="row.type ? '在 MoviePilot 中打开媒体详情' : '打开豆瓣条目'"
+                      :title="row.type ? '在 MoviePilot 中打开媒体详情' : '打开 TMDB 条目'"
                     >
                       {{ row.title }}
                     </a>
@@ -212,21 +212,23 @@ const prefs = reactive<{ save_path: string; downloader: string; sites: number[] 
 
 /**
  * 自动订阅记录里作品名的去向 —— 与作品卡片保持一致，走 MoviePilot 自带的
- * 媒体详情页（探索页点进媒体的那个页面），类型缺失时才退回豆瓣条目页。
+ * 媒体详情页（探索页点进媒体的那个页面），类型缺失时才退回 TMDB 条目页。
  */
 function recordHref(row: AutoSubscribeRecord): string {
   const mediaId = String(row.media_id || '').trim()
   if (!mediaId) return ''
   if (String(row.type || '').trim()) {
     return mediaPageUrl({
-      media_source: 'douban',
+      media_source: row.media_source || 'themoviedb',
       media_id: mediaId,
       title: row.title,
       year: row.year,
       type: row.type,
     })
   }
-  return `https://movie.douban.com/subject/${mediaId}/`
+  // 类型缺失时退回 TMDB 条目页；TMDB 上剧集与电影是两套路径
+  const section = String(row.type || '').includes('电视剧') ? 'tv' : 'movie'
+  return `https://www.themoviedb.org/${section}/${mediaId}`
 }
 
 /**

@@ -4,23 +4,13 @@
     <v-card variant="outlined" class="mb-3">
       <v-card-title class="d-flex align-center flex-wrap das-titlebar">
         <v-icon icon="mdi-account-star-outline" class="mr-1" />
-        <span>豆瓣演员订阅</span>
+        <span>TMDB演员订阅</span>
         <v-chip v-if="actors.length" size="small" variant="tonal">{{ actors.length }} 位演员</v-chip>
         <v-chip v-if="visibleWorks.length" size="small" variant="tonal">
           {{ visibleWorks.length }} 部作品
         </v-chip>
-        <v-chip
-          size="small"
-          variant="tonal"
-          :color="cookieChip.color"
-          :prepend-icon="cookieChip.icon"
-          :title="cookieChip.title"
-        >
-          {{ cookieChip.text }}
-        </v-chip>
-        <!-- 解析进度徽标：只统计「还没解析出人物 ID」的演员，
-             解析完就归零消失。曾经的版本把「有 24 小时搜索记录的演员」全算进来，
-             已解析的演员也会被算成「冷却中」，数字只涨不降，看着像卡住了。 -->
+        <!-- 解析进度徽标：只统计「还没解析出 TMDB 人物 ID」的演员，
+             解析完就归零消失，之后刷新不再需要按名称搜索。 -->
         <v-chip
           v-if="unresolvedCount"
           size="small"
@@ -247,7 +237,7 @@
         <v-card-title>确认批量订阅？</v-card-title>
         <v-card-text>
           将把当前筛选结果里的 <strong>{{ pendingTargets.length }}</strong> 部未订阅作品
-          一次性提交到订阅系统（按豆瓣 ID 精确订阅）。
+          一次性提交到订阅系统（按 TMDB ID 精确订阅）。
           <template v-if="pendingTargets.length > 20">
             数量较多，确认后请耐心等待逐条提交完成。
           </template>
@@ -437,7 +427,7 @@ const visibleActors = computed<ActorGroup[]>(() => {
   return head
 })
 
-/** 尚未解析出豆瓣人物 ID 的演员数（豆瓣搜索限流会让这个数逐步下降）。
+/** 尚未解析出 TMDB 人物 ID 的演员数（为 0 时说明全部解析完毕，徽标不显示）。
  *  优先用后端给的统计（与解析缓存取交集），旧版后端没有该字段时回退到按快照自算。 */
 const unresolvedCount = computed(
   () => payload.value?.unresolved_count ?? actors.value.filter((actor) => !actor.id).length
@@ -490,50 +480,17 @@ const statCards = computed(() => {
       label: '已在媒体库',
       value: payload.value?.library_count ?? 0,
       title:
-        '已在媒体库中的作品数（判定与媒体详情页的「是否在媒体库」一致：先按豆瓣/TMDB 身份匹配，' +
+        '已在媒体库中的作品数（判定与媒体详情页的「是否在媒体库」一致：先按媒体源身份匹配，' +
         '未命中时按片名 + 类型 + 年份回退匹配）。卡片角上标「已入库」；自动订阅会跳过这些作品。',
     })
   }
   return rows
 })
 
-/**
- * 豆瓣 Cookie 状态徽标。
- *
- * 它回答的是「额度够不够用」这个根因：匿名只能搜几次，用上登录态后额度明显更高。
- * 取不到时把原因原样带出来，用户才知道是去配 CookieCloud 还是去更新 Cookie。
- */
-const cookieChip = computed(() => {
-  const source = payload.value?.douban_cookie_source
-  const hint = payload.value?.douban_cookie_hint || ''
-  if (source === 'manual') {
-    return { text: 'Cookie：手填', color: 'success', icon: 'mdi-cookie', title: '使用插件内手工粘贴的豆瓣 Cookie' }
-  }
-  if (source === 'cookiecloud') {
-    return {
-      text: 'Cookie：CookieCloud',
-      color: 'success',
-      icon: 'mdi-cookie',
-      title: '已自动从宿主 CookieCloud 读取豆瓣登录态，搜索额度更高',
-    }
-  }
-  return {
-    text: 'Cookie：未取到',
-    color: 'warning',
-    icon: 'mdi-cookie-alert',
-    title: hint || '未取到豆瓣登录态，按名称搜索演员会被严格限流；可在配置页手工粘贴 Cookie',
-  }
-})
-
-/** 其中仍处于 24 小时搜索冷却内、要等冷却结束才会重试的数量 */
-const cooldownCount = computed(() => payload.value?.search_cooldown_count ?? 0)
 const unresolvedHint = computed(
   () =>
-    `还有 ${unresolvedCount.value} 位演员没解析出人物 ID（共 ${actors.value.length} 位）：` +
-    (cooldownCount.value
-      ? `其中 ${cooldownCount.value} 位在 24 小时搜索冷却内，需等冷却结束后才会重试；`
-      : `下次刷新会继续按名称搜索；`) +
-    `直接填人物 ID 或主页链接可完全跳过搜索`
+    `还有 ${unresolvedCount.value} 位演员没解析出 TMDB 人物 ID（共 ${actors.value.length} 位）：` +
+    `下次刷新会继续按名称搜索；直接填 TMDB 人物 ID 或主页链接可完全跳过搜索`
 )
 
 function isSubscribed(work: ActorWork): boolean {
@@ -552,8 +509,8 @@ function isActorActive(actor: ActorGroup): boolean {
 }
 
 /**
- * 是否属于「模糊匹配」：豆瓣上没有与配置名同名的演员，插件退回了最接近的搜索结果。
- * 此时 chip 会显示「配置名 → 豆瓣名」，避免用户找不到自己填的那位演员。
+ * 是否属于「模糊匹配」：TMDB 上没有与配置名同名的演员，插件退回了最接近的搜索结果。
+ * 此时 chip 会显示「配置名 → TMDB 名」，避免用户找不到自己填的那位演员。
  */
 function isFuzzyActor(actor: ActorGroup): boolean {
   return Boolean(actor.fuzzy) && Boolean(actor.name) && actor.name !== actor.key
@@ -570,7 +527,7 @@ function actorTitle(actor: ActorGroup): string {
   if (isFuzzyActor(actor)) {
     const candidates = (actor.candidates || []).filter(Boolean)
     return (
-      `${prefix}配置的「${actor.key}」在豆瓣没有同名演员，已按最接近的结果「${actor.name}」解析` +
+      `${prefix}配置的「${actor.key}」在 TMDB 没有同名演员，已按最接近的结果「${actor.name}」解析` +
       (candidates.length ? `（候选：${candidates.join(' / ')}）` : '') +
       `。请核对，或把配置项改成人物 ID 精确指定。${suffix}`
     )

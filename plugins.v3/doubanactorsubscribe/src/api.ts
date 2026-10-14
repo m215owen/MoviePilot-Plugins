@@ -1,5 +1,5 @@
 /**
- * 豆瓣演员订阅 —— 前端调用宿主与插件后端的公共工具。
+ * TMDB 演员订阅 —— 前端调用宿主与插件后端的公共工具。
  *
  * 重要约定：
  * 1. 优先使用宿主传入的 `api` prop（实例作用域，适配插件虚拟分身）；
@@ -117,13 +117,13 @@ function apiPrefix(): string {
 /**
  * 把图片地址转换为宿主图片代理地址。
  *
- * 豆瓣图片 CDN（`*.doubanio.com`）有防盗链：无 Referer 返回 418、Referer 不是豆瓣域名
- * 返回 403，浏览器无法伪造 Referer，因此必须经宿主 `system/img` 代理取图
- * —— 宿主会为豆瓣地址自动补 `Referer: https://movie.douban.com/`，并带图片缓存。
+ * 海报地址由后端按宿主的 `TMDB_IMAGE_DOMAIN`（国内实例常为自建镜像）拼成完整 URL，
+ * 这里再统一经宿主 `system/img` 代理取图：宿主侧带缓存、也能顺带处理镜像域名，
+ * 比让浏览器直连上游图片域名更稳。
  *
  * 契约与宿主前端 `getDisplayImageUrl()` 完全一致（探索页走的就是这条路径）：
  * `/api/v1/system/img/0?imgurl=<urlencoded>&cache=true`
- * - `{proxy}` 取 **0**：不强制走用户配置的代理服务器（豆瓣直连即可），
+ * - `{proxy}` 取 **0**：不强制走用户配置的代理服务器（图片域名通常可直连），
  *   取 1 会把取图请求塞进用户的代理配置，代理异常时图片全挂。
  * - 接口鉴权走浏览器资源 Token Cookie，因此 `<img src>` 直接可访问；
  *   服务端用 apikey 调它一定 401，这是预期行为。
@@ -151,7 +151,7 @@ export function proxyImage(url?: string | null): string {
  *
  * @param work 至少要有 `media_id`；`title` / `year` 只是帮详情页省一次匹配，
  *             `type` 则是宿主详情页的硬性依赖（取值为中文的 电影 / 电视剧，
- *             缺失时页面会渲染成空壳，因此调用方应据此决定是否回退到豆瓣页）
+ *             缺失时页面会渲染成空壳，因此调用方应据此决定是否回退到 TMDB 条目页）
  * @returns 可直接放进 `<a href>` 的地址；缺少 `media_id` 时返回空串
  */
 export function mediaPageUrl(work: {
@@ -164,7 +164,7 @@ export function mediaPageUrl(work: {
   const mediaId = String(work?.media_id ?? '').trim()
   if (!mediaId) return ''
   const params = new URLSearchParams()
-  params.set('media_source', String(work?.media_source || '').trim() || 'douban')
+  params.set('media_source', String(work?.media_source || '').trim() || 'themoviedb')
   params.set('media_id', mediaId)
   for (const key of ['title', 'year', 'type'] as const) {
     const value = String(work?.[key] ?? '').trim()
@@ -308,8 +308,8 @@ export function isMissingInfoMessage(message: string): boolean {
 /**
  * 把单个作品提交到 MoviePilot 订阅系统。
  *
- * 使用豆瓣媒体身份（media_source=douban + media_id）提交，因此不依赖宿主的识别源设置，
- * 命中准确且速度快；宿主侧会自动处理季号拆分、去重与用户归属。
+ * 使用 TMDB 媒体身份（media_source=themoviedb + media_id）提交 —— 与宿主默认的识别源
+ * 完全一致，命中准确且速度快；宿主侧会自动处理季号拆分、去重与用户归属。
  * `save_path` / `sites` 只在有值时提交，留空则沿用宿主自己的默认订阅配置。
  */
 export async function submitSubscribe(
@@ -359,7 +359,7 @@ export async function submitSubscribe(
  *
  * 宿主为什么不能直接建：订阅链必须先补齐季集信息才肯落库，未播出 / TMDB 尚未收录的
  * 作品会被直接拒掉；而宿主公开接口又把 `state` 排除在可写字段之外，
- * 所以只能由插件侧按豆瓣身份建占位订阅（待定 = 允许搜索、不允许完成）。
+ * 所以只能由插件侧按 TMDB 身份建占位订阅（待定 = 允许搜索、不允许完成）。
  */
 export async function reserveWork(
   api: PluginApi,
@@ -395,7 +395,7 @@ export async function reserveWork(
  *
  * 面板上的订阅按钮在作品已订阅时会变成「取消订阅」，点它走的就是这里。
  * 宿主公开接口只能按 media_id + season 逐条删，而面板的粒度是「这部作品」，
- * 所以由插件后端按豆瓣身份找出订阅记录再删除。
+ * 所以由插件后端按媒体身份找出订阅记录再删除。
  */
 export async function unsubscribeWork(
   api: PluginApi,
@@ -632,8 +632,8 @@ export function mergeWorks(actors: ActorGroup[]): ActorWork[] {
 /**
  * 演员在作品墙上可被搜到的名字。
  *
- * 模糊匹配（豆瓣没有同名演员，插件退回了最接近的结果）时，配置名与豆瓣名不一致：
- * 只放出豆瓣名的话，用户按自己填的名字搜作品会一条都搜不到。两个都带上。
+ * 模糊匹配（TMDB 没有同名演员，插件退回了最接近的结果）时，配置名与 TMDB 名不一致：
+ * 只放出 TMDB 名的话，用户按自己填的名字搜作品会一条都搜不到。两个都带上。
  */
 function actorDisplayNames(actor: ActorGroup): string[] {
   const name = String(actor.name || '').trim()

@@ -49,7 +49,7 @@ function mediaPageUrl(work) {
   const mediaId = String(work?.media_id ?? "").trim();
   if (!mediaId) return "";
   const params = new URLSearchParams();
-  params.set("media_source", String(work?.media_source || "").trim() || "douban");
+  params.set("media_source", String(work?.media_source || "").trim() || "themoviedb");
   params.set("media_id", mediaId);
   for (const key of ["title", "year", "type"]) {
     const value = String(work?.[key] ?? "").trim();

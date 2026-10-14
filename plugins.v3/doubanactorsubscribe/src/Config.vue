@@ -3,7 +3,7 @@
     <v-card variant="outlined" class="pa-4">
       <div class="d-flex align-center mb-3">
         <v-icon icon="mdi-cog-outline" class="mr-2" />
-        <h3 class="ma-0">豆瓣演员订阅 · 设置</h3>
+        <h3 class="ma-0">TMDB演员订阅 · 设置</h3>
         <v-spacer />
         <v-btn icon="mdi-close" variant="text" size="small" title="关闭" @click="emit('close')" />
       </div>
@@ -79,12 +79,12 @@
         class="das-actor-textarea mb-2"
       />
       <div class="text-caption das-dim mb-3">
-        用逗号分隔（也支持换行 / 顿号）；填「人物 ID」或人物主页链接可跳过搜索——豆瓣搜索限流很紧，演员多时优先填 ID。
+        用逗号分隔（也支持换行 / 顿号）；填「TMDB 人物 ID」或人物主页链接可跳过搜索，解析更精确。
       </div>
 
       <v-text-field
         v-model="searchName"
-        label="搜索豆瓣演员（辅助填写人物 ID）"
+        label="搜索 TMDB 演员（辅助填写人物 ID）"
         density="comfortable"
         hide-details
         prepend-inner-icon="mdi-magnify"
@@ -131,30 +131,15 @@
 
       <v-divider class="my-3" />
 
-      <!-- 豆瓣登录态：匿名搜索额度只有个位数，配上 Cookie 才能稳定按名称解析演员 -->
+      <!-- 数据来源说明：TMDB 凭据沿用宿主设置，插件不再需要任何登录态 -->
       <div class="text-subtitle-2 mb-2">
-        <v-icon icon="mdi-cookie-outline" size="18" class="mr-1" />
-        豆瓣 Cookie（提高搜索额度）
+        <v-icon icon="mdi-database-eye-outline" size="18" class="mr-1" />
+        数据来源：TMDB
       </div>
-      <v-alert type="info" variant="tonal" density="compact" class="mb-2">
-        默认<b>自动</b>从宿主「系统设置 → CookieCloud」读取豆瓣登录态，这里无需填写。
-        仅当 CookieCloud 没同步豆瓣、或想临时换一个账号时，才在下面手工粘贴覆盖。
+      <v-alert type="info" variant="tonal" density="compact" class="mb-3">
+        演员与作品数据全部来自 <b>TMDB</b>：凭据（<code>TMDB_API_KEY</code>）与接口 / 图片域名
+        都取自宿主「系统设置」，本插件不需要任何登录态，因此没有搜索限流与 Cookie 失效的问题。
       </v-alert>
-      <v-textarea
-        v-model="local.douban_cookie"
-        label="豆瓣 Cookie（留空 = 自动用宿主 CookieCloud）"
-        placeholder="bid=xxx; dbcl2=xxx; ck=xxx"
-        hint="浏览器登录豆瓣后按 F12 → 网络 → 任意 douban.com 请求 → 请求头 Cookie 整段复制（务必含 dbcl2）。"
-        persistent-hint
-        rows="2"
-        density="comfortable"
-        auto-grow
-        class="mb-2"
-      />
-      <div class="text-caption das-dim mb-3" :title="cookieHint">
-        当前生效来源：{{ cookieStatus }}
-        <v-icon v-if="cookieHint" icon="mdi-information-outline" size="13" class="ml-1" />
-      </div>
 
       <v-divider class="my-3" />
 
@@ -188,9 +173,9 @@
             v-model.number="local.max_works"
             type="number"
             min="5"
-            max="10"
+            max="60"
             label="每位演员展示作品数"
-            hint="豆瓣作品集接口不支持翻页，最多只能取到 10 部"
+            hint="5–60，默认 20；TMDB 的参演作品表是完整的"
             persistent-hint
             density="comfortable"
           />
@@ -247,7 +232,7 @@
               step="0.5"
               min="0"
               max="10"
-              label="最低豆瓣评分"
+              label="最低评分"
               hint="0 表示不限制"
               persistent-hint
               density="comfortable"
@@ -351,41 +336,9 @@ const defaults: PluginConfig = {
   subscribe_save_path: '',
   subscribe_downloader: '',
   subscribe_sites: [],
-  douban_cookie: '',
 }
 
 const local = reactive<PluginConfig>({ ...defaults })
-
-/**
- * 当前生效的 Cookie 来源。
- *
- * 来源由后端快照给出（`douban_cookie_source`），这里只做展示——
- * 用户最需要知道的是「到底有没有用上登录态」，而不是自己去猜。
- */
-const cookieSource = computed<string>(() => {
-  const initial = props.initialConfig as Record<string, unknown> | undefined
-  return String(initial?.douban_cookie_source || 'none')
-})
-
-/**
- * Cookie 状态只保留一句短文案，完整失败原因收进 hover 提示。
- *
- * 之前把整段错误原文直接挂在页面上，只要没配好就一直在，既占位置又容易被
- * 误读成「插件坏了」。
- */
-const cookieStatus = computed<string>(() => {
-  if (cookieSource.value === 'manual') return '插件内手填的 Cookie'
-  if (cookieSource.value === 'cookiecloud') return '宿主 CookieCloud（自动读取，已生效）'
-  return '未取到登录态（悬停查看原因）'
-})
-
-/** 未取到 Cookie 时的原因，仅在悬停时展示 */
-const cookieHint = computed<string>(() => {
-  if (cookieSource.value === 'manual' || cookieSource.value === 'cookiecloud') return ''
-  const initial = props.initialConfig as Record<string, unknown> | undefined
-  const hint = initial?.douban_cookie_hint
-  return hint ? String(hint) : '尚未取到：刷新一次后会显示原因'
-})
 
 /** 常用 cron 预设 */
 const cronPresets = [
@@ -397,8 +350,8 @@ const cronPresets = [
 ]
 
 const sortOptions = [
-  { label: '按时间（最新作品优先）', value: 'time' },
-  { label: '豆瓣默认（最受关注优先）', value: 'collection' },
+  { label: '按年份（最新作品优先）', value: 'time' },
+  { label: '按评分（高分优先）', value: 'vote' },
 ]
 
 /** 预设与自定义 cron 的双向绑定 */
@@ -480,7 +433,7 @@ const searched = ref(false)
 const searchMessage = ref('')
 const candidates = ref<ActorCandidate[]>([])
 
-/** 搜索豆瓣演员，便于拿到准确的人物 ID */
+/** 搜索 TMDB 演员，便于拿到准确的人物 ID */
 async function searchActor(): Promise<void> {
   const api = resolveApi(props)
   const name = searchName.value.trim()

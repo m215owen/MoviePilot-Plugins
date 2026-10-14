@@ -120,8 +120,8 @@
  *
  * 只负责渲染与事件抛出，订阅的后端交互由父组件完成，
  * 这样详情页 / 侧栏全页 / 仪表板可以复用同一套视觉与交互。
- * 海报统一经宿主图片代理加载，绕开豆瓣 CDN 的 Referer 防盗链。
- * 卡片上的「详情」按钮跳宿主自带的媒体详情页（见 `mediaPageUrl`），不再外链豆瓣。
+ * 海报统一经宿主图片代理加载（见 `proxyImage`）。
+ * 卡片上的「详情」按钮跳宿主自带的媒体详情页（见 `mediaPageUrl`），不再外链 TMDB。
  */
 import { mediaPageUrl, proxyImage, workKey } from './api'
 import type { ActorWork } from './types'
@@ -160,7 +160,7 @@ function isSubscribed(work: ActorWork): boolean {
  * （与探索页点进媒体是同一个页面），一眼就能看到识别结果、订阅状态与资源。
  *
  * 宿主详情页强依赖媒体类型，遇到插件没能归类出类型的作品时，
- * 退回豆瓣条目页 —— 有得看总比点开一个空页面强。
+ * 退回 TMDB 条目页 —— 有得看总比点开一个空页面强。
  */
 function detailHref(work: ActorWork): string {
   if (String(work.type || '').trim()) return mediaPageUrl(work)
@@ -171,7 +171,7 @@ function detailHref(work: ActorWork): string {
 function detailTitle(work: ActorWork): string {
   return String(work.type || '').trim()
     ? '在 MoviePilot 中打开媒体详情（新标签页）'
-    : '宿主未识别出媒体类型，改为打开豆瓣条目（新标签页）'
+    : '宿主未识别出媒体类型，改为打开 TMDB 条目（新标签页）'
 }
 </script>
 

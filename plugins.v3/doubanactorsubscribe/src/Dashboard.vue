@@ -5,7 +5,7 @@
         <v-card v-bind="hoverProps" variant="flat" class="das-dash-card">
           <v-card-title class="d-flex align-center">
             <v-icon icon="mdi-account-star-outline" size="20" class="mr-2" />
-            <span class="text-body-1">豆瓣演员订阅</span>
+            <span class="text-body-1">TMDB演员订阅</span>
             <v-spacer />
             <v-btn
               v-if="allowRefresh"

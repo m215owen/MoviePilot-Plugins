@@ -1,6 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, r as resolveApi, A as API_BASE, u as unwrap, P as PLUGIN_ID } from './_plugin-vue_export-helper-Bu1j1gfm.js';
-import { S as SubscribePrefs } from './SubscribePrefs-D9I5WgkY.js';
+import { _ as _export_sfc, r as resolveApi, A as API_BASE, u as unwrap, P as PLUGIN_ID } from './_plugin-vue_export-helper-WuUIO6Z9.js';
+import { S as SubscribePrefs } from './SubscribePrefs-Bumdpnpv.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 
@@ -111,11 +111,10 @@ const _hoisted_6 = {
 const _hoisted_7 = { class: "text-body-2" };
 const _hoisted_8 = { class: "text-caption das-dim ml-2" };
 const _hoisted_9 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_10 = ["title"];
+const _hoisted_10 = { class: "text-subtitle-2 mb-2" };
 const _hoisted_11 = { class: "text-subtitle-2 mb-2" };
 const _hoisted_12 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_13 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_14 = { class: "d-flex" };
+const _hoisted_13 = { class: "d-flex" };
 const {computed,onMounted,reactive,ref} = await importShared('vue');
 const _sfc_main = /* @__PURE__ */ _defineComponent({
   __name: "Config",
@@ -145,25 +144,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       onlyonce: false,
       subscribe_save_path: "",
       subscribe_downloader: "",
-      subscribe_sites: [],
-      douban_cookie: ""
+      subscribe_sites: []
     };
     const local = reactive({ ...defaults });
-    const cookieSource = computed(() => {
-      const initial = props.initialConfig;
-      return String(initial?.douban_cookie_source || "none");
-    });
-    const cookieStatus = computed(() => {
-      if (cookieSource.value === "manual") return "插件内手填的 Cookie";
-      if (cookieSource.value === "cookiecloud") return "宿主 CookieCloud（自动读取，已生效）";
-      return "未取到登录态（悬停查看原因）";
-    });
-    const cookieHint = computed(() => {
-      if (cookieSource.value === "manual" || cookieSource.value === "cookiecloud") return "";
-      const initial = props.initialConfig;
-      const hint = initial?.douban_cookie_hint;
-      return hint ? String(hint) : "尚未取到：刷新一次后会显示原因";
-    });
     const cronPresets = [
       { label: "每 6 小时", value: "0 */6 * * *" },
       { label: "每 12 小时", value: "0 */12 * * *" },
@@ -172,8 +155,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       { label: "每周一 08:00", value: "0 8 * * 1" }
     ];
     const sortOptions = [
-      { label: "按时间（最新作品优先）", value: "time" },
-      { label: "豆瓣默认（最受关注优先）", value: "collection" }
+      { label: "按年份（最新作品优先）", value: "time" },
+      { label: "按评分（高分优先）", value: "vote" }
     ];
     const cronPreset = computed({
       get: () => cronPresets.some((item) => item.value === local.cron) ? local.cron : "",
@@ -300,7 +283,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 icon: "mdi-cog-outline",
                 class: "mr-2"
               }),
-              _cache[24] || (_cache[24] = _createElementVNode("h3", { class: "ma-0" }, "豆瓣演员订阅 · 设置", -1)),
+              _cache[23] || (_cache[23] = _createElementVNode("h3", { class: "ma-0" }, "TMDB演员订阅 · 设置", -1)),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_btn, {
                 icon: "mdi-close",
@@ -390,7 +373,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[25] || (_cache[25] = _createTextVNode(" 订阅的演员 ", -1)),
+              _cache[24] || (_cache[24] = _createTextVNode(" 订阅的演员 ", -1)),
               _createElementVNode("span", _hoisted_4, "共 " + _toDisplayString(actorItems.value.length) + " 位", 1)
             ]),
             _createElementVNode("div", _hoisted_5, [
@@ -412,7 +395,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 disabled: !actorDraft.value.trim(),
                 onClick: addActorDraft
               }, {
-                default: _withCtx(() => [..._cache[26] || (_cache[26] = [
+                default: _withCtx(() => [..._cache[25] || (_cache[25] = [
                   _createTextVNode(" 添加 ", -1)
                 ])]),
                 _: 1
@@ -429,11 +412,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               placeholder: "多位演员用逗号分隔，例如：刘德华，吴京，张译",
               class: "das-actor-textarea mb-2"
             }, null, 8, ["modelValue"]),
-            _cache[40] || (_cache[40] = _createElementVNode("div", { class: "text-caption das-dim mb-3" }, " 用逗号分隔（也支持换行 / 顿号）；填「人物 ID」或人物主页链接可跳过搜索——豆瓣搜索限流很紧，演员多时优先填 ID。 ", -1)),
+            _cache[39] || (_cache[39] = _createElementVNode("div", { class: "text-caption das-dim mb-3" }, " 用逗号分隔（也支持换行 / 顿号）；填「TMDB 人物 ID」或人物主页链接可跳过搜索，解析更精确。 ", -1)),
             _createVNode(_component_v_text_field, {
               modelValue: searchName.value,
               "onUpdate:modelValue": _cache[7] || (_cache[7] = ($event) => searchName.value = $event),
-              label: "搜索豆瓣演员（辅助填写人物 ID）",
+              label: "搜索 TMDB 演员（辅助填写人物 ID）",
               density: "comfortable",
               "hide-details": "",
               "prepend-inner-icon": "mdi-magnify",
@@ -447,7 +430,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   loading: searching.value,
                   onClick: searchActor
                 }, {
-                  default: _withCtx(() => [..._cache[27] || (_cache[27] = [
+                  default: _withCtx(() => [..._cache[26] || (_cache[26] = [
                     _createTextVNode(" 搜索 ", -1)
                   ])]),
                   _: 1
@@ -503,7 +486,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       class: "ml-2",
                       onClick: ($event) => appendActor(item.id)
                     }, {
-                      default: _withCtx(() => [..._cache[28] || (_cache[28] = [
+                      default: _withCtx(() => [..._cache[27] || (_cache[27] = [
                         _createTextVNode(" 添加 ID ", -1)
                       ])]),
                       _: 1
@@ -516,57 +499,35 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createVNode(_component_v_divider, { class: "my-3" }),
             _createElementVNode("div", _hoisted_9, [
               _createVNode(_component_v_icon, {
-                icon: "mdi-cookie-outline",
+                icon: "mdi-database-eye-outline",
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[29] || (_cache[29] = _createTextVNode(" 豆瓣 Cookie（提高搜索额度） ", -1))
+              _cache[28] || (_cache[28] = _createTextVNode(" 数据来源：TMDB ", -1))
             ]),
             _createVNode(_component_v_alert, {
               type: "info",
               variant: "tonal",
               density: "compact",
-              class: "mb-2"
+              class: "mb-3"
             }, {
-              default: _withCtx(() => [..._cache[30] || (_cache[30] = [
-                _createTextVNode(" 默认", -1),
-                _createElementVNode("b", null, "自动", -1),
-                _createTextVNode("从宿主「系统设置 → CookieCloud」读取豆瓣登录态，这里无需填写。 仅当 CookieCloud 没同步豆瓣、或想临时换一个账号时，才在下面手工粘贴覆盖。 ", -1)
+              default: _withCtx(() => [..._cache[29] || (_cache[29] = [
+                _createTextVNode(" 演员与作品数据全部来自 ", -1),
+                _createElementVNode("b", null, "TMDB", -1),
+                _createTextVNode("：凭据（", -1),
+                _createElementVNode("code", null, "TMDB_API_KEY", -1),
+                _createTextVNode("）与接口 / 图片域名 都取自宿主「系统设置」，本插件不需要任何登录态，因此没有搜索限流与 Cookie 失效的问题。 ", -1)
               ])]),
               _: 1
             }),
-            _createVNode(_component_v_textarea, {
-              modelValue: local.douban_cookie,
-              "onUpdate:modelValue": _cache[9] || (_cache[9] = ($event) => local.douban_cookie = $event),
-              label: "豆瓣 Cookie（留空 = 自动用宿主 CookieCloud）",
-              placeholder: "bid=xxx; dbcl2=xxx; ck=xxx",
-              hint: "浏览器登录豆瓣后按 F12 → 网络 → 任意 douban.com 请求 → 请求头 Cookie 整段复制（务必含 dbcl2）。",
-              "persistent-hint": "",
-              rows: "2",
-              density: "comfortable",
-              "auto-grow": "",
-              class: "mb-2"
-            }, null, 8, ["modelValue"]),
-            _createElementVNode("div", {
-              class: "text-caption das-dim mb-3",
-              title: cookieHint.value
-            }, [
-              _createTextVNode(" 当前生效来源：" + _toDisplayString(cookieStatus.value) + " ", 1),
-              cookieHint.value ? (_openBlock(), _createBlock(_component_v_icon, {
-                key: 0,
-                icon: "mdi-information-outline",
-                size: "13",
-                class: "ml-1"
-              })) : _createCommentVNode("", true)
-            ], 8, _hoisted_10),
             _createVNode(_component_v_divider, { class: "my-3" }),
-            _createElementVNode("div", _hoisted_11, [
+            _createElementVNode("div", _hoisted_10, [
               _createVNode(_component_v_icon, {
                 icon: "mdi-tune-variant",
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[31] || (_cache[31] = _createTextVNode(" 抓取与展示 ", -1))
+              _cache[30] || (_cache[30] = _createTextVNode(" 抓取与展示 ", -1))
             ]),
             _createVNode(_component_v_row, { dense: "" }, {
               default: _withCtx(() => [
@@ -577,7 +538,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_select, {
                       modelValue: cronPreset.value,
-                      "onUpdate:modelValue": _cache[10] || (_cache[10] = ($event) => cronPreset.value = $event),
+                      "onUpdate:modelValue": _cache[9] || (_cache[9] = ($event) => cronPreset.value = $event),
                       items: cronPresets,
                       "item-title": "label",
                       "item-value": "value",
@@ -594,7 +555,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_text_field, {
                       modelValue: local.cron,
-                      "onUpdate:modelValue": _cache[11] || (_cache[11] = ($event) => local.cron = $event),
+                      "onUpdate:modelValue": _cache[10] || (_cache[10] = ($event) => local.cron = $event),
                       label: "cron 表达式",
                       hint: "5 段式，例如 0 8 * * * 表示每天 08:00",
                       "persistent-hint": "",
@@ -610,13 +571,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_text_field, {
                       modelValue: local.max_works,
-                      "onUpdate:modelValue": _cache[12] || (_cache[12] = ($event) => local.max_works = $event),
+                      "onUpdate:modelValue": _cache[11] || (_cache[11] = ($event) => local.max_works = $event),
                       modelModifiers: { number: true },
                       type: "number",
                       min: "5",
-                      max: "10",
+                      max: "60",
                       label: "每位演员展示作品数",
-                      hint: "豆瓣作品集接口不支持翻页，最多只能取到 10 部",
+                      hint: "5–60，默认 20；TMDB 的参演作品表是完整的",
                       "persistent-hint": "",
                       density: "comfortable"
                     }, null, 8, ["modelValue"])
@@ -630,7 +591,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_select, {
                       modelValue: local.sort_by,
-                      "onUpdate:modelValue": _cache[13] || (_cache[13] = ($event) => local.sort_by = $event),
+                      "onUpdate:modelValue": _cache[12] || (_cache[12] = ($event) => local.sort_by = $event),
                       items: sortOptions,
                       "item-title": "label",
                       "item-value": "value",
@@ -647,7 +608,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_switch, {
                       modelValue: local.notify,
-                      "onUpdate:modelValue": _cache[14] || (_cache[14] = ($event) => local.notify = $event),
+                      "onUpdate:modelValue": _cache[13] || (_cache[13] = ($event) => local.notify = $event),
                       label: "刷新后发送系统通知",
                       color: "primary",
                       "hide-details": "",
@@ -660,17 +621,17 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               _: 1
             }),
             _createVNode(_component_v_divider, { class: "my-3" }),
-            _createElementVNode("div", _hoisted_12, [
+            _createElementVNode("div", _hoisted_11, [
               _createVNode(_component_v_icon, {
                 icon: "mdi-auto-fix",
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[32] || (_cache[32] = _createTextVNode(" 自动订阅 ", -1))
+              _cache[31] || (_cache[31] = _createTextVNode(" 自动订阅 ", -1))
             ]),
             _createVNode(_component_v_switch, {
               modelValue: local.auto_subscribe,
-              "onUpdate:modelValue": _cache[15] || (_cache[15] = ($event) => local.auto_subscribe = $event),
+              "onUpdate:modelValue": _cache[14] || (_cache[14] = ($event) => local.auto_subscribe = $event),
               label: "开启自动订阅：把新发现的、满足条件的作品直接提交订阅",
               color: "primary",
               "hide-details": "",
@@ -679,7 +640,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             local.auto_subscribe ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
               _createVNode(_component_v_switch, {
                 modelValue: local.auto_only_new,
-                "onUpdate:modelValue": _cache[16] || (_cache[16] = ($event) => local.auto_only_new = $event),
+                "onUpdate:modelValue": _cache[15] || (_cache[15] = ($event) => local.auto_only_new = $event),
                 label: "仅订阅新出现的作品（首次抓取只建立基线，避免一次性订阅全部历史作品）",
                 color: "primary",
                 "hide-details": "",
@@ -695,13 +656,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     default: _withCtx(() => [
                       _createVNode(_component_v_text_field, {
                         modelValue: local.auto_min_vote,
-                        "onUpdate:modelValue": _cache[17] || (_cache[17] = ($event) => local.auto_min_vote = $event),
+                        "onUpdate:modelValue": _cache[16] || (_cache[16] = ($event) => local.auto_min_vote = $event),
                         modelModifiers: { number: true },
                         type: "number",
                         step: "0.5",
                         min: "0",
                         max: "10",
-                        label: "最低豆瓣评分",
+                        label: "最低评分",
                         hint: "0 表示不限制",
                         "persistent-hint": "",
                         density: "comfortable"
@@ -716,7 +677,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     default: _withCtx(() => [
                       _createVNode(_component_v_text_field, {
                         modelValue: local.auto_max_per_run,
-                        "onUpdate:modelValue": _cache[18] || (_cache[18] = ($event) => local.auto_max_per_run = $event),
+                        "onUpdate:modelValue": _cache[17] || (_cache[17] = ($event) => local.auto_max_per_run = $event),
                         modelModifiers: { number: true },
                         type: "number",
                         min: "1",
@@ -734,10 +695,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     sm: "4"
                   }, {
                     default: _withCtx(() => [
-                      _cache[35] || (_cache[35] = _createElementVNode("div", { class: "text-caption mb-1" }, "参与自动订阅的类型", -1)),
+                      _cache[34] || (_cache[34] = _createElementVNode("div", { class: "text-caption mb-1" }, "参与自动订阅的类型", -1)),
                       _createVNode(_component_v_btn_toggle, {
                         modelValue: autoTypes.value,
-                        "onUpdate:modelValue": _cache[19] || (_cache[19] = ($event) => autoTypes.value = $event),
+                        "onUpdate:modelValue": _cache[18] || (_cache[18] = ($event) => autoTypes.value = $event),
                         multiple: "",
                         density: "compact",
                         variant: "outlined",
@@ -748,7 +709,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                             size: "small",
                             value: "电影"
                           }, {
-                            default: _withCtx(() => [..._cache[33] || (_cache[33] = [
+                            default: _withCtx(() => [..._cache[32] || (_cache[32] = [
                               _createTextVNode("电影", -1)
                             ])]),
                             _: 1
@@ -757,7 +718,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                             size: "small",
                             value: "电视剧"
                           }, {
-                            default: _withCtx(() => [..._cache[34] || (_cache[34] = [
+                            default: _withCtx(() => [..._cache[33] || (_cache[33] = [
                               _createTextVNode("电视剧", -1)
                             ])]),
                             _: 1
@@ -773,21 +734,21 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               })
             ], 64)) : _createCommentVNode("", true),
             _createVNode(_component_v_divider, { class: "my-3" }),
-            _createElementVNode("div", _hoisted_13, [
+            _createElementVNode("div", _hoisted_12, [
               _createVNode(_component_v_icon, {
                 icon: "mdi-tune-variant",
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[36] || (_cache[36] = _createTextVNode(" 订阅选项 ", -1))
+              _cache[35] || (_cache[35] = _createTextVNode(" 订阅选项 ", -1))
             ]),
             _createVNode(SubscribePrefs, {
               "save-path": local.subscribe_save_path,
-              "onUpdate:savePath": _cache[20] || (_cache[20] = ($event) => local.subscribe_save_path = $event),
+              "onUpdate:savePath": _cache[19] || (_cache[19] = ($event) => local.subscribe_save_path = $event),
               downloader: local.subscribe_downloader,
-              "onUpdate:downloader": _cache[21] || (_cache[21] = ($event) => local.subscribe_downloader = $event),
+              "onUpdate:downloader": _cache[20] || (_cache[20] = ($event) => local.subscribe_downloader = $event),
               sites: local.subscribe_sites,
-              "onUpdate:sites": _cache[22] || (_cache[22] = ($event) => local.subscribe_sites = $event),
+              "onUpdate:sites": _cache[21] || (_cache[21] = ($event) => local.subscribe_sites = $event),
               api: props.api,
               "show-save": false
             }, null, 8, ["save-path", "downloader", "sites", "api"]),
@@ -797,7 +758,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               density: "compact",
               class: "my-3"
             }, {
-              default: _withCtx(() => [..._cache[37] || (_cache[37] = [
+              default: _withCtx(() => [..._cache[36] || (_cache[36] = [
                 _createTextVNode(" 保存由宿主完成：本组件只向宿主抛出 ", -1),
                 _createElementVNode("code", null, "save", -1),
                 _createTextVNode(" 事件， 宿主会调用 ", -1),
@@ -806,13 +767,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ])]),
               _: 1
             }),
-            _createElementVNode("div", _hoisted_14, [
+            _createElementVNode("div", _hoisted_13, [
               _createVNode(_component_v_btn, {
                 color: "primary",
                 loading: saving.value,
                 onClick: saveConfig
               }, {
-                default: _withCtx(() => [..._cache[38] || (_cache[38] = [
+                default: _withCtx(() => [..._cache[37] || (_cache[37] = [
                   _createTextVNode("保存配置", -1)
                 ])]),
                 _: 1
@@ -820,9 +781,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               _createVNode(_component_v_btn, {
                 variant: "text",
                 class: "ml-2",
-                onClick: _cache[23] || (_cache[23] = ($event) => emit("switch"))
+                onClick: _cache[22] || (_cache[22] = ($event) => emit("switch"))
               }, {
-                default: _withCtx(() => [..._cache[39] || (_cache[39] = [
+                default: _withCtx(() => [..._cache[38] || (_cache[38] = [
                   _createTextVNode("查看详情", -1)
                 ])]),
                 _: 1
@@ -836,6 +797,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-191e3c25"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-0ac23a72"]]);
 
 export { Config as default };

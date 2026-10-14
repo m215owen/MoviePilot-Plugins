@@ -1,5 +1,5 @@
 """
-豆瓣演员订阅的智能体工具定义。
+TMDB 演员订阅的智能体工具定义。
 
 MoviePilot 的 AI 智能体通过这里注册的工具读取插件抓取到的演员作品数据。
 工具类必须继承 ``MoviePilotTool``，并以 pydantic 字段声明
@@ -29,14 +29,15 @@ class ActorWorksInput(BaseModel):
 
 
 class DoubanActorWorksTool(MoviePilotTool):
-    """查询「豆瓣演员订阅」已抓取到的演员最新作品的智能体工具。"""
+    """查询「TMDB 演员订阅」已抓取到的演员最新作品的智能体工具。"""
 
-    # 工具名称与描述：智能体据此决定何时调用
+    # 工具名称是智能体侧的稳定标识符，保持原值不变，避免已配置的智能体找不到工具；
+    # 描述与展示文案随插件更名一起更新为 TMDB。
     name: str = "douban_actor_latest_works"
     description: str = (
         "Query the latest filmography of the actors tracked by the MoviePilot plugin "
-        "named DoubanActorSubscribe (豆瓣演员订阅). Returns each actor's most recent "
-        "movies and TV shows with year, rating and Douban subject id."
+        "named DoubanActorSubscribe (TMDB演员订阅). Returns each actor's most recent "
+        "movies and TV shows with year, rating and TMDB id."
     )
     # 输入参数模型
     args_schema: Type[BaseModel] = ActorWorksInput
@@ -54,7 +55,7 @@ class DoubanActorWorksTool(MoviePilotTool):
 
     def get_tool_message(self, **kwargs: Any) -> Optional[str]:
         """返回给用户的执行提示语。"""
-        return "正在查询豆瓣演员的最新作品……"
+        return "正在查询 TMDB 演员的最新作品……"
 
     async def run(
         self, actor: Optional[str] = None, limit: int = 8, **kwargs: Any
@@ -68,7 +69,7 @@ class DoubanActorWorksTool(MoviePilotTool):
         """
         plugin = type(self)._plugin_ref
         if plugin is None:
-            return "豆瓣演员订阅插件当前未运行，无法查询作品。"
+            return "TMDB 演员订阅插件当前未运行，无法查询作品。"
 
         try:
             size = max(1, min(int(limit), 50))
@@ -92,7 +93,7 @@ class DoubanActorWorksTool(MoviePilotTool):
             actors = matched
 
         if not actors:
-            return "豆瓣演员订阅插件尚未抓取到任何演员作品，请先配置演员并刷新一次。"
+            return "TMDB 演员订阅插件尚未抓取到任何演员作品，请先配置演员并刷新一次。"
 
         blocks = []
         for item in actors:
@@ -104,7 +105,7 @@ class DoubanActorWorksTool(MoviePilotTool):
             lines = [
                 f"  · {work.get('title')}（{work.get('year') or '年份未知'}）"
                 f"{work.get('type') or ''} 评分 {work.get('vote') or '暂无'}"
-                f"｜豆瓣ID {work.get('media_id')}"
+                f"｜TMDB ID {work.get('media_id')}"
                 for work in works
             ]
             blocks.append(f"【{name}】最近 {len(lines)} 部作品：\n" + "\n".join(lines))

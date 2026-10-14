@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { r as resolveApi, l as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage, g as mediaPageUrl } from './_plugin-vue_export-helper-Bu1j1gfm.js';
+import { r as resolveApi, l as unignoreWork, P as PLUGIN_ID, _ as _export_sfc, w as workKey, p as proxyImage, g as mediaPageUrl } from './_plugin-vue_export-helper-WuUIO6Z9.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 
@@ -250,7 +250,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       return String(work.url || "").trim() || mediaPageUrl(work);
     }
     function detailTitle(work) {
-      return String(work.type || "").trim() ? "在 MoviePilot 中打开媒体详情（新标签页）" : "宿主未识别出媒体类型，改为打开豆瓣条目（新标签页）";
+      return String(work.type || "").trim() ? "在 MoviePilot 中打开媒体详情（新标签页）" : "宿主未识别出媒体类型，改为打开 TMDB 条目（新标签页）";
     }
     return (_ctx, _cache) => {
       const _component_v_icon = _resolveComponent("v-icon");
@@ -424,6 +424,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-65ddf1ef"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-a950ac3f"]]);
 
 export { IgnoredManager as I, WorkGrid as W };

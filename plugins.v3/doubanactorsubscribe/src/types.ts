@@ -1,5 +1,5 @@
 /**
- * 豆瓣演员订阅 —— 前后端共享的数据结构定义。
+ * TMDB 演员订阅 —— 前后端共享的数据结构定义。
  *
  * 字段与后端 `DoubanActorSubscribe._default_config()` / `get_works_payload()` 保持一致。
  */
@@ -16,13 +16,13 @@ export interface PluginConfig {
   sidebar_nav: boolean
   /** 定时刷新 cron 表达式 */
   cron: string
-  /** 演员列表：每行一个「演员名」或「豆瓣人物 ID」 */
+  /** 演员列表：每行一个「演员名」或「TMDB 人物 ID」 */
   actors: string
-  /** 每位演员展示/保留的作品数上限 */
+  /** 每位演员展示/保留的作品数上限（5–60，默认 20） */
   max_works: number
-  /** 作品排序：time（按时间）/ vote（按评分）/ collection（豆瓣默认） */
+  /** 作品排序：time（按最新年份优先）/ vote（按评分优先） */
   sort_by: string
-  /** 请求豆瓣时是否走宿主配置的代理 */
+  /** 请求 TMDB 时是否走宿主配置的代理 */
   proxy: boolean
   /** 刷新完成后是否发送系统通知 */
   notify: boolean
@@ -30,7 +30,7 @@ export interface PluginConfig {
   auto_subscribe: boolean
   /** 自动订阅是否只针对“新出现”的作品（首次抓取只建基线） */
   auto_only_new: boolean
-  /** 自动订阅的最低豆瓣评分，0 表示不限制 */
+  /** 自动订阅的最低评分（TMDB vote_average），0 表示不限制 */
   auto_min_vote: number
   /** 自动订阅的媒体类型白名单，逗号分隔，如「电影,电视剧」 */
   auto_types: string
@@ -42,17 +42,6 @@ export interface PluginConfig {
   subscribe_downloader: string
   /** 订阅偏好：默认订阅站点 ID 列表，空数组表示跟随宿主默认配置 */
   subscribe_sites: number[]
-  /**
-   * 手工粘贴的豆瓣 Cookie（留空 = 自动复用宿主 CookieCloud 里的豆瓣登录态）。
-   *
-   * 豆瓣对匿名请求返回 `403 need_login` 做限流，按名称搜索演员时额度只有个位数；
-   * 带上登录态后实测可用次数显著提升，且不受出口 IP 被拉黑影响。
-   */
-  douban_cookie: string
-  /** 运行时回显：当前 Cookie 来源 manual / cookiecloud / none（只读） */
-  douban_cookie_source?: string
-  /** 运行时回显：CookieCloud 取不到时的原因（只读） */
-  douban_cookie_hint?: string
   /** 保存后立即刷新一次 */
   onlyonce?: boolean
   /** 运行期统计：累计刷新次数（只读） */
@@ -61,11 +50,11 @@ export interface PluginConfig {
   pending_refresh?: boolean
 }
 
-/** 单个影视作品（豆瓣条目） */
+/** 单个影视作品（TMDB 条目） */
 export interface ActorWork {
-  /** 媒体来源，固定为 douban */
+  /** 媒体来源，固定为 themoviedb */
   media_source: string
-  /** 豆瓣条目 ID */
+  /** TMDB 条目 ID */
   media_id: string
   /** 标题 */
   title: string
@@ -73,17 +62,17 @@ export interface ActorWork {
   year: string
   /** MoviePilot 媒体类型：电影 / 电视剧；无法归类时为空串 */
   type: string
-  /** 豆瓣原始类型：movie / tv 等 */
+  /** TMDB 原始类型：movie / tv */
   raw_type?: string
   /** 是否可参与自动订阅 */
   subscribable: boolean
-  /** 豆瓣评分 */
+  /** TMDB 评分（vote_average） */
   vote: number
-  /** 海报地址 */
+  /** 海报地址（已按宿主的 TMDB 图片域名拼成完整地址） */
   poster: string
-  /** 豆瓣卡片副标题（年份 / 地区 / 类型 / 主演） */
+  /** 作品原名（TMDB original_title / original_name） */
   subtitle?: string
-  /** 豆瓣条目页地址 */
+  /** TMDB 条目页地址 */
   url?: string
   /** 该演员在此作品中的职务 */
   roles?: string[]
@@ -113,7 +102,7 @@ export interface ActorWork {
 export interface ActorBrief {
   /** 配置项原文（演员名或人物 ID） */
   key: string
-  /** 豆瓣人物 ID */
+  /** TMDB 人物 ID */
   id: string
   /** 演员名 */
   name: string
@@ -126,8 +115,8 @@ export interface ActorBrief {
   /**
    * 是否「按最接近的搜索结果」解析出来的。
    *
-   * 豆瓣人物搜索是模糊匹配：配置「宋星颐」会返回「宋星翰 / 宋星成 / 宋星辰…」，
-   * 插件拿不到同名条目时会退回第一个候选。此时 `key`（用户填的）与 `name`（豆瓣上的）
+   * TMDB 人物搜索同样是模糊匹配：配置「宋星颐」会返回「宋星翰 / 宋星成 / 宋星辰…」，
+   * 插件拿不到同名条目时会退回第一个候选。此时 `key`（用户填的）与 `name`（TMDB 上的）
    * 不一致，面板必须提示，否则用户会以为「加的演员没生效」。
    */
   fuzzy?: boolean
@@ -144,7 +133,7 @@ export interface ActorBrief {
   is_new?: boolean
   /** 解析或抓取错误 */
   error?: string | null
-  /** 该错误是否为可重试（豆瓣限流/网络失败），前端据此显示「稍后重试」而非「改配置」 */
+  /** 该错误是否为可重试（网络失败 / 上游异常），前端据此显示「稍后重试」而非「改配置」 */
   retryable?: boolean
 }
 
@@ -161,6 +150,8 @@ export interface AutoSubscribeRecord {
   year: string
   type: string
   vote?: number
+  /** 媒体来源（themoviedb）；旧记录没有该字段时按 TMDB 处理 */
+  media_source?: string
   media_id: string
   success: boolean
   detail: string
@@ -197,23 +188,12 @@ export interface WorksPayload {
   subscribe_downloader?: string
   /** 订阅偏好：当前默认订阅站点 */
   subscribe_sites: number[]
-  /** 当前豆瓣 Cookie 来源：manual（插件内手填）/ cookiecloud（宿主自动取）/ none */
-  douban_cookie_source?: string
-  /** 未取到豆瓣 Cookie 时的原因，直接展示给用户 */
-  douban_cookie_hint?: string
   /**
-   * 还没解析出人物 ID 的演员数。
+   * 还没解析出 TMDB 人物 ID 的演员数。
    *
-   * 0 表示全部解析完毕，之后刷新只走详情/作品集接口，不再消耗搜索额度。
+   * 0 表示全部解析完毕，之后刷新直接走人物详情接口，不再需要按名称搜索。
    */
   unresolved_count?: number
-  /**
-   * 「待解析」演员中仍处于 24 小时搜索冷却内的数量。
-   *
-   * 只统计**尚未解析出人物 ID**的演员：某位演员成功搜到 ID 后本轮就不会再搜，
-   * 把它的历史搜索记录也算成冷却会让数字只涨不降（搜索记录满 24 小时才过期）。
-   */
-  search_cooldown_count?: number
   /** 被用户忽略的作品数量；面板据此显示「已忽略 N 部」入口 */
   ignored_count?: number
   /** 被忽略的作品明细，用于在面板上恢复 */
@@ -260,7 +240,7 @@ export interface DownloadClientOption {
   type: string
 }
 
-/** 豆瓣演员搜索候选 */
+/** TMDB 演员搜索候选 */
 export interface ActorCandidate {
   id: string
   name: string

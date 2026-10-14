@@ -1,6 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { S as SubscribePrefs } from './SubscribePrefs-D9I5WgkY.js';
-import { e as formatTime, A as API_BASE, g as mediaPageUrl, r as resolveApi, n as normalizeResult, P as PLUGIN_ID, a as waitForRefresh, _ as _export_sfc } from './_plugin-vue_export-helper-Bu1j1gfm.js';
+import { S as SubscribePrefs } from './SubscribePrefs-Bumdpnpv.js';
+import { e as formatTime, A as API_BASE, g as mediaPageUrl, r as resolveApi, n as normalizeResult, P as PLUGIN_ID, a as waitForRefresh, _ as _export_sfc } from './_plugin-vue_export-helper-WuUIO6Z9.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -58,14 +58,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       if (!mediaId) return "";
       if (String(row.type || "").trim()) {
         return mediaPageUrl({
-          media_source: "douban",
+          media_source: row.media_source || "themoviedb",
           media_id: mediaId,
           title: row.title,
           year: row.year,
           type: row.type
         });
       }
-      return `https://movie.douban.com/subject/${mediaId}/`;
+      const section = String(row.type || "").includes("电视剧") ? "tv" : "movie";
+      return `https://www.themoviedb.org/${section}/${mediaId}`;
     }
     const actorsText = computed({
       get: () => String(local.actors || "").split(/[\r\n,，、;；]+/).map((item) => item.trim()).filter(Boolean).join("，"),
@@ -228,7 +229,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             icon: "mdi-chart-timeline-variant",
             class: "mr-1"
           }),
-          _cache[9] || (_cache[9] = _createElementVNode("h2", { class: "text-h6 ma-0" }, "豆瓣演员订阅 · 运行状态", -1)),
+          _cache[9] || (_cache[9] = _createElementVNode("h2", { class: "text-h6 ma-0" }, "TMDB演员订阅 · 运行状态", -1)),
           _createVNode(_component_v_chip, {
             size: "small",
             variant: "tonal"
@@ -348,7 +349,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       "onUpdate:modelValue": _cache[4] || (_cache[4] = ($event) => actorsText.value = $event),
                       label: "订阅的演员",
                       placeholder: "多位演员用逗号分隔，例如：刘德华，吴京，张译",
-                      hint: "演员名或豆瓣人物 ID/主页链接均可，用逗号分隔（也支持换行 / 顿号）。填 ID 或链接可跳过搜索——豆瓣匿名搜索有严格限流，演员多时按名称搜索会失败。",
+                      hint: "演员名或 TMDB 人物 ID/主页链接均可，用逗号分隔（也支持换行 / 顿号）。填 ID 或链接可跳过搜索，解析结果也更精确。",
                       "persistent-hint": "",
                       rows: "4",
                       "no-resize": "",
@@ -454,7 +455,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                                       href: recordHref(row),
                                       target: "_blank",
                                       rel: "noopener",
-                                      title: row.type ? "在 MoviePilot 中打开媒体详情" : "打开豆瓣条目"
+                                      title: row.type ? "在 MoviePilot 中打开媒体详情" : "打开 TMDB 条目"
                                     }, _toDisplayString(row.title), 9, _hoisted_11)) : (_openBlock(), _createElementBlock("span", _hoisted_12, _toDisplayString(row.title), 1)),
                                     _createElementVNode("span", _hoisted_13, _toDisplayString(row.year || ""), 1)
                                   ]),
@@ -540,6 +541,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-8bbb59a4"]]);
+const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-be2c0676"]]);
 
 export { AppPageSettings as default };

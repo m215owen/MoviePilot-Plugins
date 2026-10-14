@@ -4,17 +4,17 @@
 }
 
 /* 仅使用 scoped 样式；不要编写会全局生效的选择器（组件库类名、html、body、:root） */
-.das-dim[data-v-191e3c25] {
+.das-dim[data-v-0ac23a72] {
   opacity: 0.75;
 }
 
 /* 固定高度 + 内部滚动：演员再多也不会把配置页撑长 */
-.das-actor-textarea[data-v-191e3c25] {
+.das-actor-textarea[data-v-0ac23a72] {
   max-height: 220px;
 }
 
 /* 快捷添加栏：窄屏时输入框占满一行，按钮换行跟随 */
-.das-actor-input[data-v-191e3c25] {
+.das-actor-input[data-v-0ac23a72] {
   flex: 1 1 260px;
   min-width: 220px;
 }

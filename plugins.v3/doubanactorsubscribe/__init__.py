@@ -1,31 +1,29 @@
 """
-豆瓣演员订阅（MoviePilot V3 插件后端）。
+TMDB 演员订阅（MoviePilot V3 插件后端）。
 
-功能：按配置的演员（豆瓣人物名或人物 ID）抓取其「影视作品集」，把最新作品
-展示在插件详情页 / 仪表板 / 侧栏全页，面板上提供「一键订阅」把作品提交给
+功能：按配置的演员（TMDB 人物名或人物 ID）抓取其参演作品（``combined_credits``），
+把最新作品展示在插件详情页 / 仪表板 / 侧栏全页，面板上提供「一键订阅」把作品提交给
 MoviePilot 的订阅系统；可选开启自动订阅，把新出现且满足筛选条件的作品入库。
 
 实现要点（V3 契约）：
-1. 豆瓣接口在插件内自持（Frodo API + HMAC-SHA1 签名），只依赖 ``app.sdk.network``
-   的 HTTP 工具，不碰宿主内部目录，避免宿主结构变化导致插件加载失败。
+1. TMDB 接口在插件内自持（``/3/search/person`` 与 ``/3/person/{id}``），只依赖
+   ``app.sdk.network`` 的 HTTP 工具与宿主设置里的 TMDB 凭据，不碰宿主内部目录，
+   避免宿主结构变化导致插件加载失败。
 2. 自动订阅走官方稳定入口 ``app.chain.subscribe.SubscribeChain``（官方 V3 插件
    doubanrank / bangumicoll 等均如此）；前端面板的「订阅」按钮则直接调用宿主
    ``POST /api/v1/subscribe/``，使订阅归属到当前登录用户。
-3. 配置与数据一律走基类方法（``get_data`` / ``save_data`` / ``update_config``），
+3. 媒体身份一律使用 TMDB（``media_source=themoviedb`` + TMDB id）：宿主的识别、
+   订阅与媒体库判定本来就以 TMDB 为默认源，因此订阅链与「是否已在库」都能直接命中。
+4. 配置与数据一律走基类方法（``get_data`` / ``save_data`` / ``update_config``），
    并且全部以 ``self.__class__.__name__`` 推导 ID，兼容插件虚拟分身。
-4. 不在模块导入期做网络 / 数据库 / 任务启动。
+5. 不在模块导入期做网络 / 数据库 / 任务启动。
 """
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import re
 import time
 from datetime import datetime
-from random import choice
 from typing import Any, Dict, List, Optional, Tuple
-from urllib import parse
 
 from apscheduler.triggers.cron import CronTrigger
 
@@ -48,9 +46,9 @@ except ImportError:  # pragma: no cover
 from .agenttool import DoubanActorWorksTool
 
 # 插件展示名，同时作为自动订阅的归属用户名
-PLUGIN_NAME = "豆瓣演员订阅"
+PLUGIN_NAME = "TMDB演员订阅"
 
-# 豆瓣作品类型 → MoviePilot 媒体类型
+# 作品类型 → MoviePilot 媒体类型
 _TYPE_ALIASES: Dict[str, str] = {
     "movie": MediaType.MOVIE.value,
     "电影": MediaType.MOVIE.value,
@@ -111,8 +109,8 @@ def _looks_like_missing_info(message: str) -> bool:
         return True
     return "季" in text and "集" in text
 
-# 豆瓣部分标题会夹带零宽/双向控制字符（实测「神探之痕迹\u200e」），
-# 这类字符不可见却会污染订阅名与去重比对，统一剔除。
+# 部分条目标题会夹带零宽/双向控制字符，这类字符不可见却会污染订阅名
+# 与去重比对，统一剔除。
 _INVISIBLE_CHARS = dict.fromkeys(
     [0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2060, 0xFEFF]
 )
@@ -123,35 +121,22 @@ def _clean_text(value: Any) -> str:
     return str(value or "").translate(_INVISIBLE_CHARS).strip()
 
 
-# 豆瓣匿名搜索的限流非常严格：实测连续搜索约 5 次后，后续请求一律返回
-# 403 ``{"msg": "need_login", "code": 103}``，且 90 秒内不恢复。
-# 这种失败**不是**「没这个人」，必须与真正的空结果分开提示，否则会误导用户改配置。
-_RATE_LIMIT_HINT = "豆瓣搜索被限流，稍后会自动重试；也可直接填人物 ID 跳过搜索"
-
-# 豆瓣对匿名请求返回 403 need_login（code 103）作为限流信号；带上已登录的 Cookie 能显著抬高额度。
-# 因此这条提示是可操作的：告诉用户去哪里解决，而不是让他反复重试。
-_NEED_LOGIN_HINT = (
-    "豆瓣要求登录（need_login）：请在插件配置里粘贴「豆瓣 Cookie」，"
-    "或确认宿主的 CookieCloud 已同步豆瓣登录态；额度会明显提升。"
-    "也可直接填人物 ID/主页链接跳过搜索"
+# TMDB 凭据缺失时的提示。凭据取宿主「系统设置」里的 ``TMDB_API_KEY``，
+# 官方镜像通常自带一个公共 Key，用户一般无需另行配置。
+_TMDB_UNCONFIGURED_HINT = (
+    "未取到 TMDB API Key：请在宿主「系统设置 → 媒体数据源」里填写 TMDB_API_KEY"
 )
 
-# 已经带 Cookie 却仍返回 need_login，通常意味着登录态已过期，提示要能区分这两种情况
-_COOKIE_EXPIRED_HINT = (
-    "豆瓣仍要求登录（need_login）：Cookie 可能已失效，"
-    "请在浏览器重新登录豆瓣并同步 CookieCloud，或在插件里更新豆瓣 Cookie"
-)
+# TMDB 图片 CDN 前缀（兜底）。宿主若配置了 ``TMDB_IMAGE_DOMAIN``（国内镜像常见）
+# 就优先用镜像域名，否则回落到官方 image.tmdb.org。
+_TMDB_IMAGE_FALLBACK = "https://image.tmdb.org/t/p"
 
-# 每位演员「成功搜索一次」后，24 小时内不再按名称重复搜索。
-# 豆瓣的搜索额度（匿名约 5 次、登录态也只多几倍）极其有限，而解析出人物 ID 后
-# 本可长期复用；这里加一道 24 小时冷却，避免缓存丢失或异常路径下白花一次额度。
-#
-# 冷却是**成功才触发**的：限流 / need_login / 查无此人这些失败不记账，
-# 下一轮刷新仍会重试（限流窗口很短，锁死一整天反而让演员长期解析不出来）。
-#
-# 注意：冷却只作用于「按名称搜索」这一步。已经解析出人物 ID 的演员本来就不搜索，
-# 其作品与详情仍按 cron / 手动刷新照常抓取，不受此冷却影响。
-_SEARCH_COOLDOWN_SECONDS = 24 * 3600
+# 海报尺寸段：作品墙卡片宽约 134px，2:3 海报取 w300 已足够清晰。
+_TMDB_IMAGE_SIZE = "w300"
+
+# ``combined_credits`` 会返回演员的全部作品（可能上百条）。这里只做一个防御性上限，
+# 真正决定展示与订阅条数的是配置项 ``max_works``。
+_TMDB_CREDITS_LIMIT = 500
 
 # 「新」的时间窗：演员自**加入订阅列表**起、作品自**在演员加入之后首次出现**起，
 # N 天内标「新」。
@@ -187,27 +172,44 @@ def _parse_ts(value: Any) -> float:
         return 0.0
 
 
-def _format_remaining(seconds: float) -> str:
-    """把剩余冷却秒数写成「X 小时 Y 分钟」，便于用户判断什么时候会重试。"""
-    total = max(0, int(seconds))
-    hours, minutes = total // 3600, (total % 3600) // 60
-    if hours and minutes:
-        return f"{hours} 小时 {minutes} 分钟"
-    if hours:
-        return f"{hours} 小时"
-    return f"{max(1, minutes)} 分钟"
+def _as_float(value: Any, default: float = 0.0) -> float:
+    """把任意输入转成 ``float``；非法输入返回默认值。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
-def _search_cooldown_hint(remain_seconds: float) -> str:
-    """搜索冷却期内的提示。要带上「还有多久」，否则用户会以为插件卡住了。"""
-    return (
-        f"24 小时内已搜索过（每位演员每 24 小时只搜 1 次），"
-        f"约 {_format_remaining(remain_seconds)}后自动重试；"
-        f"也可直接填人物 ID/主页链接跳过搜索"
-    )
+# 从 TMDB 人物主页地址中提取人物 ID，方便用户直接粘贴链接，
+# 例如 ``https://www.themoviedb.org/person/1245``（可带 ``/zh-CN/`` 语言前缀）。
+_PERSON_URL_PATTERN = re.compile(r"person/(\d+)")
 
-# 从豆瓣人物主页地址中提取人物 ID，方便用户直接粘贴链接
-_PERSON_URL_PATTERN = re.compile(r"(?:personage|celebrity)/(\d+)")
+# 发现源标记（写进数据目录的 ``schema`` 键）。v1.15.0 之前是豆瓣，
+# 人物 ID / 作品 ID 与 TMDB 是两套完全无关的编号，混用会张冠李戴，
+# 因此换源后必须把旧快照与旧身份缓存一次性作废（见 ``_migrate_source``）。
+_SOURCE_SCHEMA = "tmdb-v1"
+
+# 解析缓存里属于「身份」的字段：发现源一变，这些全部失效。
+# 刻意不含 ``joined_at`` / ``baseline_at`` —— 它们记的是「这位演员什么时候进入
+# 订阅列表」，与用哪个源解析无关，丢掉会让上百位老演员被补成「新演员」。
+_STALE_IDENTITY_FIELDS = (
+    "id",
+    "name",
+    "avatar",
+    "biography",
+    "resolved_from",
+    "fuzzy",
+    "candidates",
+    "error",
+    "retryable",
+    "source",
+)
+
+# 解析缓存条目里「承载状态」的字段：``id`` 记这个人是谁，``joined_at`` 记他什么时候
+# 进入订阅列表（决定新演员标记），``baseline_at`` 记新作品基线。三者一个都不剩，
+# 说明这条缓存只是历史遗留的空壳，留着只会让缓存体积与演员计数虚高（见
+# ``_prune_orphan_cache``）。注意 ``key`` 不在其中 —— 它只是键名的副本，不是状态。
+_CACHE_MEANINGFUL_FIELDS = ("id", "joined_at", "baseline_at")
 
 
 def _media_server_oper() -> Any:
@@ -307,344 +309,202 @@ class _LibraryProbe:
 
 
 
-class _CookieCloudClient:
-    """从 CookieCloud 取指定域名的 Cookie。
+class _TmdbClient:
+    """TMDB 的轻量客户端（插件内自持，不依赖宿主内部模块）。
 
-    为什么不自己解密：CookieCloud 服务端支持 ``POST /get/{key}`` 带密码直接返回**已解密**的
-    ``cookie_data``，这样插件不必实现 CookieCloud 的 AES 解密（那需要宿主内部模块或额外依赖），
-    只依赖 ``app.sdk.network`` 即可。
+    只依赖 ``app.sdk.network.RequestUtils`` 与宿主设置里的三个键：
+    ``TMDB_API_KEY``（凭据）、``TMDB_API_DOMAIN``（接口域名，国内实例常指向自建反代）、
+    ``TMDB_IMAGE_DOMAIN``（图片域名，常与接口域名分开部署）。三者都做了存在性兜底，
+    宿主版本缺少其中某个键时回落到官方域名，插件仍能正常加载。
 
-    注意：本类只把 Cookie 留在内存里，不落盘、不写日志，避免把用户的登录态持久化。
+    失败一律返回 ``None`` / 空列表并把原因写进 ``last_error``，由上层去区分
+    「这位演员确实没有作品」与「请求没成功、稍后重试」——两者的用户提示完全不同。
     """
 
-    TIMEOUT = 20
+    TIMEOUT = 15
+    SEARCH_PATH = "/3/search/person"
+    PERSON_PATH = "/3/person/{person_id}"
+    DEFAULT_API_DOMAIN = "api.themoviedb.org"
 
-    def __init__(self, host: str = "", key: str = "", password: str = "") -> None:
-        self._host = str(host or "").strip().rstrip("/")
-        self._key = str(key or "").strip()
-        self._password = str(password or "").strip()
+    def __init__(
+        self,
+        proxy: bool = False,
+        api_key: Optional[str] = None,
+        api_domain: Optional[str] = None,
+        image_domain: Optional[str] = None,
+    ) -> None:
+        self._proxy = proxy
+        self._api_key = str(
+            api_key if api_key is not None else getattr(settings, "TMDB_API_KEY", "") or ""
+        ).strip()
+        domain = api_domain if api_domain is not None else getattr(settings, "TMDB_API_DOMAIN", "")
+        self._api_domain = str(domain or "").strip() or self.DEFAULT_API_DOMAIN
+        image = (
+            image_domain
+            if image_domain is not None
+            else getattr(settings, "TMDB_IMAGE_DOMAIN", "")
+        )
+        image = str(image or "").strip()
+        # 宿主配了图片镜像域就用它（国内实例通常单独反代图片），否则回落到官方 CDN
+        self._image_base = f"https://{image}/t/p" if image else _TMDB_IMAGE_FALLBACK
+        # 最近一次请求的可观测状态，供上层区分「确实没有结果」与「请求失败」
+        self.last_status = 0
         self.last_error = ""
 
     @property
     def configured(self) -> bool:
-        """服务器地址、用户 KEY、加密密码三者齐全才算配置可用。"""
-        return bool(self._host and self._key and self._password)
+        """有 API Key 才能用。宿主默认带一个公共 Key，因此通常都是可用的。"""
+        return bool(self._api_key)
 
-    def fetch(self, domain_keyword: str) -> str:
-        """取包含 ``domain_keyword`` 的域名分组，拼成可直接使用的 Cookie 头。
-
-        :param domain_keyword: 域名关键字，如 ``douban.com``
-        :return: 形如 ``bid=xxx; dbcl2=yyy`` 的 Cookie 头；失败返回空串并写入 ``last_error``
-        """
-        self.last_error = ""
-        if not self.configured:
-            self.last_error = "CookieCloud 未配置（缺服务器地址 / KEY / 密码）"
-            return ""
-
-        response = None
-        try:
-            response = RequestUtils(
-                content_type="application/json", timeout=self.TIMEOUT
-            ).post_res(url=f"{self._host}/get/{self._key}", json={"password": self._password})
-            if response is None:
-                self.last_error = "CookieCloud 请求失败（网络不可达或地址有误）"
-                return ""
-            if response.status_code != 200:
-                self.last_error = f"CookieCloud 返回 HTTP {response.status_code}"
-                return ""
-            payload = response.json()
-        except Exception as err:  # noqa: BLE001 - 任何异常都降级为「取不到」
-            self.last_error = f"CookieCloud 请求异常：{err}"
-            return ""
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:  # pragma: no cover - 关闭失败可忽略
-                    pass
-
-        contents = payload.get("cookie_data") if isinstance(payload, dict) else None
-        if not isinstance(contents, dict):
-            # 服务端没解密时会只回 encrypted，此时必须给出明确原因，否则用户无从下手
-            self.last_error = (
-                "CookieCloud 只返回了密文（服务端未解密），请在插件配置里手工粘贴豆瓣 Cookie"
-                if isinstance(payload, dict) and payload.get("encrypted")
-                else "CookieCloud 返回内容为空"
-            )
-            return ""
-
-        pairs: List[str] = []
-        seen: set = set()
-        for domain, cookies in contents.items():
-            if domain_keyword not in str(domain).lower() or not isinstance(cookies, list):
-                continue
-            for item in cookies:
-                if not isinstance(item, dict):
-                    continue
-                name, value = item.get("name"), item.get("value")
-                # 同名 Cookie 只取第一个，避免后面的空值覆盖前面的有效值
-                if not name or value is None or name in seen:
-                    continue
-                seen.add(name)
-                pairs.append(f"{name}={value}")
-
-        if not pairs:
-            self.last_error = f"CookieCloud 里没有 {domain_keyword} 的 Cookie（请确认浏览器已登录豆瓣并同步）"
-            return ""
-        return "; ".join(pairs)
-
-
-class _DoubanClient:
-    """豆瓣 Frodo API 的轻量客户端（插件内自持，不依赖宿主内部模块）。
-
-    仅使用 ``app.sdk.network.RequestUtils`` 发请求，签名规则与豆瓣移动端一致：
-    ``_sig = base64(hmac_sha1(secret, "GET&" + quote(path) + "&" + _ts))``。
-
-    注意：``path`` 必须是**完整请求路径**，即包含 ``/api/v2`` 前缀。
-    豆瓣服务端按全路径校验签名，漏掉前缀会直接返回 400 Bad Request
-    （宿主 ``app.modules.douban.apiv2`` 也是用 ``urlparse(full_url).path`` 取全路径再签名）。
-    """
-
-    BASE_URL = "https://frodo.douban.com/api/v2"
-    # 签名覆盖的路径前缀，必须与 BASE_URL 的路径部分一致
-    SIGN_BASE_PATH = "/api/v2"
-    API_KEY = "0dad551ec0f84ed02907ff5c42e8ec70"
-    API_SECRET = "bf7dddc7c9cfe6f7"
-    TIMEOUT = 15
-    # 作品集接口单次返回条数上限。实测请求 20/50 同样只回 10 条，
-    # 且任何 start > 0 都会得到 {"total": 0, "works": []}，即**不支持翻页**，
-    # 因此每位演员实际只能取到最近 10 部作品（插件侧的 max_works 也就封顶为 10）。
-    MAX_WORKS_PER_REQUEST = 10
-    # 该接口仅 time / collection 有效；vote 会返回空列表，故做白名单兜底
-    SORT_ORDERS = ("time", "collection")
-    # 豆瓣限流响应：搜索为 403 code 103(need_login)，详情为 403 code 400010(subject_ip_rate_limit)。
-    # 详情接口的限流窗口很短（实测第 11 次失败、第 15 次已恢复），因此值得退避重试；
-    # 搜索接口的限流窗口很长（90 秒内不恢复），重试几次后就该放弃并如实上报。
-    RATE_LIMIT_STATUS = frozenset({403, 429, 503})
-    RATE_LIMIT_RETRIES = 2
-    RATE_LIMIT_BACKOFF = 1.5
-    # 相邻请求之间的最小间隔，降低触发限流的概率
-    POLITE_DELAY = 0.35
-    USER_AGENTS = (
-        "api-client/1 com.douban.frodo/7.22.0.beta9(231) Android/23 product/Mate 40 "
-        "vendor/HUAWEI model/Mate 40 brand/HUAWEI  rom/android  network/wifi  platform/AndroidPad",
-        "api-client/1 com.douban.frodo/7.18.0(230) Android/22 product/MI 9 vendor/Xiaomi "
-        "model/MI 9 brand/Android  rom/miui6  network/wifi  platform/mobile nd/1",
-    )
-
-    def __init__(self, proxy: bool = False, cookie: str = "") -> None:
-        self._proxy = proxy
-        # 用户粘贴的豆瓣 Cookie（完整请求头原文）。豆瓣对匿名请求用 403 need_login
-        # 做限流，带上已登录 Cookie 后额度会明显抬升，因此这是首选的可配置项。
-        self._cookie = str(cookie or "").strip()
-        self._last_request_at = 0.0
-        # 最近一次请求的可观测状态，供上层区分「确实没有结果」与「请求被限流/失败」
-        self.last_status = 0
-        self.last_error = ""
-        self.last_rate_limited = False
-        # 是否命中过 need_login（豆瓣把「未登录」当限流信号用）
-        self.last_need_login = False
-        self.last_body = ""
-        # 真实发起过的名称搜索次数。上层用它判断「这位演员今天到底搜没搜过」，
-        # 只有真的打了搜索接口才记账，拿链接/ID 直接命中的不算。
-        self.search_calls = 0
-
-    @classmethod
-    def _sign(cls, url_path: str, ts: str) -> str:
-        """按豆瓣移动端规则生成 ``_sig``。
-
-        :param url_path: 完整请求路径（含 ``/api/v2`` 前缀）
-        :param ts: ``YYYYMMDD`` 形式的时间戳
-        """
-        path = url_path if url_path.startswith(cls.SIGN_BASE_PATH) else f"{cls.SIGN_BASE_PATH}{url_path}"
-        raw = "&".join(["GET", parse.quote(path, safe=""), ts])
-        digest = hmac.new(cls.API_SECRET.encode(), raw.encode(), hashlib.sha1).digest()
-        return base64.b64encode(digest).decode()
-
-    def _wait_turn(self) -> None:
-        """维持相邻请求之间的最小间隔。"""
-        gap = time.monotonic() - self._last_request_at
-        if gap < self.POLITE_DELAY:
-            time.sleep(self.POLITE_DELAY - gap)
-        self._last_request_at = time.monotonic()
-
-    def _request_once(
-        self, url_path: str, params: Dict[str, Any], proxies: Any
-    ) -> Optional[Tuple[int, Optional[Dict[str, Any]]]]:
-        """发起一次带签名的 GET，返回 ``(status, payload)``；网络层失败返回 None。"""
-        self._wait_turn()
-        response = None
-        try:
-            response = RequestUtils(
-                ua=choice(self.USER_AGENTS),
-                proxies=proxies,
-                cookies=self._cookie or None,
-                timeout=self.TIMEOUT,
-            ).get_res(url=f"{self.BASE_URL}{url_path}", params=params)
-            if response is None:
-                self.last_error = "豆瓣请求无响应"
-                logger.error(f"{PLUGIN_NAME} 豆瓣请求无响应：{url_path}")
-                return None
-            status = response.status_code
-            self.last_status = status
-            if status != 200:
-                # 保留一段响应体：豆瓣用 403 need_login 表达「未登录/被限流」，
-                # 只有读到 body 才能把提示写成「去配 Cookie」而不是笼统的「失败」。
-                try:
-                    self.last_body = (response.text or "")[:300]
-                except Exception:  # pragma: no cover - 读取失败不影响判定
-                    self.last_body = ""
-                if "need_login" in self.last_body:
-                    self.last_need_login = True
-                return status, None
-            payload = response.json()
-            return status, (payload if isinstance(payload, dict) else None)
-        except Exception as err:
-            self.last_error = str(err)
-            logger.error(f"{PLUGIN_NAME} 请求豆瓣接口失败（{url_path}）：{err}")
-            return None
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:  # pragma: no cover - 关闭失败可忽略
-                    pass
-
-    def _get(self, url_path: str, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        """发起一次签名 GET 请求；限流时按指数退避重试。
-
-        失败时不会抛异常，但会把原因写进 ``last_status`` / ``last_error`` /
-        ``last_rate_limited``，让调用方能给出准确的提示而不是笼统的「无结果」。
-        """
-        ts = datetime.now().strftime("%Y%m%d")
-        params: Dict[str, Any] = dict(kwargs)
-        params.update(
-            {
-                "os_rom": "android",
-                "apiKey": self.API_KEY,
-                "_ts": ts,
-                "_sig": self._sign(url_path, ts),
-            }
-        )
-        proxies = getattr(settings, "PROXY", None) if self._proxy else None
-
-        self.last_status = 0
-        self.last_error = ""
-        self.last_rate_limited = False
-        self.last_need_login = False
-        self.last_body = ""
-
-        for attempt in range(self.RATE_LIMIT_RETRIES + 1):
-            outcome = self._request_once(url_path, params, proxies)
-            if outcome is None:
-                return None
-            status, payload = outcome
-            if status == 200:
-                return payload
-            if status in self.RATE_LIMIT_STATUS:
-                self.last_rate_limited = True
-                # need_login 说明豆瓣把匿名请求挡在了门外，退避重试基本无效，
-                # 直接放弃并让上层提示「去配 Cookie」，比连打三次更省配额。
-                if self.last_need_login and not self._cookie:
-                    self.last_error = "豆瓣要求登录（need_login）"
-                    logger.warning(f"{PLUGIN_NAME} 豆瓣返回 need_login，建议配置豆瓣 Cookie：{url_path}")
-                    return None
-                self.last_error = f"豆瓣限流（HTTP {status}）"
-                if attempt < self.RATE_LIMIT_RETRIES:
-                    delay = self.RATE_LIMIT_BACKOFF * (2**attempt)
-                    logger.warning(f"{PLUGIN_NAME} 豆瓣限流，{delay:.1f}s 后重试：{url_path}")
-                    time.sleep(delay)
-                    continue
-                logger.warning(f"{PLUGIN_NAME} 豆瓣接口持续限流（HTTP {status}）：{url_path}")
-                return None
-            self.last_error = f"豆瓣接口返回 HTTP {status}"
-            logger.warning(f"{PLUGIN_NAME} 豆瓣接口返回 {status}：{url_path}")
-            return None
-        return None
+    def poster_url(self, path: Any) -> str:
+        """把 ``poster_path`` / ``profile_path`` 拼成可访问的完整地址；缺图返回空串。"""
+        text = _clean_text(path)
+        return f"{self._image_base}/{_TMDB_IMAGE_SIZE}{text}" if text.startswith("/") else ""
 
     def failure_hint(self) -> str:
-        """按最近一次失败的成因给出**可操作**的提示，供上层直接展示给用户。
+        """按最近一次失败的成因给出**可操作**的提示，供上层直接展示给用户。"""
+        if not self.configured:
+            return _TMDB_UNCONFIGURED_HINT
+        return self.last_error or "TMDB 请求失败，稍后会自动重试"
 
-        三种成因要分清：没配 Cookie（去配）、配了 Cookie 但已失效（去更新）、
-        单纯被限流（等一会儿）。
-        """
-        if self.last_need_login:
-            return _COOKIE_EXPIRED_HINT if self._cookie else _NEED_LOGIN_HINT
-        return _RATE_LIMIT_HINT
+    def _get(self, path: str, **params: Any) -> Optional[Dict[str, Any]]:
+        """发起一次 TMDB GET，失败返回 None（不抛异常）。"""
+        self.last_error = ""
+        self.last_status = 0
+        if not self.configured:
+            self.last_error = _TMDB_UNCONFIGURED_HINT
+            return None
+        query: Dict[str, Any] = dict(params)
+        query["api_key"] = self._api_key
+        # 中文名优先：宿主识别与媒体库条目也是中文名，标题一致才能对上「片名回退」匹配
+        query.setdefault("language", "zh-CN")
+        proxies = getattr(settings, "PROXY", None) if self._proxy else None
+        response = None
+        try:
+            response = RequestUtils(proxies=proxies, timeout=self.TIMEOUT).get_res(
+                url=f"https://{self._api_domain}{path}", params=query
+            )
+            if response is None:
+                self.last_error = "TMDB 请求无响应"
+                logger.warning(f"{PLUGIN_NAME} TMDB 请求无响应：{path}")
+                return None
+            self.last_status = response.status_code
+            if response.status_code != 200:
+                self.last_error = f"TMDB 返回 HTTP {response.status_code}"
+                logger.warning(f"{PLUGIN_NAME} TMDB 接口返回 {response.status_code}：{path}")
+                return None
+            payload = response.json()
+            return payload if isinstance(payload, dict) else None
+        except Exception as err:  # noqa: BLE001 - 任何异常都降级为「取不到」
+            self.last_error = f"TMDB 请求异常：{err}"
+            logger.error(f"{PLUGIN_NAME} 请求 TMDB 失败（{path}）：{err}")
+            return None
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:  # pragma: no cover - 关闭失败可忽略
+                    pass
 
     def search_person(self, name: str, count: int = 10) -> List[Dict[str, Any]]:
-        """按名称搜索豆瓣人物，返回 ``[{id, name, avatar, url}]``。"""
-        self.search_calls += 1
-        payload = self._get("/search/subjects", type="person", q=name, start=0, count=count)
+        """按名称搜索 TMDB 人物，返回 ``[{id, name, original_name, avatar, url}]``。"""
+        payload = self._get(self.SEARCH_PATH, query=name)
         results: List[Dict[str, Any]] = []
-        seen = set()
-        for item in (payload or {}).get("items") or []:
+        seen: set = set()
+        for item in (payload or {}).get("results") or []:
             if not isinstance(item, dict):
                 continue
-            target = item.get("target") if isinstance(item.get("target"), dict) else {}
-            person_id = str(item.get("target_id") or target.get("id") or "").strip()
-            title = _clean_text(target.get("title"))
-            if not person_id.isdigit() or not title or person_id in seen:
+            person_id = str(item.get("id") or "").strip()
+            if not person_id.isdigit() or person_id in seen:
                 continue
             seen.add(person_id)
-            cover = target.get("cover_img") if isinstance(target.get("cover_img"), dict) else {}
             results.append(
                 {
                     "id": person_id,
-                    "name": title,
-                    "avatar": str(cover.get("url") or "").replace("/l/public/", "/s/public/") or None,
-                    "url": target.get("url"),
+                    "name": _clean_text(item.get("name")),
+                    "original_name": _clean_text(item.get("original_name")),
+                    "avatar": self.poster_url(item.get("profile_path")) or None,
+                    "url": f"https://www.themoviedb.org/person/{person_id}",
                 }
             )
-        return results
+        return results[: max(1, int(count or 10))]
 
     def person_detail(self, person_id: str) -> Optional[Dict[str, Any]]:
-        """获取豆瓣人物详情（含作品集 modules）。"""
+        """取人物详情 + 参演作品（**一次请求拿全**）。
+
+        用 ``append_to_response=combined_credits`` 把人物详情与作品列表合并到同一次
+        请求里：每位演员只付一次 HTTP 往返，刷新上百位演员时才不会把时间都花在等待上。
+        """
         if not person_id:
             return None
-        return self._get(f"/elessar/subject/{person_id}")
-
-    def person_works(
-        self, collection_id: str, start: int = 0, count: int = 20, sort_by: str = "time"
-    ) -> List[Dict[str, Any]]:
-        """获取人物「影视」作品集。
-
-        受豆瓣接口限制：单次最多 10 条，且 ``start > 0`` 一律返回空结果，
-        因此这里只取首页（``start`` 参数保留是为了签名外的调用兼容，实际不生效）。
-        ``sort_by`` 仅 time / collection 有效，其余取值回退为 time。
-        """
-        if not collection_id:
-            return []
-        order = sort_by if sort_by in self.SORT_ORDERS else "time"
-        limit = min(max(1, int(count or self.MAX_WORKS_PER_REQUEST)), self.MAX_WORKS_PER_REQUEST)
-        payload = self._get(
-            f"/elessar/work_collections/{collection_id}/works",
-            sortby=order,
-            collection_title="影视",
-            start=0,
-            count=limit,
+        return self._get(
+            self.PERSON_PATH.format(person_id=person_id),
+            append_to_response="combined_credits",
         )
-        return [item for item in (payload or {}).get("works") or [] if isinstance(item, dict)]
+
+    def credits(self, detail: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """把人物详情里的 ``combined_credits.cast`` 归一化成候选作品。
+
+        只用 ``cast``（演员本人参演），不含 ``crew``（编剧 / 导演等），与「候选范围仅
+        演员本人」的基线一致；电影与剧集都保留（``media_type`` 为 movie / tv），
+        同一部作品在一份 credits 里重复出现时按 ``media_id`` 去重。
+        """
+        payload = detail.get("combined_credits") if isinstance(detail, dict) else None
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
+        for item in (payload or {}).get("cast") or []:
+            if not isinstance(item, dict):
+                continue
+            media_type = _clean_text(item.get("media_type")).lower()
+            if media_type not in ("movie", "tv"):
+                continue
+            media_id = str(item.get("id") or "").strip()
+            if not media_id.isdigit() or media_id in seen:
+                continue
+            title = _clean_text(item.get("name") or item.get("title") or item.get("original_name"))
+            if not title:
+                continue
+            seen.add(media_id)
+            date = _clean_text(item.get("first_air_date") or item.get("release_date"))
+            year = date[:4] if date[:4].isdigit() else ""
+            results.append(
+                {
+                    "media_id": media_id,
+                    "title": title,
+                    "alt_title": _clean_text(
+                        item.get("original_name") or item.get("original_title")
+                    ),
+                    "year": year,
+                    "type": media_type,
+                    "poster": self.poster_url(item.get("poster_path")),
+                    "vote": _as_float(item.get("vote_average")),
+                    "character": _clean_text(item.get("character")),
+                }
+            )
+            if len(results) >= _TMDB_CREDITS_LIMIT:
+                break
+        return results
 
 
 class DoubanActorSubscribe(_PluginBase):
-    """订阅豆瓣演员，抓取最新作品并一键提交到 MoviePilot 订阅系统。"""
+    """订阅 TMDB 演员，抓取最新作品并一键提交到 MoviePilot 订阅系统。"""
 
     # ─── 插件元数据（需与 package.v3.json 保持一致） ──────────────────
     # 注意：这里必须是字符串字面量，不能用 PLUGIN_NAME 常量。
     # 部分离线安装工具（如 LocalPluginInstall）会用 AST 静态解析插件类，
     # 只认 ast.Constant 形式的字符串属性，引用变量会被判定为“缺少 plugin_name”。
     # 与 PLUGIN_NAME 的一致性由 scripts/verify_plugin.py 自动校验。
-    plugin_name = "豆瓣演员订阅"
+    plugin_name = "TMDB演员订阅"
     plugin_desc = (
-        "订阅豆瓣演员，自动抓取其最新影视作品并展示在面板中，"
-        "支持一键提交到 MoviePilot 订阅系统，也可按评分/类型阈值自动订阅新作品。"
+        "订阅 TMDB 演员，自动抓取其参演的最新影视作品并展示在面板中，"
+        "支持一键提交到 MoviePilot 订阅系统（按 TMDB 身份精确订阅），"
+        "也可按评分/类型阈值自动订阅新作品。"
     )
     plugin_icon = (
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.14.0"
+    plugin_version = "1.15.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -659,7 +519,9 @@ class DoubanActorSubscribe(_PluginBase):
     _sidebar_nav: bool = True
     _cron: str = "0 8 * * *"
     _actor_entries: List[str] = []
-    _max_works: int = 10
+    # 每位演员保留的作品数上限。TMDB 的参演作品表是完整的（不像部分来源只给固定条数），
+    # 因此上限放宽到 60；默认 20 足够覆盖近期产出，又不会让作品墙过长。
+    _max_works: int = 20
     _sort_by: str = "time"
     _proxy: bool = False
     _notify: bool = False
@@ -674,17 +536,6 @@ class DoubanActorSubscribe(_PluginBase):
     _subscribe_save_path: str = ""
     _subscribe_downloader: str = ""
     _subscribe_sites: List[int] = []
-    # 手填的豆瓣 Cookie（留空则自动从宿主已配置的 CookieCloud 拉取）
-    _douban_cookie: str = ""
-    # CookieCloud 取到的豆瓣 Cookie：只缓存于内存，不落盘
-    _cookie_cache: str = ""
-    _cookie_cached_at: float = 0.0
-    # 当前 Cookie 来源，供面板展示：manual / cookiecloud / none
-    _cookie_source: str = "none"
-    # CookieCloud 取不到时的原因，供面板提示
-    _cookie_hint: str = ""
-    # Cookie 缓存有效期（秒）；豆瓣登录态通常能以天计，这里取半小时足够
-    _COOKIE_TTL = 1800
     # 配置变更后等待后台补刷新的标记，供前端提示与轮询
     _pending_refresh: bool = False
     # 后台刷新进行中的标记；演员多时一次刷新可能持续数分钟，
@@ -703,10 +554,10 @@ class DoubanActorSubscribe(_PluginBase):
     _DATA_STATE = "state"
     # 上一次生效的演员配置，用于识别「演员列表已变更」并安排自动刷新
     _DATA_CONFIGURED = "configured_actors"
-    # 每位演员「最近一次成功发起名称搜索」的时间戳，用于 24 小时搜索冷却
-    _DATA_SEARCH_LOG = "search_log"
     # 被用户手动忽略的作品（键为 media_source:media_id）：面板不展示，自动订阅也跳过
     _DATA_IGNORED = "ignored_works"
+    # 发现源标记：与 ``_SOURCE_SCHEMA`` 不一致时做一次换源迁移
+    _DATA_SCHEMA = "schema"
 
     # 一次性任务标识
     _ONCE_JOB_ID = "refresh_once"
@@ -728,8 +579,8 @@ class DoubanActorSubscribe(_PluginBase):
         self._sidebar_nav = bool(cfg.get("sidebar_nav", True))
         self._cron = str(cfg.get("cron") or "0 8 * * *").strip()
         self._actor_entries = self._parse_actors(cfg.get("actors"))
-        # 上限 10：豆瓣作品集接口不支持翻页，取再多也拿不到
-        self._max_works = self._clamp_int(cfg.get("max_works"), 10, 5, 10)
+        # 上限 60：TMDB 的参演作品表是完整的，取太多只会让作品墙与订阅候选过长
+        self._max_works = self._clamp_int(cfg.get("max_works"), 20, 5, 60)
         self._sort_by = str(cfg.get("sort_by") or "time").strip() or "time"
         self._proxy = bool(cfg.get("proxy"))
         self._notify = bool(cfg.get("notify"))
@@ -742,21 +593,20 @@ class DoubanActorSubscribe(_PluginBase):
         # 下载器名称（宿主 /download/clients 里的 name）；留空表示跟随宿主默认订阅配置
         self._subscribe_downloader = str(cfg.get("subscribe_downloader") or "").strip()
         self._subscribe_sites = self._parse_sites(cfg.get("subscribe_sites"))
-        # Cookie 变更后旧缓存立即失效，避免继续用上一个账号的登录态
-        new_cookie = str(cfg.get("douban_cookie") or "").strip()
-        if new_cookie != self._douban_cookie:
-            self._cookie_cache = ""
-            self._cookie_cached_at = 0.0
-        self._douban_cookie = new_cookie
 
         state = self.get_data(self._DATA_STATE)
         if isinstance(state, dict):
             self._run_count = self._clamp_int(state.get("run_count"), 0, 0, 10 ** 9)
             self._last_run_at = str(state.get("last_run_at") or "")
 
+        # 发现源迁移（v1.15.0：豆瓣 → TMDB）。必须在「是否需要补刷新」之前做，
+        # 因为它会把旧快照清空，从而让下面的 need_refresh 成立、自动重抓一遍。
+        self._migrate_source()
+        # 清掉解析缓存里已经没有任何信息的孤儿条目（历史遗留，换源后会留下一批空壳）
+        self._prune_orphan_cache()
         # 演员列表变更 → 旧快照已失效：先去掉已移除演员的残留数据，再安排一次后台补刷新。
         # 之所以不在 init_plugin 里直接刷新，是因为本方法运行在宿主保存配置的 HTTP 请求线程里，
-        # 同步抓豆瓣会让保存接口长时间无响应。
+        # 同步抓 TMDB 会让保存接口长时间无响应。
         actors_changed = self._detect_actors_changed()
         if actors_changed:
             self._drop_stale_snapshot()
@@ -815,6 +665,90 @@ class DoubanActorSubscribe(_PluginBase):
         if not isinstance(previous, (list, tuple)):
             return False
         return self._parse_actors(previous) != self._actor_entries
+
+    def _migrate_source(self) -> bool:
+        """发现源由豆瓣整体换成 TMDB 时，把旧数据一次性作废。
+
+        豆瓣的人物 ID / 作品 ID 与 TMDB 是两套完全无关的编号：拿一个豆瓣人物 ID 去查
+        TMDB，轻则查不到，重则**查到另一个人**（作品、头像全错），所以旧数据一条都不能留。
+        但也不能简单地全删 —— 「演员什么时候加入订阅列表」是跨发现源都成立的事实，
+        删掉会让上百位老演员在升级瞬间被补成「新演员」（v1.12.0 踩过这个坑）。
+
+        因此这一轮做三件事：① 丢掉整份旧作品快照（下次刷新重建）；② 清掉解析缓存里的
+        旧身份字段，**保留** ``joined_at`` / ``baseline_at`` 之外的加入时间；③ 清掉按
+        ``douban:xxx`` 记的忽略表与自动订阅去重表（键无法映射到 TMDB，留着只会变成死条目）。
+        最后写入 schema 标记，保证只做一次。
+
+        :return: 本轮是否真的做了迁移
+        """
+        if str(self.get_data(self._DATA_SCHEMA) or "") == _SOURCE_SCHEMA:
+            return False
+
+        cache = self._load_actor_cache()
+        cleaned: Dict[str, Any] = {}
+        for key, value in cache.items():
+            item = dict(value) if isinstance(value, dict) else {}
+            for field in _STALE_IDENTITY_FIELDS:
+                item.pop(field, None)
+            # 旧身份已作废，基线时刻也随之失效：重新解析后这批作品就是新基线，
+            # 否则「旧基线 + 全新 first_seen」会让整屏作品都被标成「新作品」。
+            item.pop("baseline_at", None)
+            cleaned[key] = item
+
+        self.save_data(self._DATA_ACTORS, cleaned)
+        self.save_data(self._DATA_WORKS, {})
+        self.save_data(self._DATA_SEEN, [])
+        self.save_data(self._DATA_IGNORED, {})
+        self.save_data(self._DATA_SCHEMA, _SOURCE_SCHEMA)
+        logger.warning(
+            f"{self.plugin_name} 检测到发现源已切换为 TMDB：旧豆瓣快照、身份缓存、"
+            f"忽略记录与自动订阅去重表均已清空，将重新抓取一次"
+        )
+        return True
+
+    def _prune_orphan_cache(self) -> int:
+        """清掉解析缓存里已经没有任何信息的空壳条目。
+
+        历史版本在解析失败或调整演员列表时只写了键、没写值，缓存里于是堆了一批
+        形如 ``{"key": "张译"}`` 的空壳 —— 除了 ``key`` 什么都没有，而 ``key`` 只是
+        键名的副本、不承载任何状态。线上实测：115 条缓存里 112 条是这种空壳。
+
+        它们**不影响正确性**（缓存未命中会重新解析），但有两个坏处：① 让缓存体积与
+        「演员计数」这类统计虚高、排查日志难读；② 更隐蔽的是「假性已见过」——
+        ``_refresh_actor`` 用 ``first_sight = not actor`` 判断是否新加入的演员，
+        ``{"key": "x"}`` 是非空字典，会让一位其实从没解析成功过的演员被当成「老演员」，
+        从而永远拿不到 ``joined_at``（chip 上不会标「新」）。删掉空壳恰好把这条语义
+        交还给事实：真的没解析过，就该按「新」处理。
+
+        判定刻意保守：``id`` / ``joined_at`` / ``baseline_at`` 三者一个都不剩才删。
+        ``id`` 记「这个人是谁」，``joined_at`` 记「什么时候加的」（决定新演员标记），
+        ``baseline_at`` 记「新作品基线」；任意一个还在就说明条目还担着状态，绝不能删
+        （误删 ``joined_at`` 会把老演员整片标成「新」，v1.12.0 踩过这个坑）。
+
+        只删 ``key`` 一条的条目是安全的：调用方 ``_refresh_actor`` 会把它当新演员重新
+        解析，而「重新加回配置的演员算新演员」本就是期望行为。
+
+        :return: 实际删除的条目数（0 表示没有变化，不写盘）
+        """
+        cache = self._load_actor_cache()
+        if not cache:
+            return 0
+
+        kept: Dict[str, Any] = {}
+        removed = 0
+        for key, value in cache.items():
+            item = dict(value) if isinstance(value, dict) else {}
+            if any(str(item.get(field) or "").strip() for field in _CACHE_MEANINGFUL_FIELDS):
+                kept[key] = item
+            else:
+                removed += 1
+
+        if not removed:
+            return 0
+        # 只有真的删掉了东西才写盘：本方法在每次保存配置时都会走一遍，无事不写。
+        self.save_data(self._DATA_ACTORS, kept)
+        logger.info(f"{self.plugin_name} 清理了解析缓存里 {removed} 条已无任何信息的空壳条目")
+        return removed
 
     def _drop_stale_snapshot(self) -> None:
         """丢弃已不再属于配置的演员快照。
@@ -957,7 +891,7 @@ class DoubanActorSubscribe(_PluginBase):
             {
                 "cmd": "/doubanactor",
                 "event": EventType.PluginAction,
-                "desc": "刷新豆瓣演员最新作品",
+                "desc": "刷新 TMDB 演员最新作品",
                 "category": "插件命令",
                 "data": {"action": "doubanactorsubscribe_refresh"},
             }
@@ -1010,7 +944,7 @@ class DoubanActorSubscribe(_PluginBase):
                 "endpoint": self.api_search_actor,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "按名称搜索豆瓣演员",
+                "summary": "按名称搜索 TMDB 演员",
             },
             {
                 "path": "/reserve",
@@ -1079,59 +1013,6 @@ class DoubanActorSubscribe(_PluginBase):
         DoubanActorWorksTool.bind(self)
         return [DoubanActorWorksTool]
 
-    # ─── 豆瓣 Cookie 解析 ────────────────────────────────────────
-
-    def _resolve_douban_cookie(self) -> str:
-        """解析要带给豆瓣的 Cookie，按优先级：插件手填 → 宿主 CookieCloud → 无。
-
-        为什么需要 Cookie：豆瓣对匿名请求用 ``403 need_login`` 做限流，实测搜索额度只有
-        约 5 次／窗口；带上已登录 Cookie 后实测连续可用次数翻倍以上，且不再受出口 IP
-        被拉黑的影响（额度绑定到账号）。
-
-        解析结果缓存在内存中（``_COOKIE_TTL`` 秒），不落盘，避免持久化用户的登录态。
-        """
-        # 1) 插件里手填的 Cookie 优先级最高，且视为长期有效
-        if self._douban_cookie:
-            self._cookie_source = "manual"
-            self._cookie_hint = ""
-            return self._douban_cookie
-
-        # 2) 复用宿主已配置的 CookieCloud（用户不必再手工复制一次 Cookie）
-        now = time.time()
-        if self._cookie_cached_at and now - self._cookie_cached_at < self._COOKIE_TTL:
-            return self._cookie_cache
-
-        host, key, password = self._cookiecloud_config()
-        client = _CookieCloudClient(host, key, password)
-        cookie = client.fetch("douban.com")
-        self._cookie_cache = cookie
-        self._cookie_cached_at = now
-        if cookie:
-            self._cookie_source = "cookiecloud"
-            self._cookie_hint = ""
-            logger.info(f"{PLUGIN_NAME} 已从宿主 CookieCloud 取到豆瓣 Cookie（长度 {len(cookie)}）")
-        else:
-            self._cookie_source = "none"
-            self._cookie_hint = client.last_error
-            logger.info(f"{PLUGIN_NAME} 未取得豆瓣 Cookie：{client.last_error}")
-        return cookie
-
-    @staticmethod
-    def _cookiecloud_config() -> Tuple[str, str, str]:
-        """读取 CookieCloud 配置：一律沿用宿主系统设置里的值。
-
-        这三个键是宿主 ``ConfigModel`` 的字段（CookieCloud 设置页），插件只需读取，
-        不重复提供一套配置，避免用户在两个地方各配一遍。
-        """
-        def _read(name: str) -> str:
-            return str(getattr(settings, name, "") or "").strip()
-
-        return (
-            _read("COOKIECLOUD_HOST"),
-            _read("COOKIECLOUD_KEY"),
-            _read("COOKIECLOUD_PASSWORD"),
-        )
-
     # ─── 业务逻辑：刷新作品 ──────────────────────────────────────
 
     def execute_task(self, trigger: str = "manual") -> bool:
@@ -1147,12 +1028,16 @@ class DoubanActorSubscribe(_PluginBase):
             logger.warning(f"{self.plugin_name} 未配置演员，跳过执行")
             return False
 
+        # TMDB 凭据全部取自宿主系统设置（TMDB_API_KEY 与两个 DOMAIN），
+        # 不需要插件侧维护登录态，因此没有限流配额这一层顾虑。
+        client = _TmdbClient(proxy=self._proxy)
+        if not client.configured:
+            logger.error(f"{self.plugin_name} 未取到 TMDB API Key，跳过刷新：{client.failure_hint()}")
+            return False
+
         self._refreshing = True
         self._refresh_started_at = time.time()
         started = time.time()
-        # 带上豆瓣 Cookie（手填或宿主 CookieCloud）：匿名额度只有约 5 次/窗口，
-        # 登录态能显著提高搜索可用次数，是解析大量演员名称的前提。
-        client = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
         previous = self._load_works()
         snapshot: Dict[str, Any] = {}
         errors: List[str] = []
@@ -1160,81 +1045,23 @@ class DoubanActorSubscribe(_PluginBase):
         # 演员解析缓存由本轮统一读写，最后一次性落盘
         cache = self._load_actor_cache()
         cache_dirty = False
-        # 豆瓣匿名搜索限流极严（实测约 5 次后 403）：一旦触发，本轮剩下的「尚未解析过」
-        # 演员直接跳过，避免对着 100+ 个名字空打一遍必然失败的请求。
-        # 已经解析出人物 ID 的演员不受影响（走详情/作品集接口，配额宽松且会快速恢复）。
-        search_blocked = False
-        skipped = 0
-        # 搜索冷却记账：某位演员**成功搜索一次**后，24 小时内不再重复搜这个名字。
-        # 失败不记账（限流是暂时的，要允许下一轮重试）。只作用于「按名称搜索」这一步。
-        now_ts = time.time()
-        search_log = self._load_search_log()
-        search_log_dirty = False
-        cooling = 0
 
         for key in self._actor_entries:
-            need_search = not str((cache.get(key) or {}).get("id") or "").strip()
-            last_search = search_log.get(key) if need_search else None
-            if last_search and now_ts - last_search < _SEARCH_COOLDOWN_SECONDS:
-                # 24 小时内已经为这位演员打过一次搜索接口，不再重复消耗额度
-                cooling += 1
-                hint = _search_cooldown_hint(_SEARCH_COOLDOWN_SECONDS - (now_ts - last_search))
-                errors.append(f"{key}：{hint}")
-                snapshot[key] = {
-                    "actor": {
-                        "key": key,
-                        "id": "",
-                        "name": key,
-                        "resolved_from": "search",
-                        "error": hint,
-                        "retryable": True,
-                    },
-                    "works": [],
-                }
-                continue
-            if need_search and search_blocked:
-                skipped += 1
-                errors.append(f"{key}：{client.failure_hint()}")
-                snapshot[key] = {
-                    "actor": {
-                        "key": key,
-                        "id": "",
-                        "name": key,
-                        "resolved_from": "search",
-                        "error": client.failure_hint(),
-                        "retryable": True,
-                    },
-                    "works": [],
-                }
-                continue
-            search_calls_before = client.search_calls
             try:
                 actor, works, cached, discovered = self._refresh_actor(client, key, previous, cache)
             except Exception as err:  # pragma: no cover - 单演员失败不影响其他演员
                 logger.error(f"{self.plugin_name} 刷新演员「{key}」失败：{err}")
                 errors.append(f"{key}：{err}")
                 continue
-            if need_search and client.search_calls > search_calls_before:
-                # 记账规则：只有**搜索成功**（真的解析出了人物 ID）才进入 24 小时冷却。
-                # 失败（限流 / need_login / 查无此人）不冷却 —— 限流只是暂时的，
-                # 锁死一整天会让这些演员长期解析不出来，下轮重试才合理。
-                if str(actor.get("id") or "").strip():
-                    search_log[key] = time.time()
-                    search_log_dirty = True
             cache_dirty = cache_dirty or cached
             if actor.get("error"):
                 errors.append(f"{key}：{actor['error']}")
             group_key = str(actor.get("id") or key)
             snapshot[group_key] = {"actor": actor, "works": works}
             new_count += discovered
-            if need_search and client.last_rate_limited:
-                search_blocked = True
-                logger.warning(f"{self.plugin_name} 豆瓣搜索已限流，本轮跳过剩余未解析的演员")
 
         if cache_dirty:
             self.save_data(self._DATA_ACTORS, cache)
-        if search_log_dirty:
-            self.save_data(self._DATA_SEARCH_LOG, search_log)
         # 标注「是否已在媒体库」（与宿主媒体详情页同一套判定），面板据此打标、
         # 自动订阅据此跳过库里已有的作品。放在落盘前，标记随之持久化。
         library_count = self._annotate_library(snapshot)
@@ -1280,10 +1107,6 @@ class DoubanActorSubscribe(_PluginBase):
             detail += f"（其中 {skipped_in_library} 部因已在库跳过订阅）"
         if errors:
             detail += f"，{len(errors)} 项异常"
-        if skipped:
-            detail += f"，{skipped} 位因豆瓣限流顺延到下次"
-        if cooling:
-            detail += f"，{cooling} 位搜索冷却中（24 小时内已搜过）"
         self._refreshing = False
         logger.info(f"{self.plugin_name} 任务完成（{trigger}）：{detail}")
 
@@ -1345,18 +1168,14 @@ class DoubanActorSubscribe(_PluginBase):
             actors.append(actor)
         actors.sort(key=lambda item: str(item.get("name") or ""))
         total = sum(len(item["works"]) for item in actors)
-        search_log = self._load_search_log()
-        # 解析进度统计：只把「还没拿到人物 ID」的演员算作待解析。
-        # 注意必须与搜索缓存取交集 —— 一旦某位演员解析出 ID，它这轮和下轮都不会再
-        # 搜索，把它的历史搜索记录继续算成「冷却中」会让徽标显示一个只涨不降的假数字
-        # （搜索记录要满 24 小时才过期，看起来就像永远不动）。
+        # 解析进度统计：只把「还没拿到 TMDB 人物 ID」的演员算作待解析。
+        # 一旦某位演员解析出 ID，后续刷新就不再需要按名称搜索。
         cache = self._load_actor_cache()
         unresolved = [
             key
             for key in self._actor_entries
             if not str((cache.get(key) or {}).get("id") or "").strip()
         ]
-        cooling = [key for key in unresolved if search_log.get(key)]
         return {
             "enabled": self._enabled,
             "updated_at": self._last_run_at,
@@ -1388,13 +1207,9 @@ class DoubanActorSubscribe(_PluginBase):
             "subscribe_sites": list(self._subscribe_sites),
             "pending_refresh": bool(self._pending_refresh),
             "refreshing": self._is_refreshing(),
-            # 豆瓣 Cookie 来源，供面板显示「是不是靠登录态在提额度」
-            "douban_cookie_source": self._cookie_source,
-            "douban_cookie_hint": self._cookie_hint,
-            # 尚未解析出人物 ID 的演员数（0 表示全部解析完毕，之后刷新不再消耗搜索额度）
+            # 尚未解析出 TMDB 人物 ID 的演员数（0 表示全部解析完毕，
+            # 之后刷新直接走人物详情接口，不再需要按名称搜索）
             "unresolved_count": len(unresolved),
-            # 其中仍处于 24 小时搜索冷却内、必须等冷却结束才会重试的数量
-            "search_cooldown_count": len(cooling),
             # 被用户忽略的作品：面板据此显示「已忽略 N 部」并提供恢复入口
             "ignored_count": len(ignored),
             "ignored": self._ignored_list(ignored),
@@ -1409,7 +1224,7 @@ class DoubanActorSubscribe(_PluginBase):
         两个条件缺一不可：
 
         1. 首次出现在**基线之后**（``first_seen`` > ``baseline_at``）——
-           演员加入时就存在的作品属于基线，永远不算新，哪怕它是刚刚才从豆瓣抓回来的；
+           演员加入时就存在的作品属于基线，永远不算新，哪怕它是刚刚才从 TMDB 抓回来的；
         2. 首次出现距今在 ``_NEW_WINDOW_SECONDS`` 之内 —— 时间窗负责让「新」自然过期。
 
         没有 first_seen（历史快照或字段缺失）时按「不新」处理，
@@ -1442,14 +1257,24 @@ class DoubanActorSubscribe(_PluginBase):
         return (now - joined_at) <= _NEW_WINDOW_SECONDS
 
     @staticmethod
+    def _is_tmdb_identity(actor: Dict[str, Any]) -> bool:
+        """缓存里的演员身份是否来自 TMDB（不是则需要重新解析）。
+
+        旧版本（≤ v1.14.0）的缓存里没有 ``source`` 字段，其 ``id`` 是**豆瓣**人物 ID，
+        因此「没有标记」必须视为「不是 TMDB 身份」——宁可重解析一次，也不能拿豆瓣 ID
+        去查 TMDB（会查到另一个人）。
+        """
+        return str(actor.get("source") or "").strip() == MediaSource.TMDB.value
+
+    @staticmethod
     def _is_fuzzy_actor(actor: Dict[str, Any]) -> bool:
-        """演员是否属于「按最接近的搜索结果」解析出来的（配置名 ≠ 豆瓣名）。
+        """演员是否属于「按最接近的搜索结果」解析出来的（配置名 ≠ TMDB 名）。
 
-        以「来源是名称搜索 且 配置名与豆瓣名不一致」现算，而不是只看解析时记下的
+        以「来源是名称搜索 且 配置名与 TMDB 名不一致」现算，而不是只看解析时记下的
         ``fuzzy``：字段出现之前写入的旧缓存同样存在张冠李戴，只有展示时现算才能
-        把历史遗留的一并暴露出来（实测实例上有 8 位：宋星颐→宋星翰、任绵绵→林绵绵…）。
+        把历史遗留的一并暴露出来。
 
-        直接填人物 ID 的配置名是「1025229」这类数字，与豆瓣名天然不同，
+        直接填人物 ID 的配置名是「1025229」这类数字，与 TMDB 名天然不同，
         因此必须用 ``resolved_from`` 先排除掉。
         """
         if str(actor.get("resolved_from") or "") != "search":
@@ -1478,7 +1303,7 @@ class DoubanActorSubscribe(_PluginBase):
 
     def _refresh_actor(
         self,
-        client: "_DoubanClient",
+        client: "_TmdbClient",
         key: str,
         previous: Dict[str, Any],
         cache: Dict[str, Any],
@@ -1486,7 +1311,7 @@ class DoubanActorSubscribe(_PluginBase):
         """解析（必要时搜索）演员并抓取其最新作品。
 
         :param cache: 共享的演员解析缓存，由调用方统一读写，
-            避免每位演员都落盘一次（112 位演员会变成 112 次写库）。
+            避免每位演员都落盘一次（上百位演员会变成上百次写库）。
         :return: ``(演员信息, 作品列表, 缓存是否有更新, 本次首次收录的作品数)``
         """
         # 本轮统一的时间戳：同一轮里建立的基线与基线作品的 first_seen 都取它，
@@ -1503,27 +1328,40 @@ class DoubanActorSubscribe(_PluginBase):
         # 它是「加入前就有的老作品」与「加入之后才出现的作品」的分界线。
         baseline_at = str(actor.get("baseline_at") or "").strip() or now
         actor_id = str(actor.get("id") or "").strip()
+        # 第二道防线（第一道是 init_plugin 的 _migrate_source）：缓存里的身份若不是
+        # TMDB 的，说明它来自旧发现源（豆瓣），拿去查 TMDB 会张冠李戴。丢掉旧身份
+        # 重新解析，并把基线重置到本轮 —— 新身份下的这批作品就是新基线，不能整片标「新」。
+        if actor_id and not self._is_tmdb_identity(actor):
+            logger.info(f"{self.plugin_name} 演员「{key}」的缓存身份来自旧发现源，重新解析")
+            actor_id = ""
+            for field in _STALE_IDENTITY_FIELDS:
+                actor.pop(field, None)
+            baseline_at = now
         if not actor_id:
-            actor = self._resolve_actor(client, key)
+            actor = {**actor, **self._resolve_actor(client, key)}
             actor_id = str(actor.get("id") or "").strip()
             actor.pop("added_at", None)
+        if actor_id:
+            # 记下身份来源，下一轮据此判断缓存还能不能用（发现源再变时自动重解析）
+            actor["source"] = MediaSource.TMDB.value
         if first_sight and not str(actor.get("joined_at") or "").strip():
             actor["joined_at"] = now
         actor["baseline_at"] = baseline_at
 
         cache_dirty = False
-        # 每次刷新都取一次人物详情：既刷新头像/简介，也拿到最新的作品集 ID
+        # 一次请求拿全人物详情与参演作品（``append_to_response=combined_credits``）：
+        # 头像、简介、作品列表同源同批，刷新上百位演员也只需上百次往返。
         detail = client.person_detail(actor_id) if actor_id else None
         if detail:
-            actor = {**actor, **self._actor_from_detail(actor_id, detail, key)}
+            actor = {**actor, **self._actor_from_detail(client, actor_id, detail, key)}
             actor.pop("retryable", None)
-        elif actor_id and client.last_rate_limited:
-            # 详情接口的限流窗口很短，退避重试后仍失败就如实上报，
-            # 不要把它伪装成「未找到该演员的豆瓣影视作品集」。
+        elif actor_id:
+            # 请求失败（网络 / 凭据 / 上游 5xx）时如实上报并标记可重试，
+            # 绝不能把它伪装成「这位演员没有作品」。
             actor["error"] = client.failure_hint()
             actor["retryable"] = True
-            # 关键：ID 已经解析出来了，即使详情这次被限流也要把 ID 落缓存。
-            # 否则下一轮会为一个**已经解析好**的演员再花一次宝贵的搜索额度。
+            # 关键：ID 已经解析出来了，即使详情这次失败也要把 ID 落缓存，
+            # 否则下一轮会为一个**已经解析好**的演员再花一次搜索请求。
             cache[key] = {k: v for k, v in actor.items() if k not in ("works", "retryable")}
             return actor, [], True, 0
 
@@ -1531,23 +1369,12 @@ class DoubanActorSubscribe(_PluginBase):
             cache[key] = {k: v for k, v in actor.items() if k not in ("works", "retryable")}
             cache_dirty = True
 
-        collection_id = self._work_collection_id(detail) if detail else None
-        if not collection_id:
-            if not actor.get("error"):
-                actor["error"] = "未找到该演员的豆瓣影视作品集"
-            return actor, [], cache_dirty, 0
-
-        # 豆瓣作品集接口不支持翻页，每位演员最多取到 10 部
-        fetch_count = min(self._max_works, _DoubanClient.MAX_WORKS_PER_REQUEST)
-        raw_works = client.person_works(
-            collection_id, start=0, count=fetch_count, sort_by=self._sort_by
-        )
         works: List[Dict[str, Any]] = []
-        for item in raw_works:
+        for item in client.credits(detail):
             work = self._normalize_work(item)
             if work:
                 works.append(work)
-        works = self._sort_works(works)[: self._max_works]
+        works = self._sort_works(works, self._sort_by)[: self._max_works]
 
         # 继承首次出现时间（只在真正第一次见到时才写 now），
         # 「是否新作品」另由 first_seen 与基线时刻的比较决定，见 _apply_new_flags
@@ -1574,12 +1401,12 @@ class DoubanActorSubscribe(_PluginBase):
 
     @staticmethod
     def _extract_person_id(value: str) -> str:
-        """从配置项里提取豆瓣人物 ID，提取不到时返回空串。
+        """从配置项里提取 TMDB 人物 ID，提取不到时返回空串。
 
         支持三种写法，方便用户直接从浏览器地址栏复制：
-        ``37871253``、``https://www.douban.com/personage/37871253/``、
-        ``https://movie.douban.com/celebrity/1025229/``。
-        直接给 ID/链接可完全绕开豆瓣的匿名搜索限流。
+        ``1245``、``https://www.themoviedb.org/person/1245``、
+        ``https://www.themoviedb.org/person/1245-zhang-yi``（带 slug 同样能识别）。
+        直接给 ID/链接可完全跳过按名称搜索，结果也更精确。
         """
         text = str(value or "").strip()
         if not text:
@@ -1589,33 +1416,23 @@ class DoubanActorSubscribe(_PluginBase):
         matched = _PERSON_URL_PATTERN.search(text)
         return matched.group(1) if matched else ""
 
-    def _resolve_actor(self, client: "_DoubanClient", key: str) -> Dict[str, Any]:
-        """把配置项解析为豆瓣人物：人物 ID/主页链接直接采用，否则按名称搜索。"""
+    def _resolve_actor(self, client: "_TmdbClient", key: str) -> Dict[str, Any]:
+        """把配置项解析为 TMDB 人物：人物 ID/主页链接直接采用，否则按名称搜索。"""
         person_id = self._extract_person_id(key)
         if person_id:
             return {"key": key, "id": person_id, "name": key, "resolved_from": "id", "error": None}
 
         candidates = client.search_person(key)
         if not candidates:
-            # 关键：必须区分「被限流/请求失败」与「确实搜不到这个人」。
-            # 早期版本把限流也报成「未搜索到该演员」，会误导用户去改配置，
-            # 而真实原因是豆瓣匿名搜索配额用尽（实测约 5 次后 403 need_login）。
-            if client.last_rate_limited:
+            # 必须区分「请求失败」与「确实搜不到这个人」：前者应提示稍后重试，
+            # 后者才该建议改用人物 ID。把网络错误说成「查无此人」会误导用户去改配置。
+            if client.last_error or not client.configured:
                 return {
                     "key": key,
                     "id": "",
                     "name": key,
                     "resolved_from": "search",
-                    "error": client.failure_hint(),
-                    "retryable": True,
-                }
-            if client.last_error:
-                return {
-                    "key": key,
-                    "id": "",
-                    "name": key,
-                    "resolved_from": "search",
-                    "error": f"豆瓣搜索失败：{client.last_error}",
+                    "error": f"TMDB 搜索失败：{client.failure_hint()}",
                     "retryable": True,
                 }
             return {
@@ -1623,12 +1440,17 @@ class DoubanActorSubscribe(_PluginBase):
                 "id": "",
                 "name": key,
                 "resolved_from": "search",
-                "error": "豆瓣未搜索到该演员，请改用人物 ID",
+                "error": "TMDB 未搜索到该演员，请改用人物 ID",
             }
-        exact = next((item for item in candidates if item.get("name") == key), None)
+        # 优先同名：TMDB 的 ``name`` 受 ``language=zh-CN`` 影响，配置里写原名时
+        # 只能靠 ``original_name`` 对上，因此两个字段都要比。
+        exact = next(
+            (item for item in candidates if key in (item.get("name"), item.get("original_name"))),
+            None,
+        )
         matched = exact or candidates[0]
         # 没有同名条目时退回最接近的搜索结果 —— 但必须把这个事实记下来。
-        # 豆瓣的人物搜索是模糊匹配：配置「宋星颐」会返回「宋星翰 / 宋星成 / 宋星辰…」，
+        # TMDB 的人物搜索同样是模糊匹配：配置「宋星颐」可能返回「宋星翰 / 宋星成…」，
         # 静默取第一个会让面板上冒出一个用户从没填过的名字（作品也是别人的），
         # 用户只会觉得「我加的演员没生效」。记下 fuzzy 与候选名后，
         # 面板会显式提示「配置名 ↔ 实际解析到的名字」，由用户决定是否改用人物 ID。
@@ -1641,153 +1463,83 @@ class DoubanActorSubscribe(_PluginBase):
             "resolved_from": "search",
             "fuzzy": fuzzy,
             "candidates": (
-                [str(c.get("name")) for c in candidates[:5] if c.get("name")] if fuzzy else []
+                [_clean_text(c.get("name")) for c in candidates[:5] if c.get("name")]
+                if fuzzy
+                else []
             ),
             "error": None,
         }
 
     @staticmethod
-    def _actor_from_detail(actor_id: str, detail: Dict[str, Any], key: str) -> Dict[str, Any]:
-        """从豆瓣人物详情响应提取展示信息。"""
-        cover = detail.get("cover_img") if isinstance(detail.get("cover_img"), dict) else {}
-        avatar = str(cover.get("url") or "").replace("/l/public/", "/s/public/")
-        extra = detail.get("extra") if isinstance(detail.get("extra"), dict) else {}
+    def _actor_from_detail(
+        client: "_TmdbClient", actor_id: str, detail: Dict[str, Any], key: str
+    ) -> Dict[str, Any]:
+        """从 TMDB 人物详情响应提取展示信息（姓名 / 头像 / 简介）。"""
         return {
             "key": key,
             "id": str(detail.get("id") or actor_id),
-            "name": _clean_text(detail.get("title")) or key,
-            "avatar": avatar or None,
-            "biography": _clean_text(extra.get("short_info"))[:200],
+            "name": _clean_text(detail.get("name")) or key,
+            "avatar": client.poster_url(detail.get("profile_path")) or None,
+            "biography": _clean_text(detail.get("biography"))[:200],
             "error": None,
         }
 
-    @staticmethod
-    def _work_collection_id(detail: Optional[Dict[str, Any]]) -> Optional[str]:
-        """从人物详情的 modules 中取「影视」作品集 ID。"""
-        if not isinstance(detail, dict):
-            return None
-        collections: List[Dict[str, Any]] = []
-        for module in detail.get("modules") or []:
-            if not isinstance(module, dict) or module.get("type") != "work_collections":
-                continue
-            payload = module.get("payload")
-            if isinstance(payload, dict) and payload.get("id"):
-                collections.append(payload)
-        if not collections:
-            return None
-        # 标题实测为「作品集」，旧版可能是「影视」，两种都优先匹配
-        preferred = next(
-            (
-                item
-                for item in collections
-                if any(
-                    keyword in str(item.get("title") or item.get("name") or "")
-                    for keyword in ("影视", "作品集")
-                )
-            ),
-            None,
-        )
-        return str((preferred or collections[0]).get("id"))
-
     @classmethod
     def _normalize_work(cls, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """把豆瓣作品条目归一化为前端可直接渲染的结构。
+        """把 TMDB 候选作品归一化为前端可直接渲染的结构。
 
-        豆瓣作品集接口返回的条目形如 ``{"roles": [...], "subject": {...}}``，
-        其中的字段位置容易踩坑：
-
-        * ``subject.type`` 恒为 ``"subject"``（实体种类），真正的媒体类型在 ``subject.subtype``；
-        * 年份在 ``subject.extra.year``，顶层没有 ``year``；
-        * 评分在 ``subject.extra.rating_group.rating.value``（无评分时 rating 为 null）；
-        * 简介在 ``subject.extra.short_info``。
+        ``raw`` 来自 :meth:`_TmdbClient.credits`，字段与 TMDB
+        ``combined_credits.cast`` 一一对应：``media_id`` 是 TMDB 主键（数字字符串）、
+        ``type`` 为 ``movie`` / ``tv``、``poster`` 已是完整地址、``vote`` 是
+        ``vote_average``。归一化的产出是「媒体身份 + 展示字段 + 订阅判定」三合一，
+        前端与订阅链都只认这一份结构。
         """
         if not isinstance(raw, dict):
             return None
-        subject = raw.get("subject") if isinstance(raw.get("subject"), dict) else raw
-        media_id = str(subject.get("id") or "").strip()
-        title = _clean_text(subject.get("title"))
+        media_id = str(raw.get("media_id") or "").strip()
+        title = _clean_text(raw.get("title"))
         if not media_id.isdigit() or not title:
             return None
 
-        extra = subject.get("extra") if isinstance(subject.get("extra"), dict) else {}
-
-        # subtype 才是媒体类型；type 只在没有 subtype 时兜底，且要排除 "subject" 这个占位值
-        raw_type = _clean_text(
-            subject.get("subtype") or subject.get("type_name") or subject.get("type")
-        )
-        if raw_type.lower() == "subject":
-            raw_type = ""
-        mtype = _TYPE_ALIASES.get(raw_type.lower(), "") or _TYPE_ALIASES.get(raw_type, "")
-
-        pic = subject.get("pic") if isinstance(subject.get("pic"), dict) else {}
-        cover = subject.get("cover") if isinstance(subject.get("cover"), dict) else {}
-        poster = (
-            pic.get("large")
-            or pic.get("normal")
-            or cover.get("large")
-            or cover.get("normal")
-            or subject.get("cover_url")
-            or ""
-        )
-        if isinstance(poster, dict):
-            poster = poster.get("url") or ""
-
+        raw_type = _clean_text(raw.get("type") or raw.get("raw_type")).lower()
+        mtype = _TYPE_ALIASES.get(raw_type, "")
+        character = _clean_text(raw.get("character"))
+        # 详情页地址按类型分流：TMDB 上剧集与电影是两套路径
+        section = "tv" if raw_type == "tv" else "movie"
         return {
-            "media_source": MediaSource.Douban.value,
+            "media_source": MediaSource.TMDB.value,
             "media_id": media_id,
             "title": title,
-            "year": _clean_text(subject.get("year") or extra.get("year")),
+            "year": _clean_text(raw.get("year")),
             "type": mtype,
             "raw_type": raw_type,
             "subscribable": mtype in _SUBSCRIBABLE_TYPES,
-            "vote": cls._extract_vote(subject, extra),
-            "poster": str(poster),
-            "subtitle": _clean_text(subject.get("card_subtitle") or extra.get("short_info")),
-            "url": f"https://movie.douban.com/subject/{media_id}/",
-            "roles": cls._extract_roles(raw.get("roles")),
+            "vote": round(_as_float(raw.get("vote")), 1),
+            "poster": str(raw.get("poster") or ""),
+            # 副标题放原名：中文名与原名都留一份，前端展示时看得见差异
+            "subtitle": _clean_text(raw.get("alt_title")),
+            "url": f"https://www.themoviedb.org/{section}/{media_id}",
+            "roles": [character] if character else [],
         }
 
     @staticmethod
-    def _extract_vote(subject: Dict[str, Any], extra: Dict[str, Any]) -> float:
-        """从作品条目中取评分；兼容顶层 rating 与 extra.rating_group.rating 两种布局。"""
-        value: Any = None
-        rating = subject.get("rating") if isinstance(subject.get("rating"), dict) else {}
-        value = rating.get("value")
-        if value in (None, ""):
-            group = extra.get("rating_group") if isinstance(extra.get("rating_group"), dict) else {}
-            inner = group.get("rating") if isinstance(group.get("rating"), dict) else {}
-            value = inner.get("value")
-        try:
-            return round(float(value), 1) if value not in (None, "") else 0.0
-        except (TypeError, ValueError):
-            return 0.0
+    def _sort_works(works: List[Dict[str, Any]], sort_by: str = "time") -> List[Dict[str, Any]]:
+        """作品排序。
 
-    @staticmethod
-    def _extract_roles(value: Any) -> List[str]:
-        """从作品条目的 roles/actors 字段中尽力提取该演员的职务。"""
-        if isinstance(value, str):
-            return [value.strip()] if value.strip() else []
-        if not isinstance(value, list):
-            return []
-        roles: List[str] = []
-        for item in value:
-            text = ""
-            if isinstance(item, str):
-                text = item.strip()
-            elif isinstance(item, dict):
-                text = str(item.get("name") or item.get("title") or "").strip()
-            if text and text not in roles:
-                roles.append(text)
-        return roles
-
-    @staticmethod
-    def _sort_works(works: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """按年份倒序排列；Python 稳定排序保证同一年内保留豆瓣的按时间倒序。"""
+        ``time``（默认）按年份倒序，同年保持 TMDB 返回的原始顺序（人气优先）；
+        ``vote`` 按评分倒序，评分相同再按年份倒序。
+        """
 
         def year_of(item: Dict[str, Any]) -> int:
             text = str(item.get("year") or "").strip()[:4]
             return int(text) if text.isdigit() else 0
 
+        if sort_by == "vote":
+            return sorted(
+                works,
+                key=lambda item: (_as_float(item.get("vote")), year_of(item)),
+                reverse=True,
+            )
         return sorted(works, key=year_of, reverse=True)
 
     # ─── 业务逻辑：自动订阅 ──────────────────────────────────────
@@ -1851,6 +1603,7 @@ class DoubanActorSubscribe(_PluginBase):
                     "year": str(work.get("year") or ""),
                     "type": str(work.get("type") or ""),
                     "vote": work.get("vote"),
+                    "media_source": str(work.get("media_source") or MediaSource.TMDB.value),
                     "media_id": str(work.get("media_id") or ""),
                     "success": ok,
                     "detail": message,
@@ -1879,7 +1632,7 @@ class DoubanActorSubscribe(_PluginBase):
         title = str(work.get("title") or "").strip()
         media_id = str(work.get("media_id") or "").strip()
         if not title or not media_id:
-            return False, "标题或豆瓣 ID 为空"
+            return False, "标题或 TMDB ID 为空"
         mtype = MediaType(work["type"]) if work.get("type") in _SUBSCRIBABLE_TYPES else None
         meta: Optional[MetaInfo] = None
         try:
@@ -1899,7 +1652,7 @@ class DoubanActorSubscribe(_PluginBase):
                 title=title,
                 year=str(work.get("year") or ""),
                 mtype=mtype,
-                media_source=MediaSource.Douban,
+                media_source=MediaSource.TMDB,
                 media_id=media_id,
                 season=meta.begin_season,
                 exist_ok=True,
@@ -1953,11 +1706,11 @@ class DoubanActorSubscribe(_PluginBase):
     ) -> Tuple[bool, str]:
         """把订阅失败的作品降级为「预订」：状态置为待定（P）。
 
-        未播出 / 豆瓣条目才建时，订阅链拿不到季集信息会直接拒绝创建订阅，而这类作品
+        未播出 / 条目刚建时，订阅链拿不到季集信息会直接拒绝创建订阅，而这类作品
         恰恰最需要先占位，因此分两步兜底：
 
         1. 仍走官方订阅链，但补一个占位总集数跳过季集补齐，并把状态置为 ``P``；
-        2. 连识别都过不去（TMDB 还没收录）时，直接按豆瓣身份落一条待定订阅。
+        2. 连识别都过不去（TMDB 信息不全）时，直接按 TMDB 身份落一条待定订阅。
 
         ``P``（待定）语义是「允许搜索、不允许完成」：不会在资源出现前被误判为已看完，
         也不会漏掉后续资源；宿主刷新到真实集数时会自动向上覆盖占位值。
@@ -1969,12 +1722,12 @@ class DoubanActorSubscribe(_PluginBase):
         title = str(work.get("title") or "").strip()
         media_id = str(work.get("media_id") or "").strip()
         if not title or not media_id:
-            return False, "标题或豆瓣 ID 为空"
-        source = str(work.get("media_source") or MediaSource.Douban.value)
+            return False, "标题或 TMDB ID 为空"
+        source = str(work.get("media_source") or MediaSource.TMDB.value)
         try:
             source_enum = MediaSource(source)
         except ValueError:  # pragma: no cover - 宿主枚举差异兜底
-            source_enum = MediaSource.Douban
+            source_enum = MediaSource.TMDB
         effective = self._reserve_prefs(prefs)
         save_path = effective["save_path"] or self._subscribe_save_path or None
         downloader = effective["downloader"] or self._subscribe_downloader or None
@@ -2026,10 +1779,10 @@ class DoubanActorSubscribe(_PluginBase):
         downloader: Optional[str],
         sites: Optional[List[int]],
     ) -> Tuple[bool, str]:
-        """连识别都失败时，按豆瓣身份直接写一条待定订阅（预订占位）。
+        """连识别都失败时，按 TMDB 身份直接写一条待定订阅（预订占位）。
 
-        订阅链必须先识别出媒体信息才会创建订阅，未播出、TMDB 尚未收录的作品过不了
-        这一步 —— 而这正是最需要预订的情况。这里绕过识别直接写库：身份用豆瓣
+        订阅链必须先识别出媒体信息才会创建订阅，未播出、信息尚未补全的作品过不了
+        这一步 —— 而这正是最需要预订的情况。这里绕过识别直接写库：身份用 TMDB
         ``media_id``，状态 P，集数留占位值，等宿主刷新到真实信息后照常参与搜索。
         """
         oper = _subscribe_oper()
@@ -2037,7 +1790,7 @@ class DoubanActorSubscribe(_PluginBase):
             return False, chain_error or "宿主未提供订阅写库接口"
         title = str(work.get("title") or "").strip()
         media_id = str(work.get("media_id") or "").strip()
-        source = str(work.get("media_source") or MediaSource.Douban.value)
+        source = str(work.get("media_source") or MediaSource.TMDB.value)
         is_tv = mtype == MediaType.TV
         identity = {
             "media_source": source,
@@ -2114,26 +1867,6 @@ class DoubanActorSubscribe(_PluginBase):
     def _load_actor_cache(self) -> Dict[str, Any]:
         data = self.get_data(self._DATA_ACTORS)
         return data if isinstance(data, dict) else {}
-
-    def _load_search_log(self) -> Dict[str, float]:
-        """读取「演员 → 最近一次真实搜索时间」的记账表。
-
-        只保留仍在 24 小时冷却窗口内的记录：过期的没有意义，顺手清掉，
-        避免这份数据随着时间无限增长。时间戳存成 float（epoch 秒）。
-        """
-        data = self.get_data(self._DATA_SEARCH_LOG)
-        if not isinstance(data, dict):
-            return {}
-        threshold = time.time() - _SEARCH_COOLDOWN_SECONDS
-        cleaned: Dict[str, float] = {}
-        for key, value in data.items():
-            try:
-                ts = float(value)
-            except (TypeError, ValueError):
-                continue
-            if ts > threshold:
-                cleaned[str(key)] = ts
-        return cleaned
 
     def _load_sub_history(self) -> List[Dict[str, Any]]:
         data = self.get_data(self._DATA_SUBS)
@@ -2320,9 +2053,6 @@ class DoubanActorSubscribe(_PluginBase):
             "subscribe_save_path": self._subscribe_save_path,
             "subscribe_downloader": self._subscribe_downloader,
             "subscribe_sites": list(self._subscribe_sites),
-            "douban_cookie": self._douban_cookie,
-            "douban_cookie_source": self._cookie_source,
-            "douban_cookie_hint": self._cookie_hint,
             "pending_refresh": bool(self._pending_refresh),
             "refreshing": self._is_refreshing(),
             "run_count": self._run_count,
@@ -2349,18 +2079,18 @@ class DoubanActorSubscribe(_PluginBase):
         merged["sort_by"] = str(merged.get("sort_by") or "time").strip() or "time"
         merged["auto_types"] = str(merged.get("auto_types") or "").strip()
         merged["auto_min_vote"] = self._to_float(merged.get("auto_min_vote"), 0.0)
-        merged["max_works"] = self._clamp_int(merged.get("max_works"), 10, 5, 10)
+        merged["max_works"] = self._clamp_int(merged.get("max_works"), 20, 5, 60)
         merged["auto_max_per_run"] = self._clamp_int(merged.get("auto_max_per_run"), 5, 1, 100)
         merged["subscribe_save_path"] = str(merged.get("subscribe_save_path") or "").strip()
         merged["subscribe_downloader"] = str(merged.get("subscribe_downloader") or "").strip()
         merged["subscribe_sites"] = self._parse_sites(merged.get("subscribe_sites"))
-        merged["douban_cookie"] = str(merged.get("douban_cookie") or "").strip()
-        # run_count / pending_refresh / refreshing / Cookie 来源属于运行时状态，不落盘
+        # v1.15.0 起发现源改为 TMDB，不再需要豆瓣 Cookie；
+        # 旧前端或老配置里残留的键一律丢弃，避免把无用配置继续落盘。
+        merged.pop("douban_cookie", None)
+        # run_count / pending_refresh / refreshing 属于运行时状态，不落盘
         merged.pop("run_count", None)
         merged.pop("pending_refresh", None)
         merged.pop("refreshing", None)
-        merged.pop("douban_cookie_source", None)
-        merged.pop("douban_cookie_hint", None)
 
         if not self.update_config(merged):
             return {"success": False, "message": "配置持久化失败"}
@@ -2409,7 +2139,7 @@ class DoubanActorSubscribe(_PluginBase):
         }
 
     def api_search_actor(self, name: str = "") -> Dict[str, Any]:
-        """按名称搜索豆瓣演员，供配置页辅助确定人物 ID。"""
+        """按名称搜索 TMDB 演员，供配置页辅助确定人物 ID。"""
         keyword = str(name or "").strip()
         if not keyword:
             return {"success": False, "message": "请提供演员名称"}
@@ -2421,17 +2151,15 @@ class DoubanActorSubscribe(_PluginBase):
                 "data": [{"id": person_id, "name": keyword, "avatar": None, "url": None}],
                 "message": "已按人物 ID 解析",
             }
-        client = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
+        client = _TmdbClient(proxy=self._proxy)
         try:
             results = client.search_person(keyword)
         except Exception as err:
             return {"success": False, "message": f"搜索失败：{err}"}
-        if not results:
-            # 同样是空结果，原因不同：限流要提示稍后重试，而不是让用户误以为没有这个人
-            if client.last_rate_limited:
-                return {"success": False, "message": client.failure_hint(), "rate_limited": True}
-            if client.last_error:
-                return {"success": False, "message": f"搜索失败：{client.last_error}"}
+        if not results and client.last_error:
+            # 同样是空结果，原因不同：请求失败要提示稍后重试，
+            # 而不是让用户误以为没有这个人。
+            return {"success": False, "message": client.failure_hint()}
         return {"success": True, "data": results}
 
     def api_reserve(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2439,19 +2167,19 @@ class DoubanActorSubscribe(_PluginBase):
 
         面板上的订阅按钮直接调宿主原生 ``POST subscribe/``（这样订阅归属当前登录用户），
         而宿主接口不接受创建时指定状态，也不允许绕过季集识别，所以未播出 / 尚未收录的
-        作品在那里一定会失败。前端拿到这类失败后会回落到本接口，由插件按豆瓣身份
-        建一条待定订阅占位。
+        作品在那里一定会失败。前端拿到这类失败后会回落到本接口，由插件按 TMDB
+        身份建一条待定订阅占位。
         """
         data = payload if isinstance(payload, dict) else {}
         title = str(data.get("title") or "").strip()
         media_id = str(data.get("media_id") or "").strip()
         if not title or not media_id:
-            return {"success": False, "message": "缺少作品标题或豆瓣 ID"}
+            return {"success": False, "message": "缺少作品标题或 TMDB ID"}
         work: Dict[str, Any] = {
             "title": title,
             "year": str(data.get("year") or ""),
             "type": str(data.get("type") or ""),
-            "media_source": str(data.get("media_source") or MediaSource.Douban.value),
+            "media_source": str(data.get("media_source") or MediaSource.TMDB.value),
             "media_id": media_id,
             "poster": str(data.get("poster") or ""),
             "subtitle": str(data.get("subtitle") or ""),
@@ -2477,7 +2205,7 @@ class DoubanActorSubscribe(_PluginBase):
     def api_unsubscribe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """取消一部作品的订阅：作品卡片上「已订阅」按钮的二次点击。
 
-        粒度和「订阅」按钮保持一致 —— 用户点的是**这一部作品**，因此按豆瓣身份
+        粒度和「订阅」按钮保持一致 —— 用户点的是**这一部作品**，因此按媒体身份
         （``media_source`` + ``media_id``，可带 ``season``）把所有对得上的订阅记录删掉，
         而不是让前端拼一串 media_id/season 去逐个调宿主接口。
 
@@ -2487,10 +2215,10 @@ class DoubanActorSubscribe(_PluginBase):
         data = payload if isinstance(payload, dict) else {}
         media_id = str(data.get("media_id") or "").strip()
         if not media_id:
-            return {"success": False, "message": "缺少豆瓣 ID"}
-        source_text = str(data.get("media_source") or MediaSource.Douban.value).strip()
+            return {"success": False, "message": "缺少 TMDB ID"}
+        source_text = str(data.get("media_source") or MediaSource.TMDB.value).strip()
         try:
-            source = MediaSource(source_text or MediaSource.Douban.value)
+            source = MediaSource(source_text or MediaSource.TMDB.value)
         except Exception:  # pragma: no cover - 宿主枚举实现差异，非法值一律挡回
             return {"success": False, "message": f"未知的媒体来源：{source_text}"}
 
@@ -2545,7 +2273,8 @@ class DoubanActorSubscribe(_PluginBase):
         media_id = str(data.get("media_id") or "").strip()
         if not media_id:
             return {"success": False, "message": "缺少 media_id"}
-        source = str(data.get("media_source") or "douban").strip() or "douban"
+        source = str(data.get("media_source") or MediaSource.TMDB.value).strip()
+        source = source or MediaSource.TMDB.value
         key = f"{source}:{media_id}"
         ignored = self._load_ignored()
         ignored[key] = {
@@ -2577,7 +2306,8 @@ class DoubanActorSubscribe(_PluginBase):
             }
         key = str(data.get("key") or "").strip()
         if not key and data.get("media_id"):
-            source = str(data.get("media_source") or "douban").strip() or "douban"
+            source = str(data.get("media_source") or MediaSource.TMDB.value).strip()
+            source = source or MediaSource.TMDB.value
             key = f"{source}:{data['media_id']}"
         if not key or key not in ignored:
             return {"success": False, "message": "该作品不在忽略列表中"}
@@ -2598,7 +2328,7 @@ class DoubanActorSubscribe(_PluginBase):
         若前端只能给出已解析的人物 ID，则用演员缓存里的 ID 兜底匹配。
 
         移除后走与保存配置完全相同的收尾：``init_plugin`` 会检测到演员列表变更，
-        丢弃该演员的残留快照，并安排一次后台补刷新（不会在请求线程里同步抓豆瓣）。
+        丢弃该演员的残留快照，并安排一次后台补刷新（不会在请求线程里同步抓 TMDB）。
         """
         data = payload if isinstance(payload, dict) else {}
         target = str(data.get("actor") or "").strip()
@@ -2622,7 +2352,7 @@ class DoubanActorSubscribe(_PluginBase):
 
         merged = {**self._config_snapshot(), "actors": "\n".join(remaining)}
         # 运行时状态不落盘（与 api_update_config 保持一致）
-        for key in ("run_count", "pending_refresh", "refreshing", "douban_cookie_source", "douban_cookie_hint"):
+        for key in ("run_count", "pending_refresh", "refreshing"):
             merged.pop(key, None)
         if not self.update_config(merged):
             return {"success": False, "message": "配置持久化失败"}
@@ -2637,19 +2367,14 @@ class DoubanActorSubscribe(_PluginBase):
         }
 
     def api_clear(self) -> Dict[str, Any]:
-        """清空作品快照与自动订阅记录（配置不受影响）。
-
-        同时清掉搜索冷却记账：这是用户显式要求重来的动作，
-        相当于手动放行一次重搜（会重新消耗豆瓣搜索额度）。
-        """
+        """清空作品快照与自动订阅记录（配置不受影响）。"""
         self.save_data(self._DATA_WORKS, {})
         self.save_data(self._DATA_SUBS, [])
         self.save_data(self._DATA_SEEN, [])
-        self.save_data(self._DATA_SEARCH_LOG, {})
         self._run_count = 0
         self._last_run_at = ""
         self.save_data(self._DATA_STATE, {"run_count": 0, "last_run_at": ""})
-        return {"success": True, "message": "作品、自动订阅记录与搜索记账已清空"}
+        return {"success": True, "message": "作品与自动订阅记录已清空"}
 
     # ─── 配置解析与默认值 ────────────────────────────────────────
 
@@ -2750,6 +2475,5 @@ class DoubanActorSubscribe(_PluginBase):
             "subscribe_save_path": "",
             "subscribe_downloader": "",
             "subscribe_sites": [],
-            "douban_cookie": "",
             "onlyonce": False,
         }
