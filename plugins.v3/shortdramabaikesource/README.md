@@ -18,7 +18,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | 片名检索 | `search_medias` | 返回候选 `MediaInfo`（含海报），宿主搜索框、探索页、订阅都能用 |
 | 详情识别 | `recognize_media` | 按 `media_id`（`org:<id>`）或片名取完整记录 |
 | 补图 | `obtain_images` | 缺海报时按身份补抓，并把海报兜底填到背景图 |
-| **「探索」页来源** | `DiscoverSource` 事件 + `/explore` | 在 MoviePilot 的「探索」菜单里多出一个「短剧百科」来源，可切换榜单浏览 |
+| **「探索」页来源** | `DiscoverSource` 事件 + `/explore` | 在 MoviePilot 的「探索」菜单里多出一个「短剧百科」来源，可切换榜单浏览；**打开时会按需回填少量作品的简介 / 年份 / 类型 / 演员** |
 | 跨插件调用 | 见下节 | 其它插件、脚本、AI 智能体都能直接复用同一套识别 |
 
 统一媒体身份：`media_source = "duanjubaike"`，`media_id = "org:<id>"`（裸数字 ID 等价）。
@@ -32,7 +32,11 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 - **来源名**：短剧百科；**可见位置**：MoviePilot 侧栏「探索」菜单
 - **筛选条**：「榜单」chips —— `热播榜` / `新剧榜` / …（你勾了哪些就有哪些）+ `全部短剧`
   （本地目录索引，按站点 ID 倒序，即最新在前）
-- **数据来源**：本地榜单快照 + 目录索引 ⇒ **翻页零网络请求**，怎么刷都不消耗站点配额
+- **数据来源**：本地榜单快照 + 目录索引；榜单页 HTML 里只有「标题 + 海报 + 集数」，
+  所以插件会对**当前这一页**按需回填少量作品详情，让条目带上 TMDB 级的
+  「简介 / 年份 / 类型 / 演员 / 评分」
+- **回填配额纪律**：每次请求最多 `explore_detail_fetch` 部（默认 2，0 = 完全不请求），
+  且**至少给识别留 2 次额度**；额度不足或撞 CF 时立即停手，退回卡片字段照常返回
 - **端点**：`GET /api/v1/plugin/ShortDramaBaikeSource/explore?top_key=hot&page=1&count=30`
 
 要看到更多榜单，去「配置 → 榜单快照范围」把榜单勾上（每个榜单花一次站点请求配额，
@@ -134,7 +138,7 @@ Cloudflare 的 JS 挑战，但在 NAS 上尚未验证稳定，失败一律静默
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/explore` | **探索页数据源**：`top_key`(+`page`/`count`) → `Response[List[MediaInfo]]`（只读本地，不耗配额） |
+| GET | `/explore` | **探索页数据源**：`top_key`(+`page`/`count`) → `Response[List[MediaInfo]]`（读本地快照 + 按需回填当前页详情） |
 | GET | `/recognize` | **跨插件出口**：`media_id` 或 `keyword`(+`year`) → 纯 JSON 作品记录 |
 | GET | `/search` | 按片名试搜，返回候选与匹配分（排障用） |
 | GET | `/probe` | 连通性自检：robots / 目录页 / 榜单 / 详情页各自的状态码与解析条数 |
@@ -162,4 +166,5 @@ Cloudflare 的 JS 挑战，但在 NAS 上尚未验证稳定，失败一律静默
 | `cooldown_minutes` | 10 | 撞 403 后的冷却时长 |
 | `scan_pages` | 1 | 没有索引时的实时扫描页数 |
 | `top_keys` | 热播榜 + 新剧榜 | **要刷哪些榜单**（17 个任选）= 探索页里能看到的来源；每个榜单一次请求配额 |
+| `explore_detail_fetch` | 2 | 探索页每次请求最多回填几部作品的详情（简介 / 年份 / 类型 / 演员）；`0` = 不额外请求 |
 | `use_browser_search` | 关 | 实验：用宿主浏览器仿真打站内检索 |

@@ -187,7 +187,7 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.2.0"
 
 # ── 数据源常量 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
@@ -248,6 +248,12 @@ MAX_EXPLORE_COUNT = 60
 # 「全部短剧」：用本地目录索引当伪榜单 —— 榜单只有十几条，索引会持续增长
 EXPLORE_INDEX_KEY = "index"
 EXPLORE_INDEX_LABEL = "全部短剧"
+# 榜单页 / 目录页的卡片只有「标题 + 海报 + 集数」，而 TMDB 那种「简介 + 年份 +
+# 类型 + 演员」只在**作品详情页**里。为了不把探索页做成空壳，打开探索页时按需
+# 回填少量详情（走同一个配额闸门，并给「识别」留出额度）。
+EXPLORE_DETAIL_FETCH_DEFAULT = 2    # 每次探索请求最多回填几部作品的详情（0 = 只读本地）
+MAX_EXPLORE_DETAIL_FETCH = 10
+EXPLORE_DETAIL_RESERVE = 2          # 回填期间给识别保留的额度（用完至少剩这么多）
 
 # 需要登记进宿主图片白名单的域名（否则图片代理会拒收）
 IMAGE_DOMAINS: Tuple[str, ...] = (
@@ -307,6 +313,17 @@ def _strip_tags(text: Any) -> str:
     if not isinstance(text, str):
         return _clean(text)
     return _clean(re.sub(r"<[^>]+>", " ", text))
+
+
+def _has_value(value: Any) -> bool:
+    """合并详情时用：空串 / 空集合 / None 都算「没值」，不该覆盖已有字段。"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
 
 
 def _normalize_image(src: str) -> str:
@@ -1162,6 +1179,8 @@ class ShortDramaBaikeSource(_PluginBase):
     _interval_minutes: int = DEFAULT_INTERVAL_MINUTES
     _use_browser_search: bool = False
     _proxy: bool = False
+    # 探索页每次请求最多回填几部作品的详情（0 = 不额外请求，只读本地快照）
+    _explore_detail_fetch: int = EXPLORE_DETAIL_FETCH_DEFAULT
 
     # ── 运行时状态（由 init_plugin 重建，保证可重复初始化） ──
     _cache: Dict[str, Tuple[float, Any]] = {}
@@ -1215,6 +1234,12 @@ class ShortDramaBaikeSource(_PluginBase):
         self._use_browser_search = self._as_bool(config.get("use_browser_search"), False)
         self._proxy = bool(config.get("proxy"))
         self._top_keys = self._as_top_keys(config.get("top_keys"))
+        self._explore_detail_fetch = self._as_range(
+            config.get("explore_detail_fetch"),
+            EXPLORE_DETAIL_FETCH_DEFAULT,
+            0,
+            MAX_EXPLORE_DETAIL_FETCH,
+        )
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定。它们是类属性，若只原地 clear()
         # 或干脆不动，同一进程里被重建的插件实例（宿主 reconcile 会反复重建）会共用
@@ -1494,8 +1519,16 @@ class ShortDramaBaikeSource(_PluginBase):
             return ""
         return text if text.isdigit() else ""
 
-    def _fetch_detail(self, media_id: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
-        """按统一媒体 ID 抓取详情页（带 TTL 缓存）。"""
+    def _fetch_detail(
+        self,
+        media_id: str,
+        use_cache: bool = True,
+        reserve: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """按统一媒体 ID 抓取详情页（带 TTL 缓存）。
+
+        ``reserve`` 透传给配额闸门：探索页回填详情时用它给「识别」留额度。
+        """
         native_id = self._native_id(media_id)
         if not native_id:
             return None
@@ -1505,7 +1538,9 @@ class ShortDramaBaikeSource(_PluginBase):
             if cached is not None:
                 return cached
 
-        html, status = self._get(f"{self._domain}{DETAIL_PATH.format(id=native_id)}")
+        html, status = self._get(
+            f"{self._domain}{DETAIL_PATH.format(id=native_id)}", reserve=reserve
+        )
         if not html or is_cloudflare_challenge(html, status):
             return None
         item = parse_org_detail(html, native_id, self._domain)
@@ -1796,6 +1831,51 @@ class ShortDramaBaikeSource(_PluginBase):
         entry = self._top_cache.get(key) or {}
         return [dict(item) for item in (entry.get("items") or [])]
 
+    def _explore_enrich(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """把探索页条目的**详情字段**补齐（简介 / 年份 / 类型 / 演员 / 评分）。
+
+        榜单页与目录页的卡片只有「标题 + 海报 + 集数」，TMDB 那种详情只在**作品详情页**
+        里（JSON-LD）。所以这里按需回填，两条来路：
+
+        * 先查**详情缓存**（识别 / 检索 / 上一轮回填都写同一个 ``detail:<id>`` 键）；
+        * 缓存没有、且配额闸门放行（用完至少剩 ``EXPLORE_DETAIL_RESERVE`` 次给识别）时
+          现场抓一部；抓失败（403 / 超时）就**立即收手**，绝不空转把 IP 打进冷却。
+
+        回填条数由 ``explore_detail_fetch`` 控制（0 = 完全只读本地，零请求）。
+        """
+        if not rows:
+            return rows
+        budget = self._explore_detail_fetch if self._enabled else 0
+        enriched: List[Dict[str, Any]] = []
+        for row in rows:
+            merged = dict(row)
+            native_id = self._native_id(merged.get("media_id") or merged.get("native_id"))
+            if native_id:
+                detail = self._cache_get(f"detail:{native_id}")
+                if detail is None and budget > 0:
+                    if self._quota_remaining() > EXPLORE_DETAIL_RESERVE:
+                        detail = self._fetch_detail(
+                            f"{MEDIA_ID_PREFIX}:{native_id}",
+                            use_cache=True,
+                            reserve=EXPLORE_DETAIL_RESERVE,
+                        )
+                        budget -= 1
+                        if not detail:
+                            # 站点不给数据了（多半是撞配额 / CF），本轮别再试
+                            budget = 0
+                    else:
+                        # 额度见底：把剩下的留给识别，回填下轮再说
+                        budget = 0
+                if detail:
+                    merged.update(
+                        {key: value for key, value in detail.items() if _has_value(value)}
+                    )
+                    # 身份字段听列表项的（榜单条目的季/集数比详情页更贴合当前条目）
+                    merged["media_id"] = row.get("media_id") or detail.get("media_id")
+                    merged["native_id"] = native_id
+            enriched.append(merged)
+        return enriched
+
     def _explore_api_path(self) -> str:
         """探索页要调的相对地址（``/api/v1/`` 之后的部分，含 apikey）。"""
         path = f"plugin/{self.__class__.__name__}{EXPLORE_PATH}"
@@ -1875,8 +1955,10 @@ class ShortDramaBaikeSource(_PluginBase):
     ) -> Any:
         """探索页数据源：按榜单键分页返回短剧列表（``Response[List[MediaInfo]]``）。
 
-        数据全部来自本地（榜单快照 / 目录索引），因此**不消耗站点配额**；
-        快照为空的来源只是回空列表，后台任务会逐轮把它填起来。
+        数据以本地为准（榜单快照 / 目录索引），但榜单卡片里只有标题 + 海报 + 集数 ——
+        为了让它像 TMDB 来源那样「点开有简介、年份、类型、演员」，这里会对**当前这一页**
+        按需回填少量作品详情（``explore_detail_fetch``，默认 2 部；0 = 只读本地）。
+        回填走同一个配额闸门并给识别留额度，抓不到就退回卡片字段，绝不阻塞返回。
         """
         medias: List[Any] = []
         if self._enabled:
@@ -1888,7 +1970,7 @@ class ShortDramaBaikeSource(_PluginBase):
             current = self._as_range(page, 1, 1, 10000)
             size = self._as_range(count, EXPLORE_DEFAULT_COUNT, 1, MAX_EXPLORE_COUNT)
             start = (current - 1) * size
-            for row in rows[start : start + size]:
+            for row in self._explore_enrich(rows[start : start + size]):
                 mediainfo = build_media_info(row)
                 if mediainfo is None:
                     continue
@@ -2139,6 +2221,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "use_browser_search": False,
             "proxy": False,
             "top_keys": list(DEFAULT_TOP_KEYS),
+            "explore_detail_fetch": EXPLORE_DETAIL_FETCH_DEFAULT,
         }
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -2485,6 +2568,26 @@ class ShortDramaBaikeSource(_PluginBase):
                                     }
                                 ],
                             },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "explore_detail_fetch",
+                                            "label": "探索页详情回填（部/次）",
+                                            "type": "number",
+                                            "hint": (
+                                                "榜单卡片只有标题和海报；填几就在打开探索页时"
+                                                "最多抓几部作品的简介/年份/类型/演员。"
+                                                "0 = 完全不额外请求"
+                                            ),
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
                         ],
                     },
                 ],
@@ -2508,6 +2611,16 @@ class ShortDramaBaikeSource(_PluginBase):
             quota = f"冷却中（剩余 {remaining} 秒）"
         else:
             quota = f"窗口内剩余 {self._quota_remaining()}/{self._quota_max_requests} 次"
+
+        with self._cache_lock:
+            detail_cached = len([key for key in self._cache if str(key).startswith("detail:")])
+        if self._explore_detail_fetch > 0:
+            explore_line = (
+                f"探索页详情回填：每次最多 {self._explore_detail_fetch} 部"
+                f"（已缓存 {detail_cached} 部详情）"
+            )
+        else:
+            explore_line = f"探索页详情回填：已关闭（详情缓存 {detail_cached} 部）"
 
         return [
             {
@@ -2591,6 +2704,27 @@ class ShortDramaBaikeSource(_PluginBase):
                         "content": [
                             {
                                 "component": "VCard",
+                                "props": {"variant": "tonal"},
+                                "content": [
+                                    {
+                                        "component": "VCardText",
+                                        "text": explore_line,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [
+                            {
+                                "component": "VCard",
                                 "props": {"variant": "outlined"},
                                 "content": [
                                     {
@@ -2634,7 +2768,8 @@ class ShortDramaBaikeSource(_PluginBase):
                 "summary": "宿主探索页数据源",
                 "description": (
                     "按榜单键（hot / new / … / index）分页返回短剧列表，"
-                    "供 MoviePilot 探索页消费；数据取自本地快照与索引，不消耗站点配额。"
+                    "供 MoviePilot 探索页消费；数据取自本地快照与索引，"
+                    "并对当前页按需回填少量作品详情（explore_detail_fetch 控制条数，0 = 不回填）。"
                 ),
             },
             {
