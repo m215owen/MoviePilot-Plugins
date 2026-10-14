@@ -50,20 +50,27 @@ TMDB / 豆瓣 / Bangumi 在宿主里同级，而不是另起一套私有链路�
                         producers），只有 ID 没有片名。
 ======================  ==========================================================
 
-**配额（实测，这是本插件设计的核心约束）**：站点的 Cloudflare 风控**按 IP 计**，
-无论普通 HTTP 还是宿主浏览器都一样。实测以 **1.5 秒**间隔连抓，第 6 次即 403；
-把间隔放宽到 **10 秒**，**仍然是第 6 次** 403 —— 说明它卡的是「一个窗口内几次」，
-不是「每秒几次」。冷却数分钟后恢复。⇒ 全量目录抓取**必须**做成「小步 + 冷却 +
-断点续爬」的后台任务，且**必须给交互式识别留额度**，绝不能在一次识别调用里翻页。
+**限流（2026-10-14 在 NAS 出口 IP 上实测 —— 结论与旧版注释不同，请以此为准）**：
+站点**没有**全站配额，风控只压在**目录页**这一条路径上：
 
-因此本插件用一个**滚动窗口配额闸门**（``_take_slot``）管住所有出站请求：
+* ``/zh-Hans/drama/list?page=N``：0.8~1.0 秒间隔连打，**第 6 次**即 403
+  （正文 ``Just a moment...``）；但撞墙后**只影响该路径** —— 同一时刻榜单 / 详情 /
+  首页全部 200，紧接着再打目录页也恢复 200。
+* ``/top/{key}``、``/drama/{id}``、``/zh-Hans``：0.3 秒 × 20 次、0.8 秒 × 8 次
+  全部 200，全程没见过挑战页。
+* 预热首页 + ``Referer`` + 全套 ``sec-ch-ua`` / ``Sec-Fetch-*`` **不能**突破目录页
+  的第 6 次 ⇒ 它既不是 IP 窗口配额，也不是浏览器指纹检测，就是该路径上的突发限流。
+* ``/zh-Hans/drama/search`` 站内检索是**另一回事**：真正的 **Cloudflare JS 挑战**，
+  任何 HTTP 头都过不去（正文 ``Just a moment...``），只能靠宿主浏览器仿真。
 
-* 窗口 ``quota_window_minutes``（默认 5 分钟）内最多 ``quota_max_requests`` 次
-  （默认 5 次，即实测值）；
-* 后台任务（索引 / 榜单）多留一个额度（``reserve=1``），**把最后的额度让给
-  识别与检索** —— 否则后台把额度吃光，用户点一次识别就直接撞 403；
-* 真撞上 403 时进冷却（``cooldown_minutes``），期间所有请求短路，
-  免得反复试错把 IP 拖进更长的封禁。
+因此闸门拆成两个池（``quota_bucket``），**按路径分开计数**：
+
+* **目录池**（``catalog``）：窗口 ``quota_window_minutes``（默认 1 分钟）内最多
+  ``quota_max_requests`` 次（默认 5 次，即实测值）—— 全量抓取必须「小步 + 断点续爬」；
+* **宽松池**（``open``）：其余全部路径，上限 ``OPEN_QUOTA_MAX_REQUESTS``
+  （实测不敏感，只为在站点策略突变时刹车）；
+* 撞上 403 时**只冷却命中的那个池**（``cooldown_minutes``），免得目录页的墙把识别
+  与探索页回填一起冻住 —— 实测这两者根本不在同一条限流上。
 
 检索是**三级**的，逐级降级：
 
@@ -187,7 +194,7 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "1.3.0"
+PLUGIN_VERSION = "1.4.0"
 
 # ── 数据源常量 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
@@ -251,9 +258,8 @@ EXPLORE_INDEX_LABEL = "全部短剧"
 # 榜单页 / 目录页的卡片只有「标题 + 海报 + 集数」，而 TMDB 那种「简介 + 年份 +
 # 类型 + 演员」只在**作品详情页**里。为了不把探索页做成空壳，打开探索页时按需
 # 回填少量详情（走同一个配额闸门，并给「识别」留出额度）。
-EXPLORE_DETAIL_FETCH_DEFAULT = 2    # 每次探索请求最多回填几部作品的详情（0 = 只读本地）
-MAX_EXPLORE_DETAIL_FETCH = 10
-EXPLORE_DETAIL_RESERVE = 2          # 回填期间给识别保留的额度（用完至少剩这么多）
+EXPLORE_DETAIL_FETCH_DEFAULT = 8    # 每次探索请求最多回填几部作品的详情（0 = 只读本地）
+MAX_EXPLORE_DETAIL_FETCH = 30
 
 # 需要登记进宿主图片白名单的域名（否则图片代理会拒收）
 IMAGE_DOMAINS: Tuple[str, ...] = (
@@ -265,11 +271,35 @@ IMAGE_DOMAINS: Tuple[str, ...] = (
 # 默认值 / 上限
 DEFAULT_TIMEOUT = 15
 DEFAULT_CACHE_TTL = 604800          # 详情页内容基本不变，缓存 7 天
-DEFAULT_MIN_INTERVAL = 3.0          # 两次请求的最小间隔（秒）—— 站点配额很紧
-DEFAULT_COOLDOWN_MINUTES = 10       # 撞到 403 后的冷却时长
-# 滚动窗口配额（实测：1.5s 与 10s 间隔都是第 6 次撞 403 ⇒ 卡的是「窗口内次数」）
-DEFAULT_QUOTA_WINDOW_MINUTES = 5
-DEFAULT_QUOTA_MAX_REQUESTS = 5
+DEFAULT_MIN_INTERVAL = 1.0          # 任意两次请求的最小间隔（秒）
+# 撞墙后的冷却：实测撞墙（403 挑战页）后短时间内继续请求**一直是 403**
+# （3 秒间隔连打，撞墙后又打了 15 次、48 秒都没恢复），所以撞上就老实退避。
+DEFAULT_COOLDOWN_MINUTES = 2
+
+# ── 限流分池（2026-10-14 在 NAS 出口 IP 上实测） ─────────────────────
+# 站点的风控**不是全站配额**，而是**只在目录页上生效的突发限流**：
+#   • 目录页 ``/zh-Hans/drama/list?page=N``：0.8~1.0s 间隔连打，**第 6 次**即 403
+#     （正文 ``Just a moment...``）；撞墙后**只影响该路径** —— 同一时刻榜单 /
+#     详情 / 首页全部 200，紧接着再打目录页也恢复 200。
+#   • 榜单 ``/top/*``、详情 ``/drama/{id}``、首页 ``/zh-Hans``：0.3s × 20 次、
+#     0.8s × 8 次，全程 200，从不见挑战页。
+#   • 预热首页 + ``Referer`` + 全套 ``sec-ch-ua`` / ``Sec-Fetch-*`` **不能**突破
+#     目录页的第 6 次 ⇒ 它既不是 IP 窗口配额，也不是浏览器指纹检测。
+#   ⇒ 把闸门拆成两个池：目录页单独紧额度，其余走宽松池，**别让目录页拖累
+#     识别、详情识别与探索页回填**。
+DEFAULT_QUOTA_WINDOW_MINUTES = 1    # 窗口时长（两个池共用）—— 实测目录页约「每 1 分钟 5 次」
+DEFAULT_QUOTA_MAX_REQUESTS = 5      # ⚠️ 只约束**目录页**池
+OPEN_QUOTA_MAX_REQUESTS = 240       # 宽松池上限：实测不敏感，给一个能刹车又几乎不误拦的值
+# 目录页的**实测硬上限**：一个窗口内 5 次，第 6 次必被挡。配置允许填更大，但
+# 实际生效值会被钳到这里 —— 站点按它自己的计数走，我们填多大都改变不了，
+# 只会更快撞 403（撞了还得冷却，净效率反而更低）。
+CATALOG_QUOTA_HARD_LIMIT = 5
+QUOTA_BUCKET_CATALOG = "catalog"
+QUOTA_BUCKET_OPEN = "open"
+# 站点路径前缀 → 所属限流池（见 quota_bucket()）
+# 检索页 ``/zh-Hans/drama/search`` 是独立的 **Cloudflare JS 挑战**，任何 HTTP 头都过不去，
+# 所以它不走闸门，只能靠宿主浏览器仿真（见 _browser_search）。
+_SEARCH_PATH = "/zh-Hans/drama/search"
 DEFAULT_SCAN_PAGES = 1              # 无索引时的实时扫描页数（1 × 30 部）
 MAX_SCAN_PAGES = 10
 # 每轮索引页数默认压到配额以内：这样一轮跑完**不会**撞 403，IP 不会被打死。
@@ -297,6 +327,21 @@ _USER_AGENT = (
 
 
 # ── 通用小工具 ────────────────────────────────────────────────────
+
+
+def quota_bucket(url: str) -> str:
+    """按 URL 路径给出**限流池**。
+
+    目录页（``/zh-Hans/drama/list``）有独立的突发限流，其余路径实测不敏感，
+    因此两者分开计数：目录页撞墙不会连累识别与探索页回填。
+    """
+    try:
+        path = urllib.parse.urlsplit(str(url or "")).path or ""
+    except Exception:  # pragma: no cover - 地址异常时按宽松池处理
+        return QUOTA_BUCKET_OPEN
+    if path.startswith(CATALOG_PATH):
+        return QUOTA_BUCKET_CATALOG
+    return QUOTA_BUCKET_OPEN
 
 
 def _clean(text: Any) -> str:
@@ -1245,12 +1290,13 @@ class ShortDramaBaikeSource(_PluginBase):
     # ── 运行时状态（由 init_plugin 重建，保证可重复初始化） ──
     _cache: Dict[str, Tuple[float, Any]] = {}
     _cache_lock = threading.RLock()
-    # 配额闸门：所有出站请求都要先过 _take_slot()，它保证「最小间隔 + 滚动窗口额度」
+    # 配额闸门：所有出站请求都要先过 _take_slot()，它保证「最小间隔 + 滚动窗口额度」。
+    # ⚠️ 状态**按限流池分桶**（catalog / open），见 quota_bucket()。
     _gate_lock = threading.Lock()
-    _next_request_at: float = 0.0
-    _blocked_until: float = 0.0
-    _blocked_at: float = 0.0
-    _slots: List[float] = []
+    _next_request_at: Dict[str, float] = {}
+    _blocked_until: Dict[str, float] = {}
+    _blocked_at: Dict[str, float] = {}
+    _slots: Dict[str, List[float]] = {}
     # 本地目录索引：id -> {"title", "poster", ...}
     _index: Dict[str, Dict[str, Any]] = {}
     _index_state: Dict[str, Any] = {}
@@ -1278,8 +1324,12 @@ class ShortDramaBaikeSource(_PluginBase):
         self._quota_window_minutes = self._as_range(
             config.get("quota_window_minutes"), DEFAULT_QUOTA_WINDOW_MINUTES, 1, 120
         )
-        self._quota_max_requests = self._as_range(
-            config.get("quota_max_requests"), DEFAULT_QUOTA_MAX_REQUESTS, 1, 100
+        # ⚠️ 钳到实测硬上限：站点在目录页一个窗口内只放行 5 次，填更大只会更快撞 403。
+        self._quota_max_requests = min(
+            self._as_range(
+                config.get("quota_max_requests"), DEFAULT_QUOTA_MAX_REQUESTS, 1, 100
+            ),
+            CATALOG_QUOTA_HARD_LIMIT,
         )
         self._index_enabled = self._as_bool(config.get("index_enabled"), True)
         self._index_pages_per_run = self._as_range(
@@ -1312,10 +1362,10 @@ class ShortDramaBaikeSource(_PluginBase):
         self._top_cache = {}
         self._stats = {}
         with self._gate_lock:
-            self._next_request_at = 0.0
-            self._blocked_until = 0.0
-            self._blocked_at = 0.0
-            self._slots = []
+            self._next_request_at = {QUOTA_BUCKET_CATALOG: 0.0, QUOTA_BUCKET_OPEN: 0.0}
+            self._blocked_until = {QUOTA_BUCKET_CATALOG: 0.0, QUOTA_BUCKET_OPEN: 0.0}
+            self._blocked_at = {QUOTA_BUCKET_CATALOG: 0.0, QUOTA_BUCKET_OPEN: 0.0}
+            self._slots = {QUOTA_BUCKET_CATALOG: [], QUOTA_BUCKET_OPEN: []}
 
         self._load_state()
         self._register_image_domains()
@@ -1341,13 +1391,15 @@ class ShortDramaBaikeSource(_PluginBase):
     def get_service(self) -> List[Dict[str, Any]]:
         """注册后台服务：**小步推进**本地目录索引 + 刷新榜单快照。
 
-        ⚠️ 这个服务存在的唯一原因是站点的 Cloudflare 配额（实测：一个窗口内约 5 次
-        请求，1.5 秒间隔和 10 秒间隔都是第 6 次撞 403）。所以它每轮只抓
-        ``index_pages_per_run`` 页（默认 4 页，**故意压在配额以内**，让一轮跑完不会
-        触发 403），页间还隔着 ``min_interval`` 秒，并且额外留一个额度给识别
-        （``reserve=1``），撞到 403 就立刻停手进入冷却，**断点续爬**。
+        ⚠️ 这个服务存在的唯一原因是：目录页有**独立的突发限流**（实测一个窗口内约
+        5 次请求，第 6 次即 403 —— 与出口 IP、TLS 指纹、浏览器特征头、是否真浏览器
+        **都无关**）。所以它每轮只抓 ``index_pages_per_run`` 页（默认 4 页，**故意压在
+        额度以内**，让一轮跑完不会触发 403），页间还隔着 ``min_interval`` 秒，撞到 403        就立刻停手进入冷却，**断点续爬**。
 
-        绝不能把它改成「一次抓完 1879 页」—— 那会把 IP 打死，详情识别也跟着废。
+        注意：详情页 / 榜单页**不受这条限流影响**（实测 0.3s × 20 次全 200），
+        所以识别与探索页回填跟这里的额度互不干扰。
+
+        绝不能把它改成「一轮抓完 1879 页」—— 那会把目录页的额度耗光、连累索引推进。
         """
         if not self.get_state():
             return []
@@ -1771,7 +1823,7 @@ class ShortDramaBaikeSource(_PluginBase):
             # 「停手」既可能是撞上 403，也可能只是配额闸门把额度留给了识别 ——
             # 两者都算正常，区分开是为了让面板能如实说明原因。
             "stopped_early": blocked,
-            "cooling_down": self._blocked_until > time.time(),
+            "cooling_down": self._bucket_blocked_until(QUOTA_BUCKET_CATALOG) > time.time(),
             "quota_remaining": self._quota_remaining(),
         }
         if fetched:
@@ -1816,11 +1868,12 @@ class ShortDramaBaikeSource(_PluginBase):
             cached = self._top_cache.get(key) or {}
             if not force and now - float(cached.get("fetched_at") or 0) < ttl:
                 continue
-            # 后台请求：留一个额度给识别，额度不够就本轮不刷
-            if self._quota_remaining() <= 1:
+            # 榜单页属于「宽松池」（实测 0.3s 间隔连打 20 次都不受限），
+            # 只有该池真的被站点拦下并冷却时才停手。
+            if self._quota_remaining(QUOTA_BUCKET_OPEN) <= 0:
                 break
             html, status = self._get(
-                f"{self._domain}{TOP_PATH.format(key=key)}", reserve=1
+                f"{self._domain}{TOP_PATH.format(key=key)}", reserve=0
             )
             if not html or is_cloudflare_challenge(html, status):
                 break  # 配额已到，剩下的榜单等下一轮
@@ -1921,8 +1974,11 @@ class ShortDramaBaikeSource(_PluginBase):
         里（JSON-LD）。所以这里按需回填，两条来路：
 
         * 先查**详情缓存**（识别 / 检索 / 上一轮回填都写同一个 ``detail:<id>`` 键）；
-        * 缓存没有、且配额闸门放行（用完至少剩 ``EXPLORE_DETAIL_RESERVE`` 次给识别）时
-          现场抓一部；抓失败（403 / 超时）就**立即收手**，绝不空转把 IP 打进冷却。
+        * 缓存没有、且「宽松池」没在冷却时现场抓一部；抓失败（403 / 超时）就
+          **立即收手**，绝不空转把 IP 打进冷却。
+
+        详情页实测**不受站点突发限流影响**（见文件头「限流分池」），所以这里不再为
+        「识别」预留额度 —— 两者走的是同一个宽松池，谁也不挤谁。
 
         回填条数由 ``explore_detail_fetch`` 控制（0 = 完全只读本地，零请求）。
         """
@@ -1936,18 +1992,20 @@ class ShortDramaBaikeSource(_PluginBase):
             if native_id:
                 detail = self._cache_get(f"detail:{native_id}")
                 if detail is None and budget > 0:
-                    if self._quota_remaining() > EXPLORE_DETAIL_RESERVE:
+                    # 详情页属于「宽松池」，实测不受限 ⇒ 识别与回填不必再互相抢额度，
+                    # 只有该池真的被站点拦下才收手。
+                    if self._quota_remaining(QUOTA_BUCKET_OPEN) > 0:
                         detail = self._fetch_detail(
                             f"{MEDIA_ID_PREFIX}:{native_id}",
                             use_cache=True,
-                            reserve=EXPLORE_DETAIL_RESERVE,
+                            reserve=0,
                         )
                         budget -= 1
                         if not detail:
-                            # 站点不给数据了（多半是撞配额 / CF），本轮别再试
+                            # 站点不给数据了（多半是撞上了风控），本轮别再试
                             budget = 0
                     else:
-                        # 额度见底：把剩下的留给识别，回填下轮再说
+                        # 宽松池也在冷却：回填下轮再说
                         budget = 0
                 if detail:
                     merged.update(
@@ -2040,8 +2098,9 @@ class ShortDramaBaikeSource(_PluginBase):
 
         数据以本地为准（榜单快照 / 目录索引），但榜单卡片里只有标题 + 海报 + 集数 ——
         为了让它像 TMDB 来源那样「点开有简介、年份、类型、演员」，这里会对**当前这一页**
-        按需回填少量作品详情（``explore_detail_fetch``，默认 2 部；0 = 只读本地）。
-        回填走同一个配额闸门并给识别留额度，抓不到就退回卡片字段，绝不阻塞返回。
+        按需回填作品详情（``explore_detail_fetch``，默认 8 部；0 = 只读本地）。
+        详情页实测不受站点突发限流影响，所以回填**不再与识别互相抢额度**；
+        抓不到就退回卡片字段，绝不阻塞返回。
         """
         medias: List[Any] = []
         if self._enabled:
@@ -2064,53 +2123,73 @@ class ShortDramaBaikeSource(_PluginBase):
 
     # ── HTTP ＋ 配额闸门 ──────────────────────────────────────────
 
-    def _take_slot(self, reserve: int = 0) -> bool:
+    def _bucket_limit(self, bucket: str) -> int:
+        """该池在一个窗口内允许的请求数。"""
+        if bucket == QUOTA_BUCKET_CATALOG:
+            return max(1, self._quota_max_requests)
+        return OPEN_QUOTA_MAX_REQUESTS
+
+    def _bucket_blocked_until(self, bucket: str) -> float:
+        """该池的冷却截止时间（0 表示未冷却）。"""
+        return float(self._blocked_until.get(bucket) or 0.0)
+
+    def _take_slot(self, reserve: int = 0, bucket: str = QUOTA_BUCKET_CATALOG) -> bool:
         """请求前的配额闸门：拿到额度返回 True，否则 False（**不等待**）。
 
-        站点卡的是「一个窗口内几次」而不是「每秒几次」—— 实测把间隔从 1.5 秒放宽到
-        10 秒，撞 403 的仍然是第 6 次。所以这里用一个**滚动窗口**建模它：窗口内已用
-        次数达到上限就拒绝，等最老那次滑出窗口后自然又可用。
+        目录页有**独立的突发限流**（实测 0.8~1.0s 间隔连打，第 6 次即 403；且与
+        UA / ``sec-ch-ua`` / ``Sec-Fetch-*`` / ``Referer`` / 首页预热全都没关系），
+        而榜单、详情、首页 0.3s 间隔连打 20 次也不见挑战页。所以额度**按池分开算**：
+        目录页走紧额度（``quota_max_requests``），其余走宽松池 —— 目录页撞墙不会
+        连累识别与探索页回填。
 
         ``reserve`` 是给后台任务用的：它要求「用完之后至少还剩这么多额度」，
-        这样索引任务不会把配额吃光，识别与检索永远有得用。反过来，宁可让后台停手，
-        也不能让用户点一次识别就撞 403 —— 那会把整站（含详情页）一起封掉。
+        这样索引任务不会把目录页额度吃光。
         """
         now = time.time()
         window = max(60, self._quota_window_minutes * 60)
+        limit = self._bucket_limit(bucket)
         with self._gate_lock:
-            if now < self._blocked_until:
+            if now < self._bucket_blocked_until(bucket):
                 return False
-            self._slots = [stamp for stamp in self._slots if now - stamp < window]
-            if len(self._slots) + max(0, reserve) >= max(1, self._quota_max_requests):
+            slots = [
+                stamp for stamp in (self._slots.get(bucket) or []) if now - stamp < window
+            ]
+            self._slots[bucket] = slots
+            if len(slots) + max(0, reserve) >= limit:
                 return False
-            if now < self._next_request_at:
+            if now < float(self._next_request_at.get(bucket) or 0.0):
                 return False
-            self._slots.append(now)
-            self._next_request_at = now + self._min_interval
+            slots.append(now)
+            self._next_request_at[bucket] = now + self._min_interval
             return True
 
-    def _quota_remaining(self) -> int:
-        """当前窗口内还剩几次额度（供状态展示与后台任务判断）。"""
+    def _quota_remaining(self, bucket: str = QUOTA_BUCKET_CATALOG) -> int:
+        """该池在当前窗口内还剩几次额度（默认看目录页 —— 它才是紧的那个）。"""
         now = time.time()
         window = max(60, self._quota_window_minutes * 60)
         with self._gate_lock:
-            used = len([stamp for stamp in self._slots if now - stamp < window])
-        return max(0, self._quota_max_requests - used)
+            used = len(
+                [stamp for stamp in (self._slots.get(bucket) or []) if now - stamp < window]
+            )
+        return max(0, self._bucket_limit(bucket) - used)
 
-    def _mark_blocked(self) -> None:
-        """记录一次风控命中，进入冷却，并写一条日志。
+    def _mark_blocked(self, bucket: str = QUOTA_BUCKET_CATALOG) -> None:
+        """记录一次风控命中，**只冷却命中的池**，并写一条日志。
 
-        正常情况下配额闸门会让我们**在撞到之前**就停手；真撞上了说明站点策略变了，
-        或窗口估计得偏大 —— 冷却 + 记日志，让用户在面板上看得见。
+        实测撞墙只影响命中的那条路径（同一时刻其它路径照常 200），所以冷却也按池隔离：
+        目录页的 403 不该把识别与探索页回填一起冻住。正常情况下闸门会让我们**在撞到
+        之前**就停手；真撞上了说明站点策略变了，冷却 + 记日志，让用户在面板上看得见。
         """
         now = time.time()
         with self._gate_lock:
-            self._blocked_at = now
-            self._blocked_until = now + self._cooldown_minutes * 60
-            self._next_request_at = self._blocked_until
+            self._blocked_at[bucket] = now
+            until = now + self._cooldown_minutes * 60
+            self._blocked_until[bucket] = until
+            self._next_request_at[bucket] = until
         self._stats["blocked_count"] = int(self._stats.get("blocked_count") or 0) + 1
         logger.warning(
-            f"{PLUGIN_NAME} 撞到站点风控（403），暂停请求 {self._cooldown_minutes} 分钟后再试"
+            f"{PLUGIN_NAME} 撞到站点风控（403，{bucket} 路径），"
+            f"暂停该路径请求 {self._cooldown_minutes} 分钟后再试"
         )
 
     def _request(
@@ -2123,13 +2202,31 @@ class ShortDramaBaikeSource(_PluginBase):
         if _RequestUtils is None:  # pragma: no cover - 极端兜底
             logger.warning(f"{PLUGIN_NAME} 宿主未提供 HTTP 入口")
             return None
-        if not self._take_slot(reserve=reserve):
-            logger.debug(f"{PLUGIN_NAME} 配额闸门拒绝了本次请求：{url}")
+        bucket = quota_bucket(url)
+        if not self._take_slot(reserve=reserve, bucket=bucket):
+            logger.debug(f"{PLUGIN_NAME} 配额闸门拒绝了本次请求（{bucket} 池）：{url}")
             return None
         headers = {
             "User-Agent": _USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,image/apng,*/*;q=0.8,"
+                "application/signed-exchange;v=b3;q=0.7"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            # 这组「现代浏览器特征头」是 2026-10-14 实测后补上的：它**不能**突破
+            # 目录页的突发限流（见文件头注释 —— 全套齐上仍然第 6 次 403），加它只是
+            # 为了让请求更像真实浏览器，免得站点风控日后收紧时把我们当脚本。
+            # ⚠️ ``Accept-Encoding`` 故意不设：交给宿主 HTTP 客户端决定，
+            # 它才知道环境里装了哪些解压器（乱声明 br 会解压失败）。
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
         }
         kwargs: Dict[str, Any] = {"timeout": self._timeout}
         if self._proxy:
@@ -2161,7 +2258,7 @@ class ShortDramaBaikeSource(_PluginBase):
         status = getattr(response, "status_code", None)
         text = getattr(response, "text", "") or ""
         if is_cloudflare_challenge(text, status):
-            self._mark_blocked()
+            self._mark_blocked(quota_bucket(url))
             return "", status
         if status is not None and status >= 400:
             logger.debug(f"{PLUGIN_NAME} {url} 返回 {status}")
@@ -2512,9 +2609,9 @@ class ShortDramaBaikeSource(_PluginBase):
                                         "component": "VTextField",
                                         "props": {
                                             "model": "quota_window_minutes",
-                                            "label": "配额窗口（分钟）",
+                                            "label": "目录页配额窗口（分钟）",
                                             "type": "number",
-                                            "hint": "实测站点每窗口只放行几次请求",
+                                            "hint": "实测目录页约「每 1 分钟 5 次」；榜单与详情页不受此限",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -2528,9 +2625,9 @@ class ShortDramaBaikeSource(_PluginBase):
                                         "component": "VTextField",
                                         "props": {
                                             "model": "quota_max_requests",
-                                            "label": "窗口内最大请求数",
+                                            "label": "目录页窗口内最大请求数",
                                             "type": "number",
-                                            "hint": "实测为 5；调大只会更快撞 403",
+                                            "hint": "实测为 5；只约束目录页，调大只会更快撞 403",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -2546,7 +2643,7 @@ class ShortDramaBaikeSource(_PluginBase):
                                             "model": "min_interval",
                                             "label": "请求最小间隔（秒）",
                                             "type": "number",
-                                            "hint": "不建议小于 2 秒",
+                                            "hint": "任意两次请求之间的下限；目录页另有窗口额度兜底",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -2562,7 +2659,7 @@ class ShortDramaBaikeSource(_PluginBase):
                                             "model": "cooldown_minutes",
                                             "label": "撞风控冷却（分钟）",
                                             "type": "number",
-                                            "hint": "命中 403 后暂停请求的时长",
+                                            "hint": "命中 403 后暂停该条路径的请求（其余路径照常）",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -2665,6 +2762,7 @@ class ShortDramaBaikeSource(_PluginBase):
                                             "hint": (
                                                 "榜单卡片只有标题和海报；填几就在打开探索页时"
                                                 "最多抓几部作品的简介/年份/类型/主演。"
+                                                "详情页不受站点限流，默认回填整页；"
                                                 "0 = 完全不额外请求"
                                             ),
                                             "persistent-hint": True,
@@ -2710,11 +2808,16 @@ class ShortDramaBaikeSource(_PluginBase):
         elif indexed:
             progress = f"已抓 {next_page - 1} 页"
 
-        remaining = max(0, int(self._blocked_until - time.time()))
-        if remaining > 0:
-            quota = f"冷却中（剩余 {remaining} 秒）"
+        catalog_cooldown = max(
+            0, int(self._bucket_blocked_until(QUOTA_BUCKET_CATALOG) - time.time())
+        )
+        if catalog_cooldown > 0:
+            quota = f"目录页冷却中（剩余 {catalog_cooldown} 秒）"
         else:
-            quota = f"窗口内剩余 {self._quota_remaining()}/{self._quota_max_requests} 次"
+            quota = (
+                f"目录页窗口内剩余 "
+                f"{self._quota_remaining(QUOTA_BUCKET_CATALOG)}/{self._quota_max_requests} 次"
+            )
 
         with self._cache_lock:
             detail_cached = len([key for key in self._cache if str(key).startswith("detail:")])
@@ -3085,16 +3188,31 @@ class ShortDramaBaikeSource(_PluginBase):
             "browser_available": _launch_browser_context is not None,
         }
 
-    def _quota_state(self) -> Dict[str, Any]:
-        """把配额闸门的内部状态整理成可读形式。"""
+    def _bucket_state(self, bucket: str) -> Dict[str, Any]:
+        """单个限流池的可读状态。"""
         now = time.time()
+        until = self._bucket_blocked_until(bucket)
         return {
-            "cooling_down": self._blocked_until > now,
-            "remaining_seconds": max(0, int(self._blocked_until - now)),
+            "cooling_down": until > now,
+            "remaining_seconds": max(0, int(until - now)),
+            "max_requests": self._bucket_limit(bucket),
+            "remaining_requests": self._quota_remaining(bucket),
+        }
+
+    def _quota_state(self) -> Dict[str, Any]:
+        """把配额闸门的内部状态整理成可读形式（目录页 / 宽松池分开报）。"""
+        now = time.time()
+        catalog_until = self._bucket_blocked_until(QUOTA_BUCKET_CATALOG)
+        return {
             "window_minutes": self._quota_window_minutes,
-            "max_requests": self._quota_max_requests,
-            "remaining_requests": self._quota_remaining(),
             "min_interval": self._min_interval,
+            "catalog": self._bucket_state(QUOTA_BUCKET_CATALOG),
+            "open": self._bucket_state(QUOTA_BUCKET_OPEN),
+            # 下面是兼容旧调用方的平铺字段，指向**目录页**（唯一会撞墙的那个池）
+            "cooling_down": catalog_until > now,
+            "remaining_seconds": max(0, int(catalog_until - now)),
+            "max_requests": self._bucket_limit(QUOTA_BUCKET_CATALOG),
+            "remaining_requests": self._quota_remaining(QUOTA_BUCKET_CATALOG),
             "blocked_count": int(self._stats.get("blocked_count") or 0),
             "ok_count": int(self._stats.get("ok_count") or 0),
         }
