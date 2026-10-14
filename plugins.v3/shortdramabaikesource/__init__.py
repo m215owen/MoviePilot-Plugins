@@ -1,121 +1,81 @@
 """短剧百科数据源（MoviePilot V3 插件后端）。
 
 把「短剧百科」（``duanjubaike.org``）包装成 MoviePilot 的一等媒体数据源 —— 与
-TMDB / 豆瓣 / Bangumi 在宿主里同级，而不是另起一套私有链路。宿主、其它插件、
-探索页、识别刮削都能直接选它。
+TMDB / 豆瓣 / Bangumi 同级。短剧在 TMDB / 豆瓣上大量没有条目，宿主识别器因此建不起
+媒体身份；本插件补的正是这一段空白，同时对外提供**演员数据**。
 
-为什么需要它
-------------
-短剧在 TMDB / 豆瓣上大量没有条目，宿主识别器因此建不起媒体身份（本机实例已实证：
-站点搜索能命中剧名，但 ``media_info`` 全为 null）。本插件补的正是这一段空白。
-
-宿主契约（V3.1.3 源码实证）
+宿主契约（V3.1.5 源码实证）
 ---------------------------
-1. **扩展点是官方的**：插件基类 ``app.sdk.plugin._PluginBase`` 提供
-   ``get_media_source()``（声明数据源：``name`` / ``media_source`` / ``media_types``）
-   与 ``get_module()``（把宿主模块方法名映射到插件实现）。宿主
-   ``GET /api/v1/media/source`` 会把本插件声明的来源与内置来源 **合并去重**后下发。
-2. **来源标识不是封闭枚举**：``MediaSource("duanjubaike")`` 可直接构造。
-   已装插件 ``iqiyidiscover``（``MediaSource("iqiyi")``）与 ``lunatvsource``
-   （``PLUGIN_MEDIA_SOURCE = "lunatv"``）为同等先例。
-3. **本插件实现的模块方法**（宿主 ``run_module`` 分发的名字）：
-   ``recognize_media`` / ``async_recognize_media``、``search_medias`` /
-   ``async_search_medias``、``obtain_images`` / ``async_obtain_images``。
-   签名照 ``app/chain/media/contract.py`` 的静态合同，一个字都不能改。
-4. **默认视频识别源是硬编码的** ``MediaSource.TMDB``（``app/chain/media/facade.py:49``）
-   ⇒ 本插件**不会**自动成为全局兜底。因此 ``media_source`` 不匹配时**必须返回
-   None**，绝不能劫持其它来源的识别。
-5. **图片域名要登记**：宿主的图片代理只放行 ``settings.SECURITY_IMAGE_DOMAINS``
-   内的域名，插件自带的图片站必须在 ``init_plugin`` 里补进去（照 ``iqiyidiscover``）。
+1. **扩展点是官方的**：``_PluginBase`` 提供 ``get_media_source()``（声明数据源）与
+   ``get_module()``（把宿主模块方法名映射到插件实现）；宿主会把本插件声明的来源与
+   内置来源合并去重后下发。
+2. **来源标识不是封闭枚举**：``MediaSource("duanjubaike")`` 可直接构造（已装插件
+   ``iqiyidiscover`` / ``lunatvsource`` 是同等先例）。
+3. **模块方法签名照宿主静态合同，一个字都不能改**：``recognize_media`` /
+   ``async_recognize_media`` / ``search_medias`` / ``async_search_medias`` /
+   ``obtain_images`` / ``async_obtain_images``。
+4. **默认视频识别源是硬编码的 TMDB** ⇒ 本插件**不会**自动成为全局兜底，
+   ``media_source`` 不匹配时**必须返回 None**，绝不能劫持其它来源的识别。
+5. **图片域名要登记**：宿主图片代理只放行 ``settings.SECURITY_IMAGE_DOMAINS`` 内的
+   域名，插件自带的图片站要在 ``init_plugin`` 里补进去。
 
-站点能力边界（实测 2026-10-14，全部为 ``.org`` 单站）
------------------------------------------------------
-======================  ==========================================================
-``/zh-Hans/drama/{id}`` 详情页：JSON-LD（``TVSeries`` + ``PerformanceRole`` 演员，
-                        带 ``characterName``）+ HTML（演员阵容、剧照、播放/收藏、
-                        集数/时长/首播时间/出品方）。**最可靠的一条路**。
-``/zh-Hans/drama/list`` **全量目录**：``?page=N``，30 部/页，站内自述「共 1879 页」
-                        ⇒ 全库约 5.6 万部。卡片自带海报、片名、真人/AI 角标、状态角标、
-                        评分、系列季、集数、热度/播放/收藏、标签。
-``/zh-Hans/drama``     首页式**精选页**：固定 30 条 + 轮播（``?page=N`` 无效，
-                        实测 page=2/3/9999 内容一致 ⇒ 该页**不分页**）。
-``/zh-Hans/top/{key}`` 17 个榜单（``hot`` / ``new`` / ``celebrity`` / ``comic-hot`` /
-                        ``hot-*`` 系列 / ``search``）：**数量固定、不分页**。
-``/zh-Hans/drama/search`` 站内检索：**Cloudflare JS 挑战**，服务端直连恒 403
-                        （正文是 ``Just a moment...``）；``/drama/list?q=`` 会 301
-                        跳到这里，``?keyword=`` 挂在目录页上不做服务端过滤。
-``robots.txt``         ``Disallow`` 全部 ``/search``（drama/actor/director/writer/
-                        producer）与 ``/auth``，并声明 ``Sitemap``。
-``sitemap.xml``        sitemapindex：61 个 ``sitemap-dramas-N.xml.gz``（+actors /
-                        producers），只有 ID 没有片名。
-======================  ==========================================================
+站点能力边界（2026-10-14 / 15 实测）
+------------------------------------
+* ``/zh-Hans/drama/{id}``：详情页，JSON-LD（``TVSeries`` + ``PerformanceRole`` 演员）
+  + HTML（阵容、剧照、集数/时长/首播/出品方）。**最可靠的一条路**。
+* ``/zh-Hans/actor/{id}``：演员页，JSON-LD ``Person``（姓名/简介/头像/性别/国籍）
+  + 「作品」网格（实测 59 部也一次全渲染、不分页）+ 合作演员区。
 
-**限流（2026-10-14 在 NAS 出口 IP 上实测 —— 结论与旧版注释不同，请以此为准）**：
-站点**没有**全站配额，风控只压在**目录页**这一条路径上：
+检索是**两级**降级：
+1. **榜单快照**（``_top_cache``）：最近的热门与最新，**零额外请求**；
+2. **站外索引**（``_web_index_search``）：``site:<域名> <片名>`` 交给搜索引擎，从已收录
+   的详情页 URL 里取数字 ID —— 只在快照里没有「精确命中」时才打。
 
-* ``/zh-Hans/drama/list?page=N``：0.8~1.0 秒间隔连打，**第 6 次**即 403
-  （正文 ``Just a moment...``）；但撞墙后**只影响该路径** —— 同一时刻榜单 / 详情 /
-  首页全部 200，紧接着再打目录页也恢复 200。
-* ``/top/{key}``、``/drama/{id}``、``/zh-Hans``：0.3 秒 × 20 次、0.8 秒 × 8 次
-  全部 200，全程没见过挑战页。
-* 预热首页 + ``Referer`` + 全套 ``sec-ch-ua`` / ``Sec-Fetch-*`` **不能**突破目录页
-  的第 6 次 ⇒ 它既不是 IP 窗口配额，也不是浏览器指纹检测，就是该路径上的突发限流。
-* ``/zh-Hans/drama/search`` 站内检索是**另一回事**：真正的 **Cloudflare JS 挑战**，
-  任何 HTTP 头都过不去（正文 ``Just a moment...``），只能靠宿主浏览器仿真。
-
-因此闸门拆成两个池（``quota_bucket``），**按路径分开计数**：
-
-* **目录池**（``catalog``）：窗口 ``quota_window_minutes``（默认 1 分钟）内最多
-  ``quota_max_requests`` 次（默认 5 次，即实测值）—— 全量抓取必须「小步 + 断点续爬」；
-* **宽松池**（``open``）：其余全部路径，上限 ``OPEN_QUOTA_MAX_REQUESTS``
-  （实测不敏感，只为在站点策略突变时刹车）；
-* 撞上 403 时**只冷却命中的那个池**（``cooldown_minutes``），免得目录页的墙把识别
-  与探索页回填一起冻住 —— 实测这两者根本不在同一条限流上。
-
-检索是**三级**的，逐级降级：
-
-1. **本地目录索引**（主力，见 ``_index``）：后台任务按配额一小步一小步地把
-   ``/zh-Hans/drama/list`` 抓成本地索引并持久化，检索时在本地做片名匹配。
-   这是唯一能在配额内做到「全库片名检索」的路子。
-2. **榜单快照**（``_top_cache``）：17 个榜单的最近快照，覆盖最新与热门。
-3. **实时目录扫描**（``scan_pages``）：实在没有索引时，现场抓目录前 N 页做匹配。
+**演员数据走同一条通道**：``site:<域名> <演员名>`` → 结果里的 ``/actor/<id>`` →
+抓演员页 → 复用 ``parse_org_cards`` 取出全部作品（见 ``search_actors`` / ``actor_works``）。
 
 统一媒体身份
 ------------
-``media_source`` 恒为 ``"duanjubaike"``，``media_id`` 形如 ``org:<id>``；裸数字 ID
-也接受（等价于 ``org:<id>``）。复合 ID 在宿主里有先例：豆瓣音乐是
-``album_id:track_number``。
+``media_source`` 恒为 ``"duanjubaike"``；作品 ``media_id`` 形如 ``org:<id>``，
+演员形如 ``actor:<id>``（裸数字也接受）。复合 ID 在宿主里有先例。
 
-供其它插件调用（本插件同时是「短剧识别服务」）
----------------------------------------------
-本插件的定位是**只提供数据源**，所以识别能力必须能被别人直接用掉。三条通道：
+供其它插件调用
+--------------
+1. **宿主模块分发（首选，进程内、零序列化）** —— 宿主的分发器同时挂了模块目录与
+   **插件目录**，而每个插件都是 ``ChainBase`` 子类，所以其它插件直接：
 
-1. **宿主模块分发（首选，进程内、零序列化）**。宿主的分发器同时挂了模块目录与
-   **插件目录**（``app/chain/base.py``: ``module_dispatcher_factory(module_catalog=
-   self.modulemanager, plugin_catalog=self.pluginmanager, …)``），而每个插件都是
-   ``ChainBase`` 子类 ⇒ 其它插件直接：
+       infos  = self.run_module("search_medias", meta=meta, media_source="duanjubaike")
+       info   = self.run_module("recognize_media", media_source="duanjubaike",
+                                media_id="org:40105")
+       works  = self.run_module("actor_works", actor_id="371")
+       actors = self.run_module("search_actors", name="魏依珂")
 
-       infos = self.run_module("search_medias", meta=meta, media_source="duanjubaike")
-       info  = self.run_module("recognize_media", media_source="duanjubaike",
-                               media_id="org:40105")
+   ``media_source`` 可写 ``duanjubaike`` / ``shortdramabaike`` / ``shortdramabaikesource``
+   任一（见 ``MEDIA_SOURCE_ALIASES``）。作品类方法返回宿主 ``MediaInfo``。
 
-   ``media_source`` 可写 ``duanjubaike`` / ``shortdramabaike`` /
-   ``shortdramabaikesource`` 任一（见 ``MEDIA_SOURCE_ALIASES``）。返回值是宿主
-   ``MediaInfo``，与 TMDB / 豆瓣模块同一个领域模型。
+   ⚠️ ``search_actors`` / ``actor_works`` 是**自定义模块方法名**（不在宿主
+   ``module_method`` 合同里）。宿主对未登记的名字走 legacy 契约
+   （``public_to_plugins=True``，聚合 = 有序列表合并），且分发器按
+   ``plugin.get_module()[method]`` 取函数、**没有该方法名的插件会被跳过** ⇒ 新增自定义
+   名不会影响别的插件。两个方法都**返回列表**（legacy 聚合对列表做 ``extend``）。
 
 2. **HTTP 纯 JSON 出口**：``GET /api/v1/plugin/ShortDramaBaikeSource/recognize``
-   （``media_id`` 或 ``keyword`` + 可选 ``year``）。给不想被 ``MediaInfo`` 字段
-   版本绑住的脚本 / 外部程序用，形状见 ``build_public_record``。
+   （``media_id`` 或 ``keyword`` + 可选 ``year``）与 ``…/actor``（``actor_id`` 或
+   ``name``）；形状见 ``build_public_record`` / ``build_public_actor``。
 
-3. **智能体工具** ``short_drama_identify``（``get_agent_tools``），供 AI 智能体用。
+3. **插件面板（Vue 联邦前端）**：详情弹窗里有**两个独立搜索框**（片名 / 演员名），
+   结果以卡片呈现、每条可展开看插件处理后的完整字段。面板与外部脚本走的是同一批
+   HTTP 接口（下面第 2 条），所以面板里能看到的，脚本也拿得到。
 
-4. **宿主「探索」页的来源**：监听宿主广播的 ``ChainEventType.DiscoverSource``，
-   把「短剧百科」登记成一个探索来源（``DiscoverMediaSource``，``api_path`` 指向本插件
-   的 ``/explore``）。⚠️ 探索页**只读本地**（榜单快照 + 目录索引），零网络请求 ——
-   用户怎么翻页都不会消耗站点配额。要看到更多榜单，在配置里勾「榜单快照范围」。
+4. **宿主「探索」页来源**：监听 ``ChainEventType.DiscoverSource`` 事件，把「短剧百科」
+   登记成一个探索来源（``api_path`` 指向本插件的 ``/explore``）。探索页**只读本地榜单
+   快照**，翻页不产生任何请求。
 
-⚠️ 前三种入口内部都走同一套代码（``_resolve_item`` / ``_search_by_title`` /
-``_fetch_detail``），因此**共享同一个配额闸门**：不管谁来调，都不会绕过限流。
+所有入口内部都走同一套代码（``_resolve_item`` / ``_search_by_title`` / ``_fetch_detail``
+/ ``_fetch_actor``）。
+
+**⚠️ 本插件不提供智能体工具**（`get_agent_tools` 已删除）：面板搜索框 + HTTP 接口
+已经覆盖同样的能力，而智能体工具会往宿主的工具目录里塞两个入口、与面板职责重复。
 """
 from __future__ import annotations
 
@@ -147,10 +107,10 @@ try:  # 宿主媒体信息领域模型（与 TMDB / 豆瓣模块返回的是同�
 except Exception:  # pragma: no cover - 宿主版本差异兜底
     _HostMediaInfo = None
 
-try:  # 宿主的浏览器仿真门面（cloakbrowser / FlareSolverr，见配置里的实验开关）
-    from app.sdk.browser import launch_browser_context as _launch_browser_context
+try:  # 站外索引检索：宿主依赖里的多引擎搜索（DDGS），缺失时该通道自动停用
+    from ddgs import DDGS as _DDGS
 except Exception:  # pragma: no cover - 宿主版本差异兜底
-    _launch_browser_context = None
+    _DDGS = None  # type: ignore[assignment]
 
 try:  # 宿主事件总线 —— 「探索」页的来源收集就靠它广播 DiscoverSource 事件
     from app.sdk.events import Event as _HostEvent
@@ -176,16 +136,10 @@ try:  # 定时服务
 except Exception:  # pragma: no cover - 极端兜底
 
     class IntervalTrigger:  # type: ignore[no-redef]
-        """宿主调度器不可用时的占位（插件仍然可用，只是没有定时索引）。"""
+        """宿主调度器不可用时的占位（插件仍然可用，只是榜单快照不会自动刷新）。"""
 
         def __init__(self, **kwargs: Any) -> None:
             self.kwargs = kwargs
-
-
-try:  # 智能体工具（宿主没有该能力时插件照常工作）
-    from .agenttool import ShortDramaIdentifyTool
-except Exception:  # pragma: no cover - 宿主版本差异兜底
-    ShortDramaIdentifyTool = None  # type: ignore[assignment]
 
 
 # ── 插件元数据（须与 package.v3.json 保持一致） ──────────────────────
@@ -194,7 +148,7 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "1.4.0"
+PLUGIN_VERSION = "1.7.1"
 
 # ── 数据源常量 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
@@ -207,14 +161,8 @@ ORG_DEFAULT_DOMAIN = "https://duanjubaike.org"
 
 # 站点路径（``{id}`` 为占位）
 DETAIL_PATH = "/zh-Hans/drama/{id}"
-CATALOG_PATH = "/zh-Hans/drama/list"
-FEATURED_PATH = "/zh-Hans/drama"
+ACTOR_PATH = "/zh-Hans/actor/{id}"
 TOP_PATH = "/zh-Hans/top/{key}"
-
-# 目录每页作品数（站点固定 30；用于估算总条数与索引进度）
-CATALOG_PAGE_SIZE = 30
-# 实测站内自述「共 1879 页」，这里给一个上限用于钳制配置
-CATALOG_MAX_PAGES = 2000
 
 # 17 个榜单（实测 /zh-Hans/top/hot 页面上的全部导航项）。
 # ⚠️ 榜单**数量固定、不分页** —— 不要试图给它加 ?page=N。
@@ -238,26 +186,22 @@ TOP_LISTS: Dict[str, str] = {
     "hot-country": "乡村榜",
 }
 DEFAULT_TOP_KEY = "hot"
-# 默认只刷两个最实用的榜单：**每个榜单要花一次站点请求配额**
+# 默认只刷两个最实用的榜单（每个榜单一次请求）
 DEFAULT_TOP_KEYS: Tuple[str, ...] = ("hot", "new")
 
 # 统一媒体 ID 前缀（media_id 形如 ``org:40105``）。探索页的 ``mediaid_prefix``
 # 必须与它一致，前端才能把条目路由回本数据源。
 MEDIA_ID_PREFIX = "org"
+# 演员 ID 前缀（形如 ``actor:371``）。演员**不是**媒体条目，不给宿主路由用，
+# 只是让跨插件调用方能一眼分清「这是演员 ID 还是作品 ID」。
+ACTOR_ID_PREFIX = "actor"
 
 # ── 宿主「探索」页（/discover）────────────────────────────────────
-# 宿主 ``GET /api/v1/discover/source`` 会广播 ``ChainEventType.DiscoverSource``，
-# 插件把 ``DiscoverMediaSource`` 塞进 ``event_data.extra_sources`` 即成为一个来源；
-# 前端随后按该来源的 ``api_path`` 拉 ``List[MediaInfo]``。
 EXPLORE_PATH = "/explore"
 EXPLORE_DEFAULT_COUNT = 30
 MAX_EXPLORE_COUNT = 60
-# 「全部短剧」：用本地目录索引当伪榜单 —— 榜单只有十几条，索引会持续增长
-EXPLORE_INDEX_KEY = "index"
-EXPLORE_INDEX_LABEL = "全部短剧"
-# 榜单页 / 目录页的卡片只有「标题 + 海报 + 集数」，而 TMDB 那种「简介 + 年份 +
-# 类型 + 演员」只在**作品详情页**里。为了不把探索页做成空壳，打开探索页时按需
-# 回填少量详情（走同一个配额闸门，并给「识别」留出额度）。
+# 榜单卡片只有「标题 + 海报 + 集数」，而 TMDB 那种「简介 + 年份 + 类型 + 演员」只在
+# 作品详情页里；打开探索页时按需回填少量详情，免得做成空壳。
 EXPLORE_DETAIL_FETCH_DEFAULT = 8    # 每次探索请求最多回填几部作品的详情（0 = 只读本地）
 MAX_EXPLORE_DETAIL_FETCH = 30
 
@@ -271,54 +215,37 @@ IMAGE_DOMAINS: Tuple[str, ...] = (
 # 默认值 / 上限
 DEFAULT_TIMEOUT = 15
 DEFAULT_CACHE_TTL = 604800          # 详情页内容基本不变，缓存 7 天
-DEFAULT_MIN_INTERVAL = 1.0          # 任意两次请求的最小间隔（秒）
-# 撞墙后的冷却：实测撞墙（403 挑战页）后短时间内继续请求**一直是 403**
-# （3 秒间隔连打，撞墙后又打了 15 次、48 秒都没恢复），所以撞上就老实退避。
-DEFAULT_COOLDOWN_MINUTES = 2
+DEFAULT_INTERVAL_MINUTES = 5        # 后台榜单刷新轮询间隔（分钟）
 
-# ── 限流分池（2026-10-14 在 NAS 出口 IP 上实测） ─────────────────────
-# 站点的风控**不是全站配额**，而是**只在目录页上生效的突发限流**：
-#   • 目录页 ``/zh-Hans/drama/list?page=N``：0.8~1.0s 间隔连打，**第 6 次**即 403
-#     （正文 ``Just a moment...``）；撞墙后**只影响该路径** —— 同一时刻榜单 /
-#     详情 / 首页全部 200，紧接着再打目录页也恢复 200。
-#   • 榜单 ``/top/*``、详情 ``/drama/{id}``、首页 ``/zh-Hans``：0.3s × 20 次、
-#     0.8s × 8 次，全程 200，从不见挑战页。
-#   • 预热首页 + ``Referer`` + 全套 ``sec-ch-ua`` / ``Sec-Fetch-*`` **不能**突破
-#     目录页的第 6 次 ⇒ 它既不是 IP 窗口配额，也不是浏览器指纹检测。
-#   ⇒ 把闸门拆成两个池：目录页单独紧额度，其余走宽松池，**别让目录页拖累
-#     识别、详情识别与探索页回填**。
-DEFAULT_QUOTA_WINDOW_MINUTES = 1    # 窗口时长（两个池共用）—— 实测目录页约「每 1 分钟 5 次」
-DEFAULT_QUOTA_MAX_REQUESTS = 5      # ⚠️ 只约束**目录页**池
-OPEN_QUOTA_MAX_REQUESTS = 240       # 宽松池上限：实测不敏感，给一个能刹车又几乎不误拦的值
-# 目录页的**实测硬上限**：一个窗口内 5 次，第 6 次必被挡。配置允许填更大，但
-# 实际生效值会被钳到这里 —— 站点按它自己的计数走，我们填多大都改变不了，
-# 只会更快撞 403（撞了还得冷却，净效率反而更低）。
-CATALOG_QUOTA_HARD_LIMIT = 5
-QUOTA_BUCKET_CATALOG = "catalog"
-QUOTA_BUCKET_OPEN = "open"
-# 站点路径前缀 → 所属限流池（见 quota_bucket()）
-# 检索页 ``/zh-Hans/drama/search`` 是独立的 **Cloudflare JS 挑战**，任何 HTTP 头都过不去，
-# 所以它不走闸门，只能靠宿主浏览器仿真（见 _browser_search）。
-_SEARCH_PATH = "/zh-Hans/drama/search"
-DEFAULT_SCAN_PAGES = 1              # 无索引时的实时扫描页数（1 × 30 部）
-MAX_SCAN_PAGES = 10
-# 每轮索引页数默认压到配额以内：这样一轮跑完**不会**撞 403，IP 不会被打死。
-DEFAULT_INDEX_PAGES_PER_RUN = 4
-MAX_INDEX_PAGES_PER_RUN = 200
-DEFAULT_INDEX_MAX_PAGES = 700       # 索引最多覆盖多少页（700 × 30 = 21000 部）
-MAX_INDEX_MAX_PAGES = CATALOG_MAX_PAGES
-DEFAULT_INTERVAL_MINUTES = 5        # 后台索引轮询间隔（分钟）
+# ⚠️ 请求闸门（额度窗口 / 最小间隔 / 撞 403 冷却）已**整体删除**。原因见模块头「限流」：
+# 站点风控只压在目录页那条路径上，而本插件已经不用目录页。现在 ``_request`` 就是一次
+# 裸 GET，撞到 403 的后果仅仅是当次拿不到数据 —— 不写任何跨请求状态。
 MAX_CANDIDATES = 12
+# 演员检索：一次站外检索返回多少个候选演员（结果里会混进引擎的模糊匹配，交给打分排序）
+MAX_ACTOR_CANDIDATES = 8
 # 持久化键（宿主 save_data / get_data）
-_DATA_INDEX = "catalog_index"
-_DATA_INDEX_STATE = "catalog_state"
 _DATA_TOP = "top_snapshot"
-# 单次索引落盘的最大条数（防 index.json 无限膨胀 + 单次写盘过慢）
-_INDEX_HARD_LIMIT = 60000
-# 浏览器过 CF 时最多等多久（秒）
-_BROWSER_CHALLENGE_WAIT = 25
 # 榜单快照存活时长（小时）
 _TOP_TTL_HOURS = 6
+
+# ── 站外索引（搜索引擎收录）检索 ────────────────────────────────────
+# 站内检索被 Cloudflare 挡住，于是改问搜索引擎：``site:<域名> <片名>`` 返回的是
+# **搜索引擎已收录的详情页 URL**，路径末尾的数字就是作品 ID；而详情页本身没有挑战
+# （2026-10-15 实测：普通 HTTP 抓 ``/zh-Hans/drama/<id>`` 与 ``/drama/<id>`` 都是 200 / 约 2s）。
+WEB_INDEX_BACKENDS = ("auto", "duckduckgo", "yandex", "google", "brave", "mojeek")
+DEFAULT_WEB_INDEX_BACKEND = "auto"
+WEB_INDEX_MAX_RESULTS = 10          # 单次取多少条结果（实测 10 条足够覆盖多季）
+WEB_INDEX_TIMEOUT = 25              # 单次检索超时（秒）
+WEB_INDEX_MIN_INTERVAL = 3.0        # 相邻两次站外检索的最小间隔（秒）—— 引擎不接受高频调用
+# 搜索结果标题带站点后缀：「片名 - 短剧 - 短剧百科」/「姓名 - 短剧演员 - 短剧百科」
+# （繁体页面是「短劇」），剥掉才能参与打分
+WEB_INDEX_TITLE_SUFFIX_RE = re.compile(
+    r"\s*[-|｜]\s*(?:短剧|短劇)(?:演员|演員)?(?:\s*[-|｜]\s*(?:短剧|短劇)百科)?\s*$"
+)
+# 只认作品详情页：``/drama/<数字>``（可带 zh-Hans / zh-Hant 前缀），排除 /photos、/actor 等
+_WEB_INDEX_DETAIL_RE = re.compile(r"^/(?:zh-Hans|zh-Hant)?/?drama/(?P<id>\d+)/?$")
+# 只认演员页：``/actor/<数字>``（可带 zh-Hans / zh-Hant 前缀）
+_WEB_INDEX_ACTOR_RE = re.compile(r"^/(?:zh-Hans|zh-Hant)?/?actor/(?P<id>\d+)/?$")
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -327,21 +254,6 @@ _USER_AGENT = (
 
 
 # ── 通用小工具 ────────────────────────────────────────────────────
-
-
-def quota_bucket(url: str) -> str:
-    """按 URL 路径给出**限流池**。
-
-    目录页（``/zh-Hans/drama/list``）有独立的突发限流，其余路径实测不敏感，
-    因此两者分开计数：目录页撞墙不会连累识别与探索页回填。
-    """
-    try:
-        path = urllib.parse.urlsplit(str(url or "")).path or ""
-    except Exception:  # pragma: no cover - 地址异常时按宽松池处理
-        return QUOTA_BUCKET_OPEN
-    if path.startswith(CATALOG_PATH):
-        return QUOTA_BUCKET_CATALOG
-    return QUOTA_BUCKET_OPEN
 
 
 def _clean(text: Any) -> str:
@@ -354,7 +266,6 @@ def _clean(text: Any) -> str:
 
 
 def _strip_tags(text: Any) -> str:
-    """去掉标签后折叠空白——用于从片段里取纯文本。"""
     if not isinstance(text, str):
         return _clean(text)
     return _clean(re.sub(r"<[^>]+>", " ", text))
@@ -372,7 +283,6 @@ def _has_value(value: Any) -> bool:
 
 
 def _normalize_image(src: str) -> str:
-    """把图片地址归一成可用直链（补协议、去掉多余空白）。"""
     src = _clean(src)
     if not src:
         return ""
@@ -382,13 +292,11 @@ def _normalize_image(src: str) -> str:
 
 
 def _parse_int(value: Any) -> Optional[int]:
-    """从「80」「80 集」「2小时18分钟」这类文本里取出第一个整数。"""
     match = re.search(r"\d+", str(value or ""))
     return int(match.group(0)) if match else None
 
 
 def _parse_year(value: Any) -> Optional[str]:
-    """从「2026年10月10日」/「2026-10-10」里取出四位年份。"""
     match = re.search(r"(19|20)\d{2}", str(value or ""))
     return match.group(0) if match else None
 
@@ -414,7 +322,6 @@ def _parse_wannum(value: Any) -> Optional[float]:
 
 
 def _parse_duration_minutes(value: Any) -> Optional[int]:
-    """把「2小时18分钟」/ ISO8601 的 ``PT2H46S`` 统一成分钟数。"""
     text = _clean(value)
     if not text:
         return None
@@ -437,7 +344,6 @@ def _parse_duration_minutes(value: Any) -> Optional[int]:
 
 
 def _normalize_title(title: str) -> str:
-    """归一化片名用于比对：去书名号、去空白、全角转半角、统一大小写。"""
     text = _clean(title)
     text = text.replace("《", "").replace("》", "")
     text = re.sub(r"\s+", "", text)
@@ -465,6 +371,52 @@ def _match_title(candidate: str, target: str) -> int:
     if trimmed and trimmed != right and (left in trimmed or trimmed in left):
         return 40
     return 0
+
+
+def _strip_org_suffix(title: str) -> str:
+    """剥掉搜索引擎结果标题里的站点后缀。
+
+    ``片名 - 短剧 - 短剧百科`` → ``片名``；``姓名 - 短剧演员 - 短剧百科`` → ``姓名``
+    （繁体页面是「短劇」「演員」）。
+    """
+    text = _clean(title)
+    while True:
+        stripped = WEB_INDEX_TITLE_SUFFIX_RE.sub("", text).strip()
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def _web_index_native_id(url: str, host: str) -> str:
+    """从搜索引擎结果里的 URL 取作品 ID；不是本域的详情页一律返回空串。
+
+    结果里混着演员页（``/actor/371``）、图集页（``/drama/37508/photos``）与榜单页，
+    它们都拿不到作品 ID —— 用「路径恰好是 ``/drama/<数字>``」这一条把它们筛掉。
+    """
+    return _web_index_id(url, host, _WEB_INDEX_DETAIL_RE)
+
+
+def _web_index_actor_id(url: str, host: str) -> str:
+    return _web_index_id(url, host, _WEB_INDEX_ACTOR_RE)
+
+
+def _web_index_id(url: str, host: str, pattern: Any) -> str:
+    """本域 + 路径形态都对上时取出末尾的数字 ID，否则空串。
+
+    :param url: 搜索引擎结果里的地址
+    :param host: 本域主机名（空表示不校验域名）
+    :param pattern: 路径正则（``/drama/<id>`` 或 ``/actor/<id>``）
+    """
+    try:
+        parsed = urllib.parse.urlparse(_clean(url))
+    except Exception:  # pragma: no cover - 地址异常按非目标页处理
+        return ""
+    netloc = (parsed.netloc or "").lower()
+    host = _clean(host).lower()
+    if host and not (netloc == host or netloc.endswith("." + host)):
+        return ""
+    match = pattern.match(parsed.path or "")
+    return match.group("id") if match else ""
 
 
 # ── ``.org`` 卡片解析（目录页 / 精选页 / 榜单页通用） ────────────────
@@ -512,8 +464,6 @@ _ORG_TAG_RE = re.compile(r'<span class="inline-block rounded bg-blue-100[^"]*">\
 # 「11721万热度/648万播放」——两个数各自独立，播放数可能缺省
 _ORG_HEAT_RE = re.compile(r"(?P<value>[\d.]+\s*[万亿]?)\s*热度")
 _ORG_PLAYS_RE = re.compile(r"(?P<value>[\d.]+\s*[万亿]?)\s*播放")
-# 目录页底部：<span …>第 1 页，共 1879 页</span>
-_ORG_TOTAL_PAGES_RE = re.compile(r"共\s*(?P<total>\d+)\s*页")
 # 站点的 ``genre`` 里混着集数说明（实测「家庭」「女性成长」后面跟着「全72集」），
 # 它不是类型标签，直接丢掉 —— 否则详情页的类型行会显示成「… | 全72集」。
 _ORG_COUNT_TAG_RE = re.compile(r"^(?:全|共|更新至|已更新至)?\s*\d+\s*集$")
@@ -680,16 +630,6 @@ def _parse_org_card_extras(region: str) -> Dict[str, Any]:
     return extras
 
 
-def parse_org_total_pages(html: str) -> int:
-    """从目录页底部的「第 1 页，共 1879 页」取总页数；取不到返回 0。
-
-    ⚠️ 只有 ``/zh-Hans/drama/list`` 有这个分页控件 —— ``/zh-Hans/drama``（精选页）
-    与 ``/zh-Hans/top/*``（榜单）**都不分页**，拿它们的内容去问总页数没有意义。
-    """
-    match = _ORG_TOTAL_PAGES_RE.search(html or "")
-    return int(match.group("total")) if match else 0
-
-
 # ── ``.org`` 详情页解析 ───────────────────────────────────────────
 
 _ORG_LD_RE = re.compile(
@@ -742,7 +682,6 @@ def _org_html_body(html: str) -> str:
 
 
 def _org_json_ld(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """从页面里抽出 ``TVSeries`` 与 ``WebPage`` 两个 JSON-LD 节点。"""
     series: Dict[str, Any] = {}
     page: Dict[str, Any] = {}
     for match in _ORG_LD_RE.finditer(html or ""):
@@ -1003,11 +942,76 @@ def parse_org_detail(html: str, native_id: str, domain: str = ORG_DEFAULT_DOMAIN
     return data
 
 
+# ── ``.org`` 演员页解析 ───────────────────────────────────────────
+# ⚠️ 必须抓 **zh-Hans** 路径：不带语言前缀访问会被 301 到 zh-Hant，页面里的作品链接
+# 随之变成 ``/zh-Hant/drama/<id>``，而卡片正则只认 ``/zh-Hans/drama/`` ⇒ 静默解析出
+# 0 部作品（资料字段照常正确，所以极难发现）。
+
+_ORG_PERSON_TITLE_RE = re.compile(r"<title>(?P<title>.*?)</title>", re.S)
+
+
+def _org_person_json_ld(html: str) -> Dict[str, Any]:
+    """从页面里抽出 ``Person`` JSON-LD 节点（演员页有，作品详情页没有）。"""
+    for match in _ORG_LD_RE.finditer(html or ""):
+        try:
+            payload = json.loads(match.group("body"))
+        except (ValueError, TypeError):
+            continue
+        graph = payload.get("@graph") if isinstance(payload, dict) else None
+        nodes = graph if isinstance(graph, list) else [payload]
+        for node in nodes:
+            if isinstance(node, dict) and node.get("@type") == "Person":
+                return node
+    return {}
+
+
+def parse_org_actor(
+    html: str,
+    actor_id: str,
+    domain: str = ORG_DEFAULT_DOMAIN,
+) -> Dict[str, Any]:
+    """解析 ``.org`` 演员页，返回演员档案 + 全部作品 + 合作演员。
+
+    :param html: 演员页正文（必须是 ``/zh-Hans/actor/<id>`` 的响应，见上方警告）
+    :param actor_id: 站点演员 ID（裸数字）
+    :param domain: 站点域名
+    :return: ``{"actor_id", "media_id", "name", "bio", "profile", "job_title",
+        "gender", "nationality", "url", "works": [...], "coactors": [...]}``
+    """
+    source = html or ""
+    person = _org_person_json_ld(source)
+    data: Dict[str, Any] = {
+        "actor_id": actor_id,
+        "media_id": f"{ACTOR_ID_PREFIX}:{actor_id}",
+        "url": f"{domain.rstrip('/')}{ACTOR_PATH.format(id=actor_id)}",
+        "name": _clean(person.get("name")),
+        "bio": _clean(person.get("description")),
+        "profile": _normalize_image(person.get("image")),
+        "job_title": _clean(person.get("jobTitle")),
+        "gender": _clean(person.get("gender")),
+    }
+
+    nationality = person.get("nationality")
+    if isinstance(nationality, dict):
+        data["nationality"] = _clean(nationality.get("name"))
+    elif _has_value(nationality):
+        data["nationality"] = _clean(nationality)
+
+    # 姓名兜底：JSON-LD 缺失时从 <title> 里剥站点后缀（「魏依珂 - 短剧演员 - 短剧百科」）
+    if not data["name"]:
+        title = _ORG_PERSON_TITLE_RE.search(source)
+        if title:
+            data["name"] = _strip_org_suffix(_strip_tags(title.group("title")))
+
+    data["works"] = parse_org_cards(source, domain)
+    data["coactors"] = parse_org_cast(source, None)
+    return data
+
+
 def is_cloudflare_challenge(html: str, status_code: Optional[int] = None) -> bool:
     """判断响应是否为 Cloudflare 人机校验页（而非真实内容）。
 
-    ⚠️ 本站在配额耗尽时对**整站**（含详情页、robots.txt）返回 403 —— 它既是
-    「被挡」，也是「该退避了」的信号，调用方必须据此进入冷却而不是重试。
+    被挡住时把它当「没拿到内容」处理即可 —— 调用方据此放弃**这一次**解析。
     """
     if status_code == 403:
         return True
@@ -1213,14 +1217,17 @@ PUBLIC_RECORD_FIELDS = (
     "studio",
     "url",
 )
-PUBLIC_ACTOR_FIELDS = ("id", "name", "role", "kind")
+# 作品记录里「演员」条目的字段（与演员档案的 PUBLIC_ACTOR_FIELDS 是两回事）。
+# ⚠️ 字段名必须与 ``_org_cast_from_json_ld`` / ``_org_cast_from_html`` 的产出逐字一致
+# —— 那两处写的是 ``character`` / ``profile_path``，不是 ``role`` / ``poster``。
+PUBLIC_CAST_FIELDS = ("id", "name", "character", "profile_path", "kind")
 
 
 def build_public_record(item: Optional[Dict[str, Any]], origin: str = "detail") -> Dict[str, Any]:
     """把一条作品记录压成**纯 JSON** 载荷（其它插件调用的统一形状）。
 
     :param item: ``parse_org_detail`` / ``parse_org_cards`` 产出的记录
-    :param origin: ``detail``（来自详情页，字段全）或 ``index``（来自本地索引，字段少）
+    :param origin: ``detail``（来自详情页，字段全）或 ``card``（来自榜单/演员页卡片，字段少）
     """
     record: Dict[str, Any] = {
         "media_source": MEDIA_SOURCE_KEY,
@@ -1236,12 +1243,58 @@ def build_public_record(item: Optional[Dict[str, Any]], origin: str = "detail") 
             continue
         record[name] = value
     actors = [
-        {key: actor.get(key) for key in PUBLIC_ACTOR_FIELDS if actor.get(key)}
+        {key: actor.get(key) for key in PUBLIC_CAST_FIELDS if actor.get(key)}
         for actor in (item.get("actors") or [])
         if actor.get("name")
     ]
     if actors:
         record["actors"] = actors
+    return record
+
+
+# 演员档案对外 JSON 里带的字段（顺序即展示顺序）
+PUBLIC_ACTOR_FIELDS: Tuple[str, ...] = (
+    "actor_id",
+    "media_id",
+    "name",
+    "job_title",
+    "gender",
+    "nationality",
+    "profile",
+    "bio",
+    "url",
+)
+
+
+def build_public_actor(item: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """把一条演员档案整理成纯 JSON（跨插件 / 外部脚本用）。
+
+    作品条目复用 ``parse_org_cards`` 的输出（``media_id`` / ``title`` / ``poster`` /
+    ``episode_count`` / ``rating`` / ``tags`` …），这里只补一个 ``works_count``，
+    免得消费方还要自己数。
+
+    :param item: ``parse_org_actor`` 的结果
+    :return: 无空值的纯 JSON 字典；``item`` 为空时返回空字典
+    """
+    if not item:
+        return {}
+    record: Dict[str, Any] = {
+        name: item[name]
+        for name in PUBLIC_ACTOR_FIELDS
+        if _has_value(item.get(name))
+    }
+    works = [dict(work) for work in (item.get("works") or []) if work.get("title")]
+    record["works"] = works
+    record["works_count"] = len(works)
+    # 合作演员来自 ``parse_org_cast``，用的是**阵容记录**的字段名（id / character /
+    # profile_path），不是演员档案的字段名 —— 套错会把内容整条清空，只剩 name。
+    coactors = [
+        {key: actor.get(key) for key in PUBLIC_CAST_FIELDS if _has_value(actor.get(key))}
+        for actor in (item.get("coactors") or [])
+        if actor.get("name")
+    ]
+    if coactors:
+        record["coactors"] = coactors
     return record
 
 
@@ -1268,18 +1321,12 @@ class ShortDramaBaikeSource(_PluginBase):
     _enabled: bool = False
     _domain: str = ORG_DEFAULT_DOMAIN
     _search_in_global: bool = True
-    _scan_pages: int = DEFAULT_SCAN_PAGES
     _timeout: int = DEFAULT_TIMEOUT
     _cache_ttl: int = DEFAULT_CACHE_TTL
-    _min_interval: float = DEFAULT_MIN_INTERVAL
-    _cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES
-    _quota_window_minutes: int = DEFAULT_QUOTA_WINDOW_MINUTES
-    _quota_max_requests: int = DEFAULT_QUOTA_MAX_REQUESTS
-    _index_enabled: bool = True
-    _index_pages_per_run: int = DEFAULT_INDEX_PAGES_PER_RUN
-    _index_max_pages: int = DEFAULT_INDEX_MAX_PAGES
     _interval_minutes: int = DEFAULT_INTERVAL_MINUTES
-    _use_browser_search: bool = False
+    # 站外索引检索：站内检索过不了 Cloudflare，改问搜索引擎要详情页 ID（见 _search_via_web_index）
+    _web_index_search: bool = True
+    _web_index_backend: str = DEFAULT_WEB_INDEX_BACKEND
     _proxy: bool = False
     # 探索页每次请求最多回填几部作品的详情（0 = 不额外请求，只读本地快照）
     _explore_detail_fetch: int = EXPLORE_DETAIL_FETCH_DEFAULT
@@ -1290,58 +1337,32 @@ class ShortDramaBaikeSource(_PluginBase):
     # ── 运行时状态（由 init_plugin 重建，保证可重复初始化） ──
     _cache: Dict[str, Tuple[float, Any]] = {}
     _cache_lock = threading.RLock()
-    # 配额闸门：所有出站请求都要先过 _take_slot()，它保证「最小间隔 + 滚动窗口额度」。
-    # ⚠️ 状态**按限流池分桶**（catalog / open），见 quota_bucket()。
-    _gate_lock = threading.Lock()
-    _next_request_at: Dict[str, float] = {}
-    _blocked_until: Dict[str, float] = {}
-    _blocked_at: Dict[str, float] = {}
-    _slots: Dict[str, List[float]] = {}
-    # 本地目录索引：id -> {"title", "poster", ...}
-    _index: Dict[str, Dict[str, Any]] = {}
-    _index_state: Dict[str, Any] = {}
     # 榜单快照：榜单键 -> {"items": [...], "fetched_at": ts}
     _top_cache: Dict[str, Dict[str, Any]] = {}
-    _stats: Dict[str, Any] = {}
-    # 榜单快照要刷哪些榜单（探索页的榜单来源就是它；每个榜单一次请求配额）
+    # 榜单快照要刷哪些榜单（探索页的榜单来源就是它）
     _top_keys: List[str] = list(DEFAULT_TOP_KEYS)
+    # 站外索引检索的节流时间戳 —— 这是**搜索引擎**的礼貌间隔，与站点闸门无关
+    _web_index_last_at: float = 0.0
+    _web_index_lock = threading.Lock()
 
     # ── 生命周期 ──────────────────────────────────────────────────
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
-        """按配置重建运行状态，并把持久化的索引 / 榜单快照读回内存。"""
+        """按配置重建运行状态，并把持久化的榜单快照读回内存。"""
         config = config or {}
         self._enabled = bool(config.get("enabled"))
         self._domain = self._as_domain(config.get("domain"), ORG_DEFAULT_DOMAIN)
         self._search_in_global = self._as_bool(config.get("search_in_global"), True)
-        self._scan_pages = self._as_range(config.get("scan_pages"), DEFAULT_SCAN_PAGES, 1, MAX_SCAN_PAGES)
         self._timeout = self._as_range(config.get("timeout"), DEFAULT_TIMEOUT, 5, 120)
         self._cache_ttl = self._as_range(config.get("cache_ttl"), DEFAULT_CACHE_TTL, 0, 2592000)
-        self._min_interval = self._as_float(config.get("min_interval"), DEFAULT_MIN_INTERVAL, 0.0, 60.0)
-        self._cooldown_minutes = self._as_range(
-            config.get("cooldown_minutes"), DEFAULT_COOLDOWN_MINUTES, 1, 240
-        )
-        self._quota_window_minutes = self._as_range(
-            config.get("quota_window_minutes"), DEFAULT_QUOTA_WINDOW_MINUTES, 1, 120
-        )
-        # ⚠️ 钳到实测硬上限：站点在目录页一个窗口内只放行 5 次，填更大只会更快撞 403。
-        self._quota_max_requests = min(
-            self._as_range(
-                config.get("quota_max_requests"), DEFAULT_QUOTA_MAX_REQUESTS, 1, 100
-            ),
-            CATALOG_QUOTA_HARD_LIMIT,
-        )
-        self._index_enabled = self._as_bool(config.get("index_enabled"), True)
-        self._index_pages_per_run = self._as_range(
-            config.get("index_pages_per_run"), DEFAULT_INDEX_PAGES_PER_RUN, 1, MAX_INDEX_PAGES_PER_RUN
-        )
-        self._index_max_pages = self._as_range(
-            config.get("index_max_pages"), DEFAULT_INDEX_MAX_PAGES, 30, MAX_INDEX_MAX_PAGES
-        )
         self._interval_minutes = self._as_range(
             config.get("interval_minutes"), DEFAULT_INTERVAL_MINUTES, 1, 1440
         )
-        self._use_browser_search = self._as_bool(config.get("use_browser_search"), False)
+        # 站外索引检索：默认开启 —— 它是「按片名 / 按演员找 ID」唯一可用的通道（站内检索过不了 CF）
+        self._web_index_search = self._as_bool(config.get("web_index_search"), True)
+        self._web_index_backend = self._as_choice(
+            config.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
+        )
         self._proxy = bool(config.get("proxy"))
         self._top_keys = self._as_top_keys(config.get("top_keys"))
         self._explore_detail_fetch = self._as_range(
@@ -1354,29 +1375,22 @@ class ShortDramaBaikeSource(_PluginBase):
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定。它们是类属性，若只原地 clear()
         # 或干脆不动，同一进程里被重建的插件实例（宿主 reconcile 会反复重建）会共用
-        # 同一批 dict —— 计数器与去重记录会跨实例串味（实测 blocked_count 一次请求
-        # 记出 3 次）。这里一次性换成新对象：既让旧缓存/旧域名失效，也把语义钉死。
+        # 同一批 dict —— 上一实例的缓存会漏进新实例。这里一次性换成新对象。
         self._cache = {}
-        self._index = {}
-        self._index_state = {}
         self._top_cache = {}
-        self._stats = {}
-        with self._gate_lock:
-            self._next_request_at = {QUOTA_BUCKET_CATALOG: 0.0, QUOTA_BUCKET_OPEN: 0.0}
-            self._blocked_until = {QUOTA_BUCKET_CATALOG: 0.0, QUOTA_BUCKET_OPEN: 0.0}
-            self._blocked_at = {QUOTA_BUCKET_CATALOG: 0.0, QUOTA_BUCKET_OPEN: 0.0}
-            self._slots = {QUOTA_BUCKET_CATALOG: [], QUOTA_BUCKET_OPEN: []}
+        self._web_index_last_at = 0.0
 
         self._load_state()
+        self._prune_top_cache()
         self._register_image_domains()
         logger.info(
             f"{PLUGIN_NAME} 已就绪：启用={self._enabled} 域名={self._domain} "
-            f"全局检索={self._search_in_global} 索引={len(self._index)} 条"
-            f"（已抓 {self._index_state.get('next_page', 1) - 1} 页）"
+            f"全局检索={self._search_in_global} 榜单快照={len(self._top_cache)} 个"
+            f"｜站外索引={'开' if self._web_index_search else '关'}"
+            f"（后端 {self._web_index_backend}）"
         )
 
     def get_state(self) -> bool:
-        """返回插件是否启用。"""
         return self._enabled
 
     def stop_service(self) -> None:
@@ -1385,28 +1399,29 @@ class ShortDramaBaikeSource(_PluginBase):
             self._cache.clear()
 
     def get_render_mode(self) -> Tuple[str, Optional[str]]:
-        """使用宿主默认的 vuetify 渲染模式（无需前端构建产物）。"""
-        return "vuetify", None
+        """声明使用 Vue 联邦远程组件渲染，产物目录为 ``dist/assets``。
+
+        面板上要放**能回传输入的搜索框**（片名 / 演员名），而宿主的 Vuetify（JSON）
+        页面只支持静态组件树与「点击 → 调接口」这类无参交互，承载不了输入框，
+        因此这里改用联邦前端：``./Page`` 画详情弹窗、``./Config`` 画配置页，
+        后端只负责给数据（``get_form`` 下发默认配置、``get_page`` 返回空列表）。
+        """
+        return "vue", "dist/assets"
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """注册后台服务：**小步推进**本地目录索引 + 刷新榜单快照。
+        """注册后台服务：**只刷新榜单快照**。
 
-        ⚠️ 这个服务存在的唯一原因是：目录页有**独立的突发限流**（实测一个窗口内约
-        5 次请求，第 6 次即 403 —— 与出口 IP、TLS 指纹、浏览器特征头、是否真浏览器
-        **都无关**）。所以它每轮只抓 ``index_pages_per_run`` 页（默认 4 页，**故意压在
-        额度以内**，让一轮跑完不会触发 403），页间还隔着 ``min_interval`` 秒，撞到 403        就立刻停手进入冷却，**断点续爬**。
+        榜单是探索页的内容来源，也是片名检索的第一级降级素材，所以按
+        ``interval_minutes`` 定期刷新（默认 5 分钟检查一次，快照本身 6 小时才过期）。
 
-        注意：详情页 / 榜单页**不受这条限流影响**（实测 0.3s × 20 次全 200），
-        所以识别与探索页回填跟这里的额度互不干扰。
-
-        绝不能把它改成「一轮抓完 1879 页」—— 那会把目录页的额度耗光、连累索引推进。
+        这里**不做全量抓取** —— 片名 → ID 由站外索引接管，没有后台批量抓取的必要。
         """
         if not self.get_state():
             return []
         return [
             {
-                "id": f"{self.__class__.__name__}.Index",
-                "name": f"{self.plugin_name}·目录索引与榜单刷新",
+                "id": f"{self.__class__.__name__}.Top",
+                "name": f"{self.plugin_name}·榜单快照刷新",
                 "trigger": IntervalTrigger(minutes=max(1, self._interval_minutes)),
                 "func": self.execute_task,
                 # 宿主会把 service["kwargs"] 原样展开给 scheduler.add_job()，
@@ -1416,24 +1431,13 @@ class ShortDramaBaikeSource(_PluginBase):
         ]
 
     def execute_task(self, trigger: str = "interval") -> Dict[str, Any]:
-        """后台任务：推进一页索引批次，并在快照过期时刷新榜单。
+        """后台任务：在快照过期时刷新榜单。
 
         返回一份可读的结果摘要（也用于 API 手动触发）。
         """
         if not self.get_state():
             return {"success": False, "message": "插件未启用"}
-        report: Dict[str, Any] = {"trigger": trigger}
-
-        top_report = self.refresh_top_lists(force=False)
-        report["top"] = top_report
-
-        if self._index_enabled:
-            report["index"] = self.build_index_step(
-                pages=self._index_pages_per_run, reason=trigger
-            )
-        else:
-            report["index"] = {"success": False, "message": "目录索引已关闭"}
-        return report
+        return {"trigger": trigger, "top": self.refresh_top_lists(force=False)}
 
     # ── 数据源声明（本插件的核心） ─────────────────────────────────
 
@@ -1467,6 +1471,15 @@ class ShortDramaBaikeSource(_PluginBase):
 
         返回的是宿主 ``MediaInfo``（与 TMDB / 豆瓣模块同一个领域模型）。若消费方不想
         依赖模型版本，走 HTTP ``GET /plugin/ShortDramaBaikeSource/recognize`` 拿纯 JSON。
+
+        **演员数据**（``search_actors`` / ``actor_works``）走同一张表 —— 它们是本插件
+        **自定义**的方法名（宿主模块合同里没有这两个名字，走 legacy 契约放行），返回
+        **纯 Python 列表**，不涉及宿主模型，消费方不必做任何转换：
+
+            works = self.run_module("actor_works", actor_id="371")
+            # → [{"media_id": "org:45982", "title": "女足替补的滚烫夏天", "year": ..., ...}, …]
+            actors = self.run_module("search_actors", name="魏依珂")
+            # → [{"actor_id": "371", "name": "魏依珂", "media_id": "actor:371", ...}, …]
         """
         return {
             "recognize_media": self.recognize_media,
@@ -1475,19 +1488,12 @@ class ShortDramaBaikeSource(_PluginBase):
             "async_search_medias": self.async_search_medias,
             "obtain_images": self.obtain_images,
             "async_obtain_images": self.async_obtain_images,
+            # 自定义能力（非宿主标准模块名，见类 docstring / 模块头「供其它插件调用」）
+            "search_actors": self.search_actors,
+            "async_search_actors": self.async_search_actors,
+            "actor_works": self.actor_works,
+            "async_actor_works": self.async_actor_works,
         }
-
-    def get_agent_tools(self) -> List[type]:
-        """注册智能体工具，供 MoviePilot 的 AI 智能体识别短剧。
-
-        宿主会在**插件实例**上调用本方法，所以这里先把当前实例注入工具类
-        （``bind``），工具内部就不必依赖进程级单例或硬编码插件 ID。
-        """
-        if ShortDramaIdentifyTool is None:  # pragma: no cover - 宿主无智能体能力
-            return []
-        ShortDramaIdentifyTool.bind(self)
-        return [ShortDramaIdentifyTool]
-
 
     # ── 模块接口：识别 ────────────────────────────────────────────
 
@@ -1503,7 +1509,6 @@ class ShortDramaBaikeSource(_PluginBase):
         music_type: Optional[str] = None,
         **kwargs: Any,
     ) -> Any:
-        """按媒体身份或片名识别短剧作品。"""
         if not self._enabled:
             return None
         # 宿主默认源是 TMDB，插件源必须只认自己，否则会劫持别人的识别
@@ -1513,13 +1518,9 @@ class ShortDramaBaikeSource(_PluginBase):
         item = self._resolve_item(media_id=media_id, meta=meta, use_cache=cache)
         if not item:
             return None
-        # 作品详情页没有评分（评分只渲染在目录页的卡片上），所以这里再向本地索引
-        # 借一次 —— 同一部作品两边 native_id 相同，零请求就能把评分/标签补上。
-        item = self._merge_index_extras(item)
         return build_media_info(item, facts=self._detail_facts)
 
     async def async_recognize_media(self, *args: Any, **kwargs: Any) -> Any:
-        """``recognize_media`` 的异步版本（网络请求放到线程池）。"""
         return await asyncio.to_thread(self.recognize_media, *args, **kwargs)
 
     # ── 模块接口：检索 ────────────────────────────────────────────
@@ -1558,7 +1559,6 @@ class ShortDramaBaikeSource(_PluginBase):
         return medias
 
     async def async_search_medias(self, **kwargs: Any) -> List[Any]:
-        """``search_medias`` 的异步版本。"""
         return await asyncio.to_thread(self.search_medias, **kwargs)
 
     def obtain_images(self, mediainfo: Any = None, **kwargs: Any) -> Any:
@@ -1588,7 +1588,6 @@ class ShortDramaBaikeSource(_PluginBase):
         return mediainfo
 
     async def async_obtain_images(self, mediainfo: Any = None, **kwargs: Any) -> Any:
-        """``obtain_images`` 的异步版本。"""
         return await asyncio.to_thread(self.obtain_images, mediainfo)
 
     # ── 身份解析 ──────────────────────────────────────────────────
@@ -1599,7 +1598,6 @@ class ShortDramaBaikeSource(_PluginBase):
         meta: Any,
         use_cache: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        """把「媒体身份或片名」解析成一条件作品记录。"""
         media_id = _clean(media_id) or None
         if media_id:
             return self._fetch_detail(media_id, use_cache=use_cache)
@@ -1630,8 +1628,7 @@ class ShortDramaBaikeSource(_PluginBase):
         if text.startswith("org:"):
             text = text[4:]
         elif ":" in text:
-            # 老版本用过 net:<section>:<id> 复合 ID；这种值在本站不存在，
-            # 直接判空 —— 把它当数字 ID 去请求只会白白消耗一次配额。
+            # 老版本用过 net:<section>:<id> 复合 ID；这种值在本站不存在，直接判空
             return ""
         return text if text.isdigit() else ""
 
@@ -1639,12 +1636,8 @@ class ShortDramaBaikeSource(_PluginBase):
         self,
         media_id: str,
         use_cache: bool = True,
-        reserve: int = 0,
     ) -> Optional[Dict[str, Any]]:
-        """按统一媒体 ID 抓取详情页（带 TTL 缓存）。
-
-        ``reserve`` 透传给配额闸门：探索页回填详情时用它给「识别」留额度。
-        """
+        """按统一媒体 ID 抓取详情页（带 TTL 缓存）。"""
         native_id = self._native_id(media_id)
         if not native_id:
             return None
@@ -1654,9 +1647,7 @@ class ShortDramaBaikeSource(_PluginBase):
             if cached is not None:
                 return cached
 
-        html, status = self._get(
-            f"{self._domain}{DETAIL_PATH.format(id=native_id)}", reserve=reserve
-        )
+        html, status = self._get(f"{self._domain}{DETAIL_PATH.format(id=native_id)}")
         if not html or is_cloudflare_challenge(html, status):
             return None
         item = parse_org_detail(html, native_id, self._domain)
@@ -1667,40 +1658,36 @@ class ShortDramaBaikeSource(_PluginBase):
             self._cache_set(cache_key, item)
         return item
 
-    # ── 检索：三级降级 ────────────────────────────────────────────
+    # ── 检索：两级降级 ────────────────────────────────────────────
 
     def _search_by_title(self, query: str, target_year: Optional[str] = None) -> List[Dict[str, Any]]:
         """按片名检索，返回带打分的候选（分高在前）。
 
-        三级降级，任一级命中即返回（后面的级别既慢又费配额）：
+        两级降级：
 
-        1. **本地目录索引**（``_index``）：后台任务逐页抓下来的全量片名表。
-        2. **榜单快照**（``_top_cache``）：最新 / 热门作品，覆盖索引还没抓到的部分。
-        3. **实时目录扫描**：现场抓目录前 ``scan_pages`` 页 —— 只在没有索引时兜底，
-           因为它要花掉宝贵的配额。
+        1. **榜单快照**（``_top_cache``）：最新 / 热门作品，**零额外请求**。
+        2. **站外索引**：搜索引擎已收录的详情页 URL（``site:<域名> <片名>``）—— 站内
+           检索过不了 Cloudflare，这条路就是它的替代品，见 ``_search_via_web_index``。
+
+        ⚠️ 这里**没有全库索引**，也**不抓目录页**（目录页是站点上唯一有突发限流的
+        路径）；「片名 → ID」已由站外索引接管。
         """
         candidates: List[Dict[str, Any]] = []
 
-        # 1) 本地索引
-        for native_id, record in self._index.items():
-            title = _clean(record.get("title"))
-            if title:
-                candidates.append(dict(record, media_id=f"org:{native_id}", native_id=native_id))
-
-        # 2) 榜单快照
+        # 1) 榜单快照
         for entry in self._top_cache.values():
             for item in entry.get("items") or []:
                 candidates.append(dict(item))
 
-        # 3) 实时目录扫描（前面两级都没有可用数据时才打网络）
-        if not self._index and not self._top_cache:
-            candidates.extend(self._scan_catalog(self._scan_pages))
-
-        # 4) 站内检索（实验开关）：宿主浏览器过 Cloudflare 后抓 /drama/search
-        if self._use_browser_search:
-            candidates.extend(self._search_via_browser(query))
+        # 2) 站外索引（搜索引擎收录）：只在本地没有「精确命中」时才去问，省一次外网往返
+        if self._web_index_search and self._need_web_index(candidates, query):
+            candidates.extend(self._search_via_web_index(query))
 
         return self._rank_candidates(candidates, query, target_year)
+
+    @staticmethod
+    def _need_web_index(candidates: List[Dict[str, Any]], query: str) -> bool:
+        return not any(_match_title(row.get("title", ""), query) >= 100 for row in candidates)
 
     @staticmethod
     def _rank_candidates(
@@ -1708,7 +1695,6 @@ class ShortDramaBaikeSource(_PluginBase):
         query: str,
         target_year: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """给候选打分、按「归一化标题 + 年份」去重、按分排序。"""
         best_by_title: Dict[str, Dict[str, Any]] = {}
         for candidate in candidates:
             score = _match_title(candidate.get("title", ""), query)
@@ -1723,138 +1709,264 @@ class ShortDramaBaikeSource(_PluginBase):
                 best_by_title[key] = candidate
         return sorted(best_by_title.values(), key=lambda row: row["_score"], reverse=True)
 
-    def _scan_catalog(self, pages: int) -> List[Dict[str, Any]]:
-        """实时抓目录前 N 页做本地片名匹配（没有索引时的兜底，费配额）。"""
-        results: List[Dict[str, Any]] = []
-        for page in range(1, max(1, pages) + 1):
-            html = self._fetch_catalog_page(page)
-            if not html:
-                # 拿不到内容（多半是撞上配额）就没必要继续翻页
-                break
-            cards = parse_org_cards(html, self._domain)
-            if not cards:
-                break
-            results.extend(cards)
+    def _domain_host(self) -> str:
+        host = re.sub(r"^https?://", "", _clean(self._domain)).split("/")[0].strip().lower()
+        return host[4:] if host.startswith("www.") else host
+
+    def _ddgs_site_search(self, keyword: str, cache_prefix: str) -> List[Dict[str, Any]]:
+        """用搜索引擎的站点限定检索取原始结果（``site:<域名> <关键词>``）。
+
+        站点的 ``/drama/search`` 是 Cloudflare **托管挑战**（``cType=managed``）：
+        服务端直连恒 403，宿主浏览器仿真（cloakbrowser）**有头 / 无头都过不去**
+        （2026-10-15 在 NAS 上实测：有头模式跑到 105 秒仍停在挑战页，连 ``cf_clearance``
+        都没落下），所以不再尝试站内检索，改成问搜索引擎。
+
+        返回的是**已被搜索引擎收录的 URL**（详情页 ``/drama/<id>`` 或演员页
+        ``/actor/<id>``），路径末尾的数字就是站点 ID；后续抓页面走普通 HTTP ——
+        详情页与演员页本身都没有挑战（实测 200 / 约 2s）。
+
+        :param keyword: 片名或演员名
+        :param cache_prefix: 缓存键前缀（``webindex`` / ``webindex_actor``），
+            两类检索分开缓存，避免同名作品与演员互相覆盖
+        :return: 原始结果列表（``title`` / ``href``）；不可用、过频或失败一律空列表
+        """
+        if _DDGS is None:
+            logger.debug(f"{PLUGIN_NAME} 宿主未提供 ddgs，站外索引检索停用")
+            return []
+        host = self._domain_host()
+        if not host:
+            return []
+        cache_key = f"{cache_prefix}:{keyword}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return [dict(row) for row in cached]
+
+        # 引擎不接受高频调用：两次检索挨得太近就放弃这一级（本地候选照常返回，不影响识别）
+        now = time.time()
+        with self._web_index_lock:
+            if now - self._web_index_last_at < WEB_INDEX_MIN_INTERVAL:
+                logger.debug(f"{PLUGIN_NAME} 站外索引检索过于频繁，本次跳过：{keyword}")
+                return []
+            self._web_index_last_at = now
+
+        try:
+            with _DDGS(timeout=WEB_INDEX_TIMEOUT) as client:
+                raw = list(
+                    client.text(
+                        f"site:{host} {keyword}",
+                        backend=self._web_index_backend,
+                        max_results=WEB_INDEX_MAX_RESULTS,
+                    )
+                )
+        except Exception as err:
+            logger.debug(f"{PLUGIN_NAME} 站外索引检索失败（{keyword}）：{err}")
+            return []
+
+        results = [
+            {"title": _strip_org_suffix(row.get("title") or ""),
+             "href": _clean(row.get("href") or row.get("url") or "")}
+            for row in raw
+        ]
+        # ⚠️ **失败/空结果不写缓存**：引擎偶发抽风时不该把空答案钉死一整个 TTL
+        if results:
+            self._cache_set(cache_key, results)
         return results
 
-    def _search_via_browser(self, query: str) -> List[Dict[str, Any]]:
-        """用宿主浏览器仿真打站内检索（实验特性，默认关闭）。
+    def _search_via_web_index(self, query: str) -> List[Dict[str, Any]]:
+        """按片名走站外索引，返回作品候选（``media_id`` 形如 ``org:<id>``）。
 
-        站内检索被 Cloudflare 的 JS 挑战挡着：普通 HTTP 一律 403（正文是
-        ``Just a moment...``）。宿主的 ``app.sdk.browser``（cloakbrowser /
-        FlareSolverr）能把挑战页跑掉，所以这里给它一条路。
-
-        ⚠️ 这条路**没有在 NAS 上验证过能稳定通过**，因此默认关闭、失败即静默返回
-        空列表：检索的主力永远是本地索引，浏览器只是「多一条腿」。
+        只认 ``/drama/<数字>`` 形态的 URL —— 结果里混着演员页（``/actor/371``）、
+        图集页（``/drama/37508/photos``）与外站域名，它们都拿不到作品 ID，一律剔除。
         """
-        url = f"{self._domain}/zh-Hans/drama/search"
-        html = self._browser_fetch(url, params={"q": query})
-        if not html:
-            return []
-        return parse_org_cards(html, self._domain)
-
-    # ── 目录索引 ──────────────────────────────────────────────────
-
-    def build_index_step(self, pages: int = 0, reason: str = "manual") -> Dict[str, Any]:
-        """按配额推进一批目录页，把作品并入本地索引并落盘（断点续爬）。
-
-        每轮从 ``_index_state["next_page"]`` 接着抓，抓满 ``pages`` 页或撞到 403
-        就停；撞到 403 时**不推进** ``next_page``（否则会永久跳过这些页），
-        并把冷却时间交给配额闸门。
-        """
-        pages = max(1, int(pages or self._index_pages_per_run))
-        fetched = 0
-        added = 0
-        blocked = False
-        total_pages = int(self._index_state.get("total_pages") or 0)
-        next_page = int(self._index_state.get("next_page") or 1)
-        limit = min(self._index_max_pages, total_pages or self._index_max_pages)
-
-        while fetched < pages:
-            # 额度用光（或已在冷却）就停手：留给识别与检索，且绝不主动去撞 403
-            if self._quota_remaining() <= 1:
-                break
-            if next_page > limit:
-                # 抓满配置的上限后回到第 1 页继续追新（新剧都在最前面）
-                next_page = 1
-            html = self._fetch_catalog_page(next_page)
-            if not html:
-                blocked = True
-                break
-            if not total_pages:
-                total_pages = parse_org_total_pages(html)
-            cards = parse_org_cards(html, self._domain)
-            fetched += 1
-            for card in cards:
-                native_id = card["native_id"]
-                if native_id in self._index:
-                    continue
-                if len(self._index) >= _INDEX_HARD_LIMIT:
-                    break
-                self._index[native_id] = {
-                    "title": card["title"],
-                    "poster": card.get("poster", ""),
-                    **{
-                        key: card[key]
-                        for key in ("tags", "episode_count", "rating", "kind", "series", "season")
-                        if card.get(key) not in (None, "", [])
-                    },
+        host = self._domain_host()
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
+        for row in self._ddgs_site_search(query, "webindex"):
+            native_id = _web_index_native_id(row.get("href") or "", host)
+            title = row.get("title") or ""
+            if not native_id or not title or native_id in seen:
+                continue
+            seen.add(native_id)
+            results.append(
+                {
+                    "native_id": native_id,
+                    "title": title,
+                    "media_id": f"org:{native_id}",
+                    "source": "web_index",
                 }
-                added += 1
-            next_page += 1
-
-        self._index_state.update(
-            {
-                "next_page": next_page,
-                "total_pages": total_pages,
-                "last_run_at": time.time(),
-                "last_reason": reason,
-                "last_blocked": blocked,
-            }
-        )
-        self._save_state()
-        report = {
-            "success": fetched > 0,
-            "pages": fetched,
-            "added": added,
-            "indexed": len(self._index),
-            "next_page": next_page,
-            "total_pages": total_pages,
-            # 「停手」既可能是撞上 403，也可能只是配额闸门把额度留给了识别 ——
-            # 两者都算正常，区分开是为了让面板能如实说明原因。
-            "stopped_early": blocked,
-            "cooling_down": self._bucket_blocked_until(QUOTA_BUCKET_CATALOG) > time.time(),
-            "quota_remaining": self._quota_remaining(),
-        }
-        if fetched:
-            logger.info(
-                f"{PLUGIN_NAME} 目录索引推进 {fetched} 页（+{added} 部，共 {len(self._index)} 部，"
-                f"下一页 {next_page}/{total_pages or '?'}{'，已停手' if blocked else ''}）"
             )
-        return report
+        if results:
+            logger.info(f"{PLUGIN_NAME} 站外索引检索「{query}」命中 {len(results)} 部作品")
+        return results
 
-    def _fetch_catalog_page(self, page: int) -> str:
-        """取目录第 ``page`` 页；被风控拦住时返回空串（配额闸门会记冷却）。
+    # ── 演员数据（供其它插件查询） ────────────────────────────────
+    # 演员名 → 演员 ID 走同一条站外索引：``site:<域名> <演员名>`` 的结果里就有
+    # ``/actor/<id>``。
 
-        ``reserve=1`` 表示这是**后台**请求：它要求用完后至少还剩一个额度，
-        把最后的额度让给交互式识别。
+    def _search_actors_via_web_index(self, name: str) -> List[Dict[str, Any]]:
+        """按演员名走站外索引，返回候选演员（按名字接近程度打分，分高在前）。
+
+        引擎会给不少模糊匹配（搜「王石」会带出「王碩」「王思瑾」），所以这里必须
+        **按名字再筛一遍**：只有 ``_match_title`` 给分 > 0 的才留下，且按分排序
+        —— 调用方取第一条就是最像的那个。
         """
-        html, status = self._get(
-            f"{self._domain}{CATALOG_PATH}",
-            params={"page": str(max(1, int(page or 1)))},
-            reserve=1,
-        )
-        if is_cloudflare_challenge(html, status):
-            return ""
-        return html
+        host = self._domain_host()
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
+        for row in self._ddgs_site_search(name, "webindex_actor"):
+            actor_id = _web_index_actor_id(row.get("href") or "", host)
+            actor_name = row.get("title") or ""
+            if not actor_id or not actor_name or actor_id in seen:
+                continue
+            score = _match_title(actor_name, name)
+            if score <= 0:
+                continue
+            seen.add(actor_id)
+            results.append(
+                {
+                    "actor_id": actor_id,
+                    "name": actor_name,
+                    "media_id": f"{ACTOR_ID_PREFIX}:{actor_id}",
+                    "url": f"{self._domain}{ACTOR_PATH.format(id=actor_id)}",
+                    "source": "web_index",
+                    "_score": score,
+                }
+            )
+        results.sort(key=lambda row: row.get("_score", 0), reverse=True)
+        if results:
+            logger.info(f"{PLUGIN_NAME} 站外索引检索演员「{name}」命中 {len(results)} 位")
+        return results
+
+    def _fetch_actor(self, actor_id: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
+        """抓演员页并解析（带 TTL 缓存）。
+
+        :param actor_id: 站点演员 ID（``371``，或带前缀的 ``actor:371``）
+        :return: 演员档案（``works`` 为全部作品卡片）；取不到返回 None
+        """
+        native_id = self._actor_native_id(actor_id)
+        if not native_id:
+            return None
+        cache_key = f"actor:{native_id}"
+        if use_cache:
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+        html, status = self._get(f"{self._domain}{ACTOR_PATH.format(id=native_id)}")
+        if not html or is_cloudflare_challenge(html, status):
+            return None
+        item = parse_org_actor(html, native_id, self._domain)
+        if not item.get("name"):
+            return None
+        if use_cache:
+            self._cache_set(cache_key, item)
+        return item
+
+    @staticmethod
+    def _actor_native_id(actor_id: Any) -> str:
+        """把演员 ID 归一成裸数字（``actor:371`` / ``371`` 等价；其它形态判空）。"""
+        text = _clean(actor_id)
+        if text.startswith(f"{ACTOR_ID_PREFIX}:"):
+            text = text[len(ACTOR_ID_PREFIX) + 1:]
+        return text if text.isdigit() else ""
+
+    def search_actors(self, name: str = "", **kwargs: Any) -> List[Dict[str, Any]]:
+        """按姓名查演员 —— **跨插件调用的主入口**（可被 ``run_module`` 分发）。
+
+        走站外索引：``site:<域名> <姓名>`` → 结果里的 ``/actor/<id>``。**不抓演员页**，
+        所以很快、只花一次搜索引擎往返；要看作品就用 ``actor_works``。
+
+        :param name: 演员姓名（中文，可带别名）
+        :param kwargs: 宿主分发器可能附带的参数（忽略）
+        :return: 候选演员列表，**按名字接近程度排序**；每一项含
+            ``actor_id`` / ``name`` / ``media_id``（``actor:<id>``）/ ``url`` / ``source``
+        """
+        query = _clean(name)
+        if not query or not self._enabled:
+            return []
+        if not self._web_index_search:  # 站外检索被关掉时没有任何别的演员发现通道
+            logger.debug(f"{PLUGIN_NAME} 站外索引已关闭，无法按姓名检索演员：{query}")
+            return []
+        results = self._search_actors_via_web_index(query)
+        return [
+            {key: value for key, value in row.items() if key != "_score"}
+            for row in results[:MAX_ACTOR_CANDIDATES]
+        ]
+
+    async def async_search_actors(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.search_actors, *args, **kwargs)
+
+    def actor_works(self, actor_id: str = "", name: str = "", **kwargs: Any) -> List[Dict[str, Any]]:
+        """查一位演员参演的全部作品 —— **跨插件调用的主入口**。
+
+        两种用法（``actor_id`` 优先，最省一次搜索）：
+
+        * ``actor_works(actor_id="371")`` —— 已知站点演员 ID，直接抓演员页；
+        * ``actor_works(name="魏依珂")`` —— 先走站外索引把姓名换成 ID，再抓演员页。
+
+        :param actor_id: 站点演员 ID（``371`` 或 ``actor:371``）
+        :param name: 演员姓名（没有 ID 时用）
+        :param kwargs: 宿主分发器可能附带的参数（忽略）
+        :return: 作品列表（**可直接当 ``MediaInfo`` 的素材**）：每一项含
+            ``media_id``（``org:<作品ID>``）/ ``title`` / ``poster`` /
+            ``episode_count`` / ``rating`` / ``tags`` / ``kind`` / ``url``；
+            查不到返回空列表
+        """
+        if not self._enabled:
+            return []
+        native_id = self._actor_native_id(actor_id)
+        if not native_id:
+            query = _clean(name)
+            if not query:
+                return []
+            candidates = self.search_actors(query)
+            if not candidates:
+                return []
+            native_id = candidates[0]["actor_id"]
+        item = self._fetch_actor(native_id)
+        if not item:
+            return []
+        return [dict(work) for work in (item.get("works") or [])]
+
+    async def async_actor_works(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.actor_works, *args, **kwargs)
+
+    def actor_profile(self, actor_id: str = "", name: str = "") -> Dict[str, Any]:
+        """查一位演员的完整档案（资料 + 全部作品 + 合作演员）。
+
+        ``actor_works`` 只回作品列表（跨插件调用要的是能直接用的作品），
+        需要姓名 / 简介 / 头像 / 性别 / 国籍这些资料时走这里。
+
+        :return: ``{"success", "actor": {...} | None, "message"}``；``actor`` 里
+            ``works`` 与 ``coactors`` 都是列表
+        """
+        if not self._enabled:
+            return {"success": False, "message": "插件未启用", "actor": None}
+        native_id = self._actor_native_id(actor_id)
+        if not native_id:
+            query = _clean(name)
+            if not query:
+                return {"success": False, "message": "需要 actor_id 或 name 之一", "actor": None}
+            candidates = self.search_actors(query)
+            if not candidates:
+                return {
+                    "success": False,
+                    "message": f"没找到演员「{query}」（站外索引未收录或姓名对不上）",
+                    "actor": None,
+                }
+            native_id = candidates[0]["actor_id"]
+        item = self._fetch_actor(native_id)
+        if not item:
+            return {"success": False, "message": "演员页抓取失败（多半是站点风控）", "actor": None}
+        return {"success": True, "message": "", "actor": build_public_actor(item)}
 
     # ── 榜单快照 ──────────────────────────────────────────────────
 
     def refresh_top_lists(self, force: bool = False, keys: Optional[List[str]] = None) -> Dict[str, Any]:
         """刷新榜单快照（默认 6 小时一次；榜单数量固定、不分页，一页一个请求）。
 
-        ⚠️ 每个榜单要花一次请求配额，所以默认只刷「热播榜 + 新剧榜」；想多刷几个
-        在配置里勾（``top_keys``）—— 探索页能看到的榜单就是这些。
+        默认只刷「热播榜 + 新剧榜」（每个榜单一次请求）；想多刷几个在配置里勾
+        ``top_keys`` —— 探索页能看到的榜单就是这些。
         """
         wanted = [
             key
@@ -1868,15 +1980,10 @@ class ShortDramaBaikeSource(_PluginBase):
             cached = self._top_cache.get(key) or {}
             if not force and now - float(cached.get("fetched_at") or 0) < ttl:
                 continue
-            # 榜单页属于「宽松池」（实测 0.3s 间隔连打 20 次都不受限），
-            # 只有该池真的被站点拦下并冷却时才停手。
-            if self._quota_remaining(QUOTA_BUCKET_OPEN) <= 0:
-                break
-            html, status = self._get(
-                f"{self._domain}{TOP_PATH.format(key=key)}", reserve=0
-            )
+            # 榜单页实测不受站点限流；每个勾选的榜单老实抓一次。
+            html, status = self._get(f"{self._domain}{TOP_PATH.format(key=key)}")
             if not html or is_cloudflare_challenge(html, status):
-                break  # 配额已到，剩下的榜单等下一轮
+                continue  # 这一条没拿到就跳过，继续下一条
             items = parse_org_cards(html, self._domain)
             if not items:
                 continue
@@ -1887,17 +1994,9 @@ class ShortDramaBaikeSource(_PluginBase):
         return {"success": bool(refreshed), "refreshed": refreshed}
 
     # ── 宿主「探索」页的数据源 ────────────────────────────────────
-    #
-    # 宿主 ``GET /api/v1/discover/source`` 会广播 ``ChainEventType.DiscoverSource``，
-    # 插件把 ``DiscoverMediaSource`` 追加进 ``event_data.extra_sources`` 就成为一个
-    # 来源；前端随后按 ``api_path`` 拉 ``List[MediaInfo]``。已装插件 ``IMDbSource`` /
-    # ``IqiyiDiscover`` / ``ExploreServices`` 都是这个姿势。
-    #
-    # ⚠️ 探索页的数据**一律只读本地**（榜单快照 + 目录索引），零网络请求 ——
-    # 用户翻页不会消耗站点配额，也不会把 IP 打到 CF 冷却里。
+    # ⚠️ 探索页的数据**一律只读本地榜单快照**，零网络请求：用户翻页不产生任何站点请求。
 
     def _top_snapshot_summary(self) -> str:
-        """榜单快照的一行摘要（``热播榜 19 部 / 新剧榜 20 部``），供面板展示。"""
         if not self._top_cache:
             return "无（等后台任务刷新；可在配置里勾要刷的榜单）"
         parts: List[str] = []
@@ -1907,7 +2006,12 @@ class ShortDramaBaikeSource(_PluginBase):
         return " / ".join(parts)
 
     def _explore_top_keys(self) -> List[str]:
-        """探索页里可选的榜单键：配置里勾的在前，已缓存快照的补在后。"""
+        """探索页里可选的榜单键：配置里勾的在前，快照里还有的补在后。
+
+        ⚠️ 「补在后」只是兜底 —— 正常状态下 ``_prune_top_cache`` 已经把移出配置范围的
+        快照丢掉了，两者应该完全一致（设置里勾几个，探索页就几个）。留这一步是为了
+        极端情形（例如快照由旧版本写入、而配置刚被外部改写）下探索页不至于空着。
+        """
         keys: List[str] = [key for key in self._top_keys if key in TOP_LISTS]
         for key in self._top_cache:
             if key in TOP_LISTS and key not in keys:
@@ -1927,60 +2031,20 @@ class ShortDramaBaikeSource(_PluginBase):
         return keys[0] if keys else DEFAULT_TOP_KEY
 
     def _explore_options(self) -> List[Tuple[str, str]]:
-        """探索页的来源选项 ``(键, 中文名)``：榜单 + 「全部短剧」（本地目录索引）。"""
-        options: List[Tuple[str, str]] = [
-            (key, TOP_LISTS[key]) for key in self._explore_top_keys()
-        ]
-        if self._index:
-            # 榜单只有十几条，索引会一直长 —— 给它也留一个来源，探索页才不至于太空
-            options.append((EXPLORE_INDEX_KEY, EXPLORE_INDEX_LABEL))
-        return options
+        """探索页的来源选项 ``(键, 中文名)``：只来自榜单快照。"""
+        return [(key, TOP_LISTS[key]) for key in self._explore_top_keys()]
 
     def _explore_items(self, key: str) -> List[Dict[str, Any]]:
-        """取某个来源的条目（**只读本地**，不产生任何请求）。"""
-        if key == EXPLORE_INDEX_KEY:
-            rows: List[Dict[str, Any]] = []
-            for native_id, record in self._index.items():
-                rows.append(dict(record, media_id=f"{MEDIA_ID_PREFIX}:{native_id}", native_id=native_id))
-            # 站点 ID 越大越新 ⇒ 倒序就是「最新在前」
-            rows.sort(key=lambda row: int(str(row.get("native_id") or 0) or 0), reverse=True)
-            return rows
+        """取某个来源的条目（**只读本地榜单快照**，不产生任何请求）。"""
         entry = self._top_cache.get(key) or {}
-        return [self._merge_index_extras(dict(item)) for item in (entry.get("items") or [])]
-
-    def _merge_index_extras(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        """用本地目录索引给一条记录补齐评分 / 标签这类**卡片字段**（**零请求**）。
-
-        评分与标签只在**目录页的卡片**上渲染：榜单页卡片只有「标题 + 海报 + 集数 +
-        热度」，作品详情页更是只有「简介 + 播放 + 收藏」。所以不管是探索页的榜单条目
-        还是详情识别，都可以按 ``native_id`` 去本地索引里取一份来补 —— 同一部作品在
-        三处的 ID 完全相同，而索引本来就在本地。只补**缺失**字段，已有的（尤其是
-        榜单/详情里更新的集数）一律不动。
-        """
-        native_id = self._native_id(row.get("media_id") or row.get("native_id"))
-        record = self._index.get(native_id) if native_id else None
-        if not record:
-            return row
-        merged = dict(row)
-        for field in ("rating", "tags", "episode_count", "series", "season", "kind"):
-            if not _has_value(merged.get(field)) and _has_value(record.get(field)):
-                merged[field] = record[field]
-        return merged
+        return [dict(item) for item in (entry.get("items") or [])]
 
     def _explore_enrich(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """把探索页条目的**详情字段**补齐（简介 / 年份 / 类型 / 演员 / 评分）。
 
-        榜单页与目录页的卡片只有「标题 + 海报 + 集数」，TMDB 那种详情只在**作品详情页**
-        里（JSON-LD）。所以这里按需回填，两条来路：
-
-        * 先查**详情缓存**（识别 / 检索 / 上一轮回填都写同一个 ``detail:<id>`` 键）；
-        * 缓存没有、且「宽松池」没在冷却时现场抓一部；抓失败（403 / 超时）就
-          **立即收手**，绝不空转把 IP 打进冷却。
-
-        详情页实测**不受站点突发限流影响**（见文件头「限流分池」），所以这里不再为
-        「识别」预留额度 —— 两者走的是同一个宽松池，谁也不挤谁。
-
-        回填条数由 ``explore_detail_fetch`` 控制（0 = 完全只读本地，零请求）。
+        榜单卡片只有「标题 + 海报 + 集数」，TMDB 那种详情只在作品详情页里（JSON-LD）。
+        这里先查**详情缓存**（识别 / 检索 / 上一轮回填都写同一个 ``detail:<id>`` 键），
+        缓存没有就现场抓一部；条数由 ``explore_detail_fetch`` 控制（0 = 只读本地）。
         """
         if not rows:
             return rows
@@ -1992,21 +2056,11 @@ class ShortDramaBaikeSource(_PluginBase):
             if native_id:
                 detail = self._cache_get(f"detail:{native_id}")
                 if detail is None and budget > 0:
-                    # 详情页属于「宽松池」，实测不受限 ⇒ 识别与回填不必再互相抢额度，
-                    # 只有该池真的被站点拦下才收手。
-                    if self._quota_remaining(QUOTA_BUCKET_OPEN) > 0:
-                        detail = self._fetch_detail(
-                            f"{MEDIA_ID_PREFIX}:{native_id}",
-                            use_cache=True,
-                            reserve=0,
-                        )
-                        budget -= 1
-                        if not detail:
-                            # 站点不给数据了（多半是撞上了风控），本轮别再试
-                            budget = 0
-                    else:
-                        # 宽松池也在冷却：回填下轮再说
-                        budget = 0
+                    detail = self._fetch_detail(
+                        f"{MEDIA_ID_PREFIX}:{native_id}",
+                        use_cache=True,
+                    )
+                    budget -= 1
                 if detail:
                     merged.update(
                         {key: value for key, value in detail.items() if _has_value(value)}
@@ -2018,7 +2072,6 @@ class ShortDramaBaikeSource(_PluginBase):
         return enriched
 
     def _explore_api_path(self) -> str:
-        """探索页要调的相对地址（``/api/v1/`` 之后的部分，含 apikey）。"""
         path = f"plugin/{self.__class__.__name__}{EXPLORE_PATH}"
         token = _clean(getattr(_settings, "API_TOKEN", None))
         return f"{path}?apikey={token}" if token else path
@@ -2059,7 +2112,6 @@ class ShortDramaBaikeSource(_PluginBase):
 
     @_discover_source_listener
     def discover_source(self, event: Any) -> None:
-        """响应宿主探索页的来源广播，把「短剧百科」登记成一个探索来源。"""
         if not self._enabled or _DiscoverMediaSource is None:
             return
         event_data = getattr(event, "event_data", None)
@@ -2096,11 +2148,10 @@ class ShortDramaBaikeSource(_PluginBase):
     ) -> Any:
         """探索页数据源：按榜单键分页返回短剧列表（``Response[List[MediaInfo]]``）。
 
-        数据以本地为准（榜单快照 / 目录索引），但榜单卡片里只有标题 + 海报 + 集数 ——
+        数据以本地榜单快照为准，但榜单卡片里只有标题 + 海报 + 集数 ——
         为了让它像 TMDB 来源那样「点开有简介、年份、类型、演员」，这里会对**当前这一页**
         按需回填作品详情（``explore_detail_fetch``，默认 8 部；0 = 只读本地）。
-        详情页实测不受站点突发限流影响，所以回填**不再与识别互相抢额度**；
-        抓不到就退回卡片字段，绝不阻塞返回。
+        详情页实测不受站点突发限流影响；抓不到就退回卡片字段，绝不阻塞返回。
         """
         medias: List[Any] = []
         if self._enabled:
@@ -2121,90 +2172,20 @@ class ShortDramaBaikeSource(_PluginBase):
                     medias.append(payload)
         return _explore_response(medias)
 
-    # ── HTTP ＋ 配额闸门 ──────────────────────────────────────────
-
-    def _bucket_limit(self, bucket: str) -> int:
-        """该池在一个窗口内允许的请求数。"""
-        if bucket == QUOTA_BUCKET_CATALOG:
-            return max(1, self._quota_max_requests)
-        return OPEN_QUOTA_MAX_REQUESTS
-
-    def _bucket_blocked_until(self, bucket: str) -> float:
-        """该池的冷却截止时间（0 表示未冷却）。"""
-        return float(self._blocked_until.get(bucket) or 0.0)
-
-    def _take_slot(self, reserve: int = 0, bucket: str = QUOTA_BUCKET_CATALOG) -> bool:
-        """请求前的配额闸门：拿到额度返回 True，否则 False（**不等待**）。
-
-        目录页有**独立的突发限流**（实测 0.8~1.0s 间隔连打，第 6 次即 403；且与
-        UA / ``sec-ch-ua`` / ``Sec-Fetch-*`` / ``Referer`` / 首页预热全都没关系），
-        而榜单、详情、首页 0.3s 间隔连打 20 次也不见挑战页。所以额度**按池分开算**：
-        目录页走紧额度（``quota_max_requests``），其余走宽松池 —— 目录页撞墙不会
-        连累识别与探索页回填。
-
-        ``reserve`` 是给后台任务用的：它要求「用完之后至少还剩这么多额度」，
-        这样索引任务不会把目录页额度吃光。
-        """
-        now = time.time()
-        window = max(60, self._quota_window_minutes * 60)
-        limit = self._bucket_limit(bucket)
-        with self._gate_lock:
-            if now < self._bucket_blocked_until(bucket):
-                return False
-            slots = [
-                stamp for stamp in (self._slots.get(bucket) or []) if now - stamp < window
-            ]
-            self._slots[bucket] = slots
-            if len(slots) + max(0, reserve) >= limit:
-                return False
-            if now < float(self._next_request_at.get(bucket) or 0.0):
-                return False
-            slots.append(now)
-            self._next_request_at[bucket] = now + self._min_interval
-            return True
-
-    def _quota_remaining(self, bucket: str = QUOTA_BUCKET_CATALOG) -> int:
-        """该池在当前窗口内还剩几次额度（默认看目录页 —— 它才是紧的那个）。"""
-        now = time.time()
-        window = max(60, self._quota_window_minutes * 60)
-        with self._gate_lock:
-            used = len(
-                [stamp for stamp in (self._slots.get(bucket) or []) if now - stamp < window]
-            )
-        return max(0, self._bucket_limit(bucket) - used)
-
-    def _mark_blocked(self, bucket: str = QUOTA_BUCKET_CATALOG) -> None:
-        """记录一次风控命中，**只冷却命中的池**，并写一条日志。
-
-        实测撞墙只影响命中的那条路径（同一时刻其它路径照常 200），所以冷却也按池隔离：
-        目录页的 403 不该把识别与探索页回填一起冻住。正常情况下闸门会让我们**在撞到
-        之前**就停手；真撞上了说明站点策略变了，冷却 + 记日志，让用户在面板上看得见。
-        """
-        now = time.time()
-        with self._gate_lock:
-            self._blocked_at[bucket] = now
-            until = now + self._cooldown_minutes * 60
-            self._blocked_until[bucket] = until
-            self._next_request_at[bucket] = until
-        self._stats["blocked_count"] = int(self._stats.get("blocked_count") or 0) + 1
-        logger.warning(
-            f"{PLUGIN_NAME} 撞到站点风控（403，{bucket} 路径），"
-            f"暂停该路径请求 {self._cooldown_minutes} 分钟后再试"
-        )
+    # ── HTTP ──────────────────────────────────────────────────────
+    #
+    # ⚠️ 这里**没有闸门**（原因见模块头「限流」）：``_request`` 就是一次裸 GET，
+    # 撞到 403 只影响当次调用。唯一的节流是搜索引擎侧的礼貌间隔
+    # （``_ddgs_site_search`` 里的 ``WEB_INDEX_MIN_INTERVAL``），与站点无关。
 
     def _request(
         self,
         url: str,
         params: Optional[Dict[str, Any]] = None,
-        reserve: int = 0,
     ) -> Any:
         """发起一次 GET，失败返回 None（绝不抛异常打断宿主链路）。"""
         if _RequestUtils is None:  # pragma: no cover - 极端兜底
             logger.warning(f"{PLUGIN_NAME} 宿主未提供 HTTP 入口")
-            return None
-        bucket = quota_bucket(url)
-        if not self._take_slot(reserve=reserve, bucket=bucket):
-            logger.debug(f"{PLUGIN_NAME} 配额闸门拒绝了本次请求（{bucket} 池）：{url}")
             return None
         headers = {
             "User-Agent": _USER_AGENT,
@@ -2214,11 +2195,9 @@ class ShortDramaBaikeSource(_PluginBase):
                 "application/signed-exchange;v=b3;q=0.7"
             ),
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            # 这组「现代浏览器特征头」是 2026-10-14 实测后补上的：它**不能**突破
-            # 目录页的突发限流（见文件头注释 —— 全套齐上仍然第 6 次 403），加它只是
-            # 为了让请求更像真实浏览器，免得站点风控日后收紧时把我们当脚本。
-            # ⚠️ ``Accept-Encoding`` 故意不设：交给宿主 HTTP 客户端决定，
-            # 它才知道环境里装了哪些解压器（乱声明 br 会解压失败）。
+            # 浏览器特征头：让请求更像真实浏览器，免得站点风控收紧时把我们当脚本。
+            # ⚠️ ``Accept-Encoding`` 故意不设：交给宿主 HTTP 客户端决定，它才知道环境里
+            # 装了哪些解压器（乱声明 br 会解压失败）。
             "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
@@ -2244,87 +2223,54 @@ class ShortDramaBaikeSource(_PluginBase):
         self,
         url: str,
         params: Optional[Dict[str, Any]] = None,
-        reserve: int = 0,
     ) -> Tuple[str, Optional[int]]:
         """取页面正文与状态码。
 
-        **不吞状态码**：本站在配额耗尽时对所有路径返回 403 + ``Just a moment...``，
-        只有拿到状态码才分得清「被 Cloudflare 挡了」与「这个地址本来就没内容」，
-        前者必须触发冷却而不是重试。
+        **不吞状态码**：本站被风控拦住时返回 403 + ``Just a moment...``，只有拿到
+        状态码才分得清「被 Cloudflare 挡了」与「这个地址本来就没内容」。被挡住时只是
+        这次返回空文本，不产生任何后续影响。
         """
-        response = self._request(url, params=params, reserve=reserve)
+        response = self._request(url, params=params)
         if response is None:
             return "", None
         status = getattr(response, "status_code", None)
         text = getattr(response, "text", "") or ""
         if is_cloudflare_challenge(text, status):
-            self._mark_blocked(quota_bucket(url))
+            logger.debug(f"{PLUGIN_NAME} {url} 撞到站点风控（status={status}）")
             return "", status
         if status is not None and status >= 400:
             logger.debug(f"{PLUGIN_NAME} {url} 返回 {status}")
             return "", status
-        self._stats["ok_count"] = int(self._stats.get("ok_count") or 0) + 1
         return text, status
-
-    def _browser_fetch(self, url: str, params: Optional[Dict[str, Any]] = None) -> str:
-        """用宿主浏览器仿真取页面（**不过配额闸门** —— 它走的是另一条通道）。
-
-        宿主 ``app.sdk.browser`` 内部是 cloakbrowser（带 ``CLOAKBROWSER_HUMANIZE``
-        等反检测开关），能跑掉 Cloudflare 的 JS 挑战；但这一步在 NAS 上
-        **尚未验证稳定**，所以整段都包在 try 里，失败一律返回空串。
-        """
-        if _launch_browser_context is None:
-            logger.debug(f"{PLUGIN_NAME} 宿主未提供浏览器仿真入口")
-            return ""
-        target = url
-        if params:
-            target = f"{url}?{urllib.parse.urlencode(params)}"
-        context = None
-        try:
-            context = _launch_browser_context(headless=True)
-            page = context.new_page()
-            page.goto(target, wait_until="domcontentloaded", timeout=max(5, self._timeout) * 1000)
-            deadline = time.time() + _BROWSER_CHALLENGE_WAIT
-            html = ""
-            while time.time() < deadline:
-                html = page.content() or ""
-                if not is_cloudflare_challenge(html, None):
-                    return html
-                page.wait_for_timeout(1500)
-            logger.debug(f"{PLUGIN_NAME} 浏览器未能在 {_BROWSER_CHALLENGE_WAIT}s 内解除挑战页")
-            return ""
-        except Exception as err:
-            logger.debug(f"{PLUGIN_NAME} 浏览器取页失败 {target}：{err}")
-            return ""
-        finally:
-            if context is not None:
-                try:
-                    context.close()
-                except Exception:  # pragma: no cover - 关闭失败不影响结果
-                    pass
 
     # ── 持久化 ────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
-        """把索引 / 榜单快照从宿主数据目录读回内存（读不到就用空值）。"""
-        self._index = self._read_data(_DATA_INDEX, {}) or {}
-        self._index_state = self._read_data(_DATA_INDEX_STATE, {}) or {}
         self._top_cache = self._read_data(_DATA_TOP, {}) or {}
-        if not isinstance(self._index, dict):
-            self._index = {}
-        if not isinstance(self._index_state, dict):
-            self._index_state = {}
         if not isinstance(self._top_cache, dict):
             self._top_cache = {}
 
+    def _prune_top_cache(self) -> None:
+        """丢掉已经移出配置范围的榜单快照。
+
+        ``_top_cache`` 是**持久化**的（``_DATA_TOP``），而 ``refresh_top_lists`` 只刷
+        不删 —— 于是「在设置里把榜单范围改小」之后，旧榜单照样留在快照里；探索页的来源
+        列表 ``_explore_top_keys`` 会把「快照里还有」的键补进去，结果用户在设置里只勾了
+        3 个榜单，探索页却列出 5~6 个 —— 设置与探索页对不上。这里在每次实例初始化时
+        按当前配置收口，配置保存（``api_update_config`` 会重跑 ``init_plugin``）与容器
+        重启都会走到。
+        """
+        allowed = set(self._top_keys)
+        stale = [key for key in self._top_cache if key not in allowed]
+        if not stale:
+            return
+        for key in stale:
+            self._top_cache.pop(key, None)
+        logger.info(f"{PLUGIN_NAME} 榜单快照已移出配置范围，丢弃：{stale}")
+        self._save_state()
+
     def _save_state(self) -> None:
-        """把索引 / 榜单快照写回宿主数据目录（失败只记日志，不影响主链路）。"""
-        for key, value in (
-            (_DATA_INDEX, self._index),
-            (_DATA_INDEX_STATE, self._index_state),
-            (_DATA_TOP, self._top_cache),
-        ):
-            self._write_data(key, value)
+        self._write_data(_DATA_TOP, self._top_cache)
 
     def _read_data(self, key: str, default: Any) -> Any:
         """宿主 ``get_data`` 的稳健包装（不同版本签名略有差异）。"""
@@ -2354,7 +2300,6 @@ class ShortDramaBaikeSource(_PluginBase):
     # ── 缓存 ─────────────────────────────────────────────────────
 
     def _cache_get(self, key: str) -> Any:
-        """命中且未过期时返回缓存值，否则 None。"""
         if self._cache_ttl <= 0:
             return None
         with self._cache_lock:
@@ -2368,7 +2313,6 @@ class ShortDramaBaikeSource(_PluginBase):
         return entry[1]
 
     def _cache_set(self, key: str, value: Any) -> None:
-        """写入缓存，并把缓存规模压在合理范围。"""
         if self._cache_ttl <= 0:
             return
         with self._cache_lock:
@@ -2387,603 +2331,54 @@ class ShortDramaBaikeSource(_PluginBase):
             "enabled": False,
             "domain": ORG_DEFAULT_DOMAIN,
             "search_in_global": True,
-            "scan_pages": DEFAULT_SCAN_PAGES,
-            "index_enabled": True,
-            "index_pages_per_run": DEFAULT_INDEX_PAGES_PER_RUN,
-            "index_max_pages": DEFAULT_INDEX_MAX_PAGES,
             "interval_minutes": DEFAULT_INTERVAL_MINUTES,
-            "min_interval": DEFAULT_MIN_INTERVAL,
-            "quota_window_minutes": DEFAULT_QUOTA_WINDOW_MINUTES,
-            "quota_max_requests": DEFAULT_QUOTA_MAX_REQUESTS,
-            "cooldown_minutes": DEFAULT_COOLDOWN_MINUTES,
             "timeout": DEFAULT_TIMEOUT,
             "cache_ttl": DEFAULT_CACHE_TTL,
-            "use_browser_search": False,
+            "web_index_search": True,
+            "web_index_backend": DEFAULT_WEB_INDEX_BACKEND,
             "proxy": False,
             "top_keys": list(DEFAULT_TOP_KEYS),
             "explore_detail_fetch": EXPLORE_DETAIL_FETCH_DEFAULT,
             "detail_facts": True,
         }
 
+    def _current_config(self) -> Dict[str, Any]:
+        """当前生效的配置（键与 ``_default_config`` 完全一致）。
+
+        Vue 模式下配置页由远程 ``./Config`` 组件绘制，它挂载时拉 ``GET /config``
+        回显，保存时 ``PUT /config``；宿主 ``get_form()`` 只把这个模型下发一次。
+        """
+        return {
+            "enabled": bool(self._enabled),
+            "domain": self._domain,
+            "search_in_global": bool(self._search_in_global),
+            "interval_minutes": self._interval_minutes,
+            "timeout": self._timeout,
+            "cache_ttl": self._cache_ttl,
+            "web_index_search": bool(self._web_index_search),
+            "web_index_backend": self._web_index_backend,
+            "proxy": bool(self._proxy),
+            "top_keys": list(self._top_keys),
+            "explore_detail_fetch": self._explore_detail_fetch,
+            "detail_facts": bool(self._detail_facts),
+        }
+
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """组装配置表单与默认配置（vuetify 渲染模式）。"""
-        return [
-            {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "info",
-                                            "variant": "tonal",
-                                            "text": (
-                                                "启用后，「短剧百科」会作为一个媒体数据源注册到 "
-                                                "MoviePilot，与 TMDB / 豆瓣同级：识别、刮削、搜索时"
-                                                "都能显式选择它。详情页（演员阵容、剧照、集数、出品方）"
-                                                "按作品 ID 直取，稳定可靠；**片名检索走本地目录索引** —— "
-                                                "站内检索被 Cloudflare 挡住，且站点配额极紧，"
-                                                "所以索引由后台任务小步抓取、断点续爬。"
-                                            ),
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "enabled",
-                                            "label": "启用数据源",
-                                            "hint": "关闭后本插件不再响应任何识别与检索请求",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "search_in_global",
-                                            "label": "参与全局检索",
-                                            "hint": "开启后，宿主搜索框不限定来源时也会带出短剧结果",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "domain",
-                                            "label": "站点域名",
-                                            "placeholder": ORG_DEFAULT_DOMAIN,
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VDivider",
-                                        "props": {"class": "my-2"},
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "index_enabled",
-                                            "label": "启用目录索引",
-                                            "hint": "关闭后只能靠实时扫描与榜单检索",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "index_pages_per_run",
-                                            "label": "索引每轮页数",
-                                            "type": "number",
-                                            "hint": f"1 ~ {MAX_INDEX_PAGES_PER_RUN}；每页 30 部",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "index_max_pages",
-                                            "label": "索引页数上限",
-                                            "type": "number",
-                                            "hint": f"1 ~ {MAX_INDEX_MAX_PAGES}；站内自述共约 1879 页",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "top_keys",
-                                            "label": "榜单快照范围（= 探索页的来源）",
-                                            "multiple": True,
-                                            "chips": True,
-                                            "clearable": True,
-                                            "items": [
-                                                {"title": label, "value": key}
-                                                for key, label in TOP_LISTS.items()
-                                            ],
-                                            "hint": (
-                                                "每个榜单要花一次站点请求配额，"
-                                                "默认只刷「热播榜 + 新剧榜」；"
-                                                "勾上的榜单会出现在 MoviePilot 探索页"
-                                            ),
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "interval_minutes",
-                                            "label": "索引轮询间隔（分钟）",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "quota_window_minutes",
-                                            "label": "目录页配额窗口（分钟）",
-                                            "type": "number",
-                                            "hint": "实测目录页约「每 1 分钟 5 次」；榜单与详情页不受此限",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "quota_max_requests",
-                                            "label": "目录页窗口内最大请求数",
-                                            "type": "number",
-                                            "hint": "实测为 5；只约束目录页，调大只会更快撞 403",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "min_interval",
-                                            "label": "请求最小间隔（秒）",
-                                            "type": "number",
-                                            "hint": "任意两次请求之间的下限；目录页另有窗口额度兜底",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cooldown_minutes",
-                                            "label": "撞风控冷却（分钟）",
-                                            "type": "number",
-                                            "hint": "命中 403 后暂停该条路径的请求（其余路径照常）",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "scan_pages",
-                                            "label": "实时扫描页数",
-                                            "type": "number",
-                                            "hint": "没有索引时的兜底翻页数",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "timeout",
-                                            "label": "请求超时（秒）",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cache_ttl",
-                                            "label": "详情缓存（秒）",
-                                            "type": "number",
-                                            "hint": "0 表示不缓存",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "use_browser_search",
-                                            "label": "浏览器检索（实验）",
-                                            "hint": "用宿主浏览器仿真尝试穿过 Cloudflare 打站内检索；未验证稳定",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "proxy",
-                                            "label": "使用系统代理",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "explore_detail_fetch",
-                                            "label": "探索页详情回填（部/次）",
-                                            "type": "number",
-                                            "hint": (
-                                                "榜单卡片只有标题和海报；填几就在打开探索页时"
-                                                "最多抓几部作品的简介/年份/类型/主演。"
-                                                "详情页不受站点限流，默认回填整页；"
-                                                "0 = 完全不额外请求"
-                                            ),
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "detail_facts",
-                                            "label": "详情页摘要行",
-                                            "hint": (
-                                                "在作品详情页「简介」上方显示一行"
-                                                "「评分 · 全 N 集 · 主演 X、Y」。"
-                                                "宿主的评分区与演职员区只对 TMDB/豆瓣/"
-                                                "Bangumi 来源渲染，自定义来源靠这行承载"
-                                            ),
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                ],
-            }
-        ], self._default_config()
+        """Vue 模式下只下发配置模型，配置界面由远程 ``./Config`` 组件渲染。"""
+        return [], self._current_config()
 
     def get_page(self) -> List[Dict[str, Any]]:
-        """详情页：展示数据源状态、索引进度与配额状态。"""
-        state = "已启用" if self._enabled else "未启用"
-        indexed = len(self._index)
-        next_page = int(self._index_state.get("next_page") or 1)
-        total_pages = int(self._index_state.get("total_pages") or 0)
-        progress = "未开始"
-        if total_pages:
-            progress = f"{min(next_page - 1, total_pages)}/{total_pages} 页"
-        elif indexed:
-            progress = f"已抓 {next_page - 1} 页"
-
-        catalog_cooldown = max(
-            0, int(self._bucket_blocked_until(QUOTA_BUCKET_CATALOG) - time.time())
-        )
-        if catalog_cooldown > 0:
-            quota = f"目录页冷却中（剩余 {catalog_cooldown} 秒）"
-        else:
-            quota = (
-                f"目录页窗口内剩余 "
-                f"{self._quota_remaining(QUOTA_BUCKET_CATALOG)}/{self._quota_max_requests} 次"
-            )
-
-        with self._cache_lock:
-            detail_cached = len([key for key in self._cache if str(key).startswith("detail:")])
-        if self._explore_detail_fetch > 0:
-            explore_line = (
-                f"探索页详情回填：每次最多 {self._explore_detail_fetch} 部"
-                f"（已缓存 {detail_cached} 部详情）"
-            )
-        else:
-            explore_line = f"探索页详情回填：已关闭（详情缓存 {detail_cached} 部）"
-
-        return [
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VAlert",
-                                "props": {
-                                    "type": "success" if self._enabled else "warning",
-                                    "variant": "tonal",
-                                    "text": f"数据源状态：{state}；来源标识：{MEDIA_SOURCE_KEY}",
-                                },
-                            }
-                        ],
-                    }
-                ],
-            },
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 4},
-                        "content": [
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "tonal"},
-                                "content": [
-                                    {
-                                        "component": "VCardText",
-                                        "text": f"本地索引：{indexed} 部（{progress}）",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 4},
-                        "content": [
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "tonal"},
-                                "content": [
-                                    {
-                                        "component": "VCardText",
-                                        "text": f"榜单快照：{len(self._top_cache)} 个（{self._top_snapshot_summary()}）",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 4},
-                        "content": [
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "tonal"},
-                                "content": [
-                                    {
-                                        "component": "VCardText",
-                                        "text": f"站点配额：{quota}",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                ],
-            },
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "tonal"},
-                                "content": [
-                                    {
-                                        "component": "VCardText",
-                                        "text": explore_line,
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "tonal"},
-                                "content": [
-                                    {
-                                        "component": "VCardText",
-                                        "text": (
-                                            "详情页摘要行：已开启（评分 · 全 N 集 · 主演）"
-                                            if self._detail_facts
-                                            else "详情页摘要行：已关闭"
-                                        ),
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                ],
-            },
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "outlined"},
-                                "content": [
-                                    {
-                                        "component": "VCardText",
-                                        "text": (
-                                            "用法：在 MoviePilot 的识别 / 刮削 / 搜索界面里，"
-                                            "把媒体来源选为「短剧百科」即可。短剧在 TMDB 与豆瓣上"
-                                            "常常没有条目，本数据源补的正是这一段。"
-                                            "片名检索依赖本地目录索引，索引由后台任务逐页建立，"
-                                            "可在「配置」里调大每轮页数加快进度。"
-                                            "浏览入口在 MoviePilot 的「探索」菜单："
-                                            "那里会多出一个「短剧百科」来源，榜单可切换"
-                                            "（刷哪些榜单由「配置 → 榜单快照范围」决定，"
-                                            "多勾几个就有更多来源可选）。"
-                                            "其它插件也能直接调它：self.run_module(\"recognize_media\", "
-                                            "media_source=\"duanjubaike\", media_id=\"org:40105\")；"
-                                            "不想依赖宿主模型时用 GET /plugin/ShortDramaBaikeSource/recognize "
-                                            "拿纯 JSON。"
-                                        ),
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ],
-            },
-        ]
+        """Vue 模式下详情面板由远程 ``./Page`` 组件渲染，后端返回空列表。"""
+        return []
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """注册排障接口 + **跨插件消费接口**。
+        """注册面板接口 + **跨插件消费接口**。
 
-        ``/recognize`` 是给其它插件 / 外部脚本用的稳定出口：它只回纯 JSON，
+        ⚠️ 全部用 ``auth: "bear"``：宿主把它映射成 ``verify_token``，而那个依赖
+        **同时接受 JWT（浏览器登录态）与 ``X-API-KEY``** —— 于是同一批接口既能给
+        插件面板的联邦前端直接调，也能给外部脚本用，不必开两套。
+
+        ``/recognize`` 与 ``/actor`` 是给其它插件 / 外部脚本用的稳定出口：只回纯 JSON，
         与宿主 ``MediaInfo`` 的字段版本解耦。
         """
         return [
@@ -2991,11 +2386,11 @@ class ShortDramaBaikeSource(_PluginBase):
                 "path": EXPLORE_PATH,
                 "endpoint": self.api_explore,
                 "methods": ["GET"],
-                "auth": "apikey",
+                "auth": "bear",
                 "summary": "宿主探索页数据源",
                 "description": (
-                    "按榜单键（hot / new / … / index）分页返回短剧列表，"
-                    "供 MoviePilot 探索页消费；数据取自本地快照与索引，"
+                    "按榜单键（hot / new / …）分页返回短剧列表，"
+                    "供 MoviePilot 探索页消费；数据取自本地榜单快照，"
                     "并对当前页按需回填少量作品详情（explore_detail_fetch 控制条数，0 = 不回填）。"
                 ),
             },
@@ -3003,59 +2398,152 @@ class ShortDramaBaikeSource(_PluginBase):
                 "path": "/recognize",
                 "endpoint": self.api_recognize,
                 "methods": ["GET"],
-                "auth": "apikey",
-                "summary": "识别一部短剧（跨插件调用的稳定出口）",
+                "auth": "bear",
+                "summary": "识别一部短剧（面板 + 跨插件调用）",
                 "description": (
                     "给 media_id（如 org:40105）或 keyword（片名）返回一条作品记录："
                     "片名/年份/海报/集数/时长/标签/演员等，全部为纯 JSON。"
                 ),
             },
             {
-                "path": "/probe",
-                "endpoint": self.api_probe,
+                "path": "/actor",
+                "endpoint": self.api_actor,
                 "methods": ["GET"],
-                "auth": "apikey",
-                "summary": "数据源连通性自检",
-                "description": "请求 robots.txt / 目录页 / 榜单 / 详情页，返回状态码与解析条数。",
+                "auth": "bear",
+                "summary": "查演员档案与作品（面板 + 跨插件调用）",
+                "description": (
+                    "给 actor_id（如 371）或 name（演员姓名）返回演员档案："
+                    "姓名/简介/头像/性别/国籍 + 全部作品（media_id/片名/海报/集数/评分/标签）"
+                    "+ 合作演员，全部为纯 JSON。"
+                ),
             },
             {
                 "path": "/search",
                 "endpoint": self.api_search,
                 "methods": ["GET"],
-                "auth": "apikey",
-                "summary": "按片名试搜短剧",
-                "description": "用给定片名走一遍本插件的检索链路，返回候选与匹配分。",
+                "auth": "bear",
+                "summary": "按片名搜短剧（返回候选）",
+                "description": "用给定片名走一遍本插件的检索链路，返回候选与匹配分（面板片名框用它）。",
             },
             {
-                "path": "/index",
-                "endpoint": self.api_index,
+                "path": "/actor_search",
+                "endpoint": self.api_actor_search,
                 "methods": ["GET"],
-                "auth": "apikey",
-                "summary": "手动推进本地目录索引",
-                "description": "按给定页数推进一次索引抓取（受站点配额限制，超额会自动停手）。",
+                "auth": "bear",
+                "summary": "按姓名搜演员（返回候选）",
+                "description": "用给定姓名走一遍站外索引，返回候选演员与匹配分（面板演员框用它）。",
             },
             {
                 "path": "/status",
                 "endpoint": self.api_status,
                 "methods": ["GET"],
-                "auth": "apikey",
-                "summary": "查看索引与配额状态",
-                "description": "返回本地索引条数、抓取进度、榜单快照与冷却剩余时间。",
+                "auth": "bear",
+                "summary": "查看榜单快照与运行状态",
+                "description": "返回榜单快照、站外索引配置与演员缓存数。",
+            },
+            {
+                "path": "/config",
+                "endpoint": self.api_get_config,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "读取当前配置（面板配置页回显）",
+                "description": "返回当前生效的配置与可选项（榜单键、检索后端）。",
+            },
+            {
+                "path": "/config",
+                "endpoint": self.api_update_config,
+                "methods": ["PUT"],
+                "auth": "bear",
+                "summary": "保存配置（面板配置页）",
+                "description": "接收前端提交的配置，落盘后重建运行状态。",
+            },
+            {
+                "path": "/probe",
+                "endpoint": self.api_probe,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "数据源连通性自检",
+                "description": "请求 robots.txt / 榜单 / 详情页 / 演员页，返回状态码与解析条数。",
             },
         ]
+
+    def api_get_config(self) -> Dict[str, Any]:
+        """见 ``/config``（GET）：返回配置模型与可选项，供联邦 Config 组件回显。"""
+        return {
+            "success": True,
+            "message": "",
+            "config": self._current_config(),
+            "options": self._config_options(),
+        }
+
+    def api_update_config(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """见 ``/config``（PUT）：保存面板提交的配置，落盘后重建运行状态。
+
+        Vue 模式下配置页由远程组件渲染，组件只负责校验与抛事件，落盘必须由这里
+        （或宿主的 ``PUT /plugin/<id>``）完成，否则面板里改的配置不会生效。
+
+        逐键合并：``payload`` 里缺的键沿用当前生效值，**绝不静默改成别的默认值**
+        （用户只翻一个开关就保存，不能把站外索引或榜单范围一起改掉）。
+        """
+        if not isinstance(payload, dict):
+            return {"success": False, "message": "请求体不是合法对象", "config": None}
+
+        live = self._current_config()
+        raw: Dict[str, Any] = {
+            key: payload.get(key, live.get(key, default))
+            for key, default in self._default_config().items()
+        }
+        # 清洗用 init_plugin 的**同一批** _as_* 与同一组上下界，保证「面板存下来的配置」
+        # 与「宿主配置页存下来的配置」逐字一致。
+        merged: Dict[str, Any] = {
+            "enabled": bool(raw.get("enabled")),
+            "domain": self._as_domain(raw.get("domain"), ORG_DEFAULT_DOMAIN),
+            "search_in_global": self._as_bool(raw.get("search_in_global"), True),
+            "interval_minutes": self._as_range(
+                raw.get("interval_minutes"), DEFAULT_INTERVAL_MINUTES, 1, 1440
+            ),
+            "timeout": self._as_range(raw.get("timeout"), DEFAULT_TIMEOUT, 5, 120),
+            "cache_ttl": self._as_range(raw.get("cache_ttl"), DEFAULT_CACHE_TTL, 0, 2592000),
+            "web_index_search": self._as_bool(raw.get("web_index_search"), True),
+            "web_index_backend": self._as_choice(
+                raw.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
+            ),
+            "proxy": bool(raw.get("proxy")),
+            "top_keys": self._as_top_keys(raw.get("top_keys")),
+            "explore_detail_fetch": self._as_range(
+                raw.get("explore_detail_fetch"),
+                EXPLORE_DETAIL_FETCH_DEFAULT,
+                0,
+                MAX_EXPLORE_DETAIL_FETCH,
+            ),
+            "detail_facts": self._as_bool(raw.get("detail_facts"), True),
+        }
+
+        self.update_config(merged)
+        self.init_plugin(merged)
+        logger.info(f"{PLUGIN_NAME} 配置已通过面板接口更新")
+        return {"success": True, "message": "配置已保存", "config": self._current_config()}
+
+    @staticmethod
+    def _config_options() -> Dict[str, Any]:
+        """配置页要用到的候选值（榜单键 / 检索后端），免得前端硬编码。"""
+        return {
+            "top_keys": [{"value": key, "label": label} for key, label in TOP_LISTS.items()],
+            "web_index_backends": list(WEB_INDEX_BACKENDS),
+        }
+
 
     def api_recognize(self, media_id: str = "", keyword: str = "", year: str = "") -> Dict[str, Any]:
         """见 ``/recognize``：给 ``media_id`` 或片名，回一条**纯 JSON** 作品记录。
 
-        其它插件调用本插件有三条路（都在模块 docstring 里写了例子）：
+        其它插件调用本插件有两条路（都在模块 docstring 里写了例子）：
 
         1. ``self.run_module("recognize_media" | "search_medias" | "obtain_images", …)``
            —— 宿主分发器会把请求送进本插件（标准姿势，返回宿主模型）；
-        2. 本 HTTP 接口 —— 返回纯 JSON，适合脚本 / 外部程序；
-        3. 智能体工具 ``short_drama_identify``—— 给 AI 智能体用。
+        2. 本 HTTP 接口 —— 返回纯 JSON，插件面板与外部脚本用的是同一条。
 
-        ``media_id`` 优先：给了就直接取详情页；只给片名则先在本地索引里匹配，
-        取最高分那条再补详情。``origin`` 字段会说明数据是详情页还是仅索引。
+        ``media_id`` 优先：给了就直接取详情页；只给片名则先走检索（榜单快照 → 站外索引），
+        取最高分那条再补详情。``origin`` 字段会说明数据来自详情页还是仅检索结果。
         """
         if not self.get_state():
             return {"success": False, "message": "插件未启用", "record": None}
@@ -3074,26 +2562,73 @@ class ShortDramaBaikeSource(_PluginBase):
             candidates = self._search_by_title(keyword, target_year=target_year)
             best = self._pick_best(candidates, keyword, target_year)
             if best is not None:
-                item = self._fetch_detail(best.get("media_id")) or best
-                if "actors" not in (item or {}):
-                    origin = "index"
+                detail = self._fetch_detail(best.get("media_id"))
+                if detail:
+                    item = detail
+                else:
+                    # 详情页没抓到（风控 / 网络）时退回检索结果：至少给出 ID 与片名
+                    item = best
+                    origin = "search"
         if not item:
             return {
                 "success": False,
-                "message": "未命中（片名对不上或本地索引还没抓到这部）",
+                "message": "未命中（片名对不上，或站外索引还没收录这部）",
                 "record": None,
             }
         return {"success": True, "record": build_public_record(item, origin)}
 
+    def api_actor(self, actor_id: str = "", name: str = "") -> Dict[str, Any]:
+        """见 ``/actor``：给演员 ID 或姓名，回一份**纯 JSON** 演员档案。
 
-    def api_probe(self, keyword: str = "世子爷") -> Dict[str, Any]:
-        """连通性自检（供配置页排障用）。"""
+        其它插件调用本插件的演员数据有两条路（模块 docstring 里有例子）：
+
+        1. ``self.run_module("search_actors", name="魏依珂")`` 找演员，
+           ``self.run_module("actor_works", actor_id="371")`` 拿作品列表
+           —— 标准姿势，进程内、零序列化、返回纯 Python 列表；
+        2. 本 HTTP 接口 —— 返回纯 JSON，插件面板与外部脚本用的是同一条。
+
+        ``actor_id`` 优先（省一次搜索引擎往返）；只给姓名时先走站外索引换成 ID。
+        作品列表里的 ``media_id``（``org:<作品ID>``）可直接喂给本插件的识别接口。
+        """
+        return self.actor_profile(actor_id=actor_id, name=name)
+
+    def api_actor_search(self, name: str = "") -> Dict[str, Any]:
+        """按姓名试搜演员（供配置页排障 / 外部程序用）。"""
+        query = _clean(name)
+        if not query:
+            return {"success": False, "message": "缺少 name 参数", "candidates": []}
+        candidates = self._search_actors_via_web_index(query)
+        return {
+            "success": bool(candidates),
+            "name": query,
+            "count": len(candidates),
+            "candidates": [
+                {
+                    "actor_id": row.get("actor_id"),
+                    "media_id": row.get("media_id"),
+                    "name": row.get("name"),
+                    "score": row.get("_score"),
+                }
+                for row in candidates[:MAX_ACTOR_CANDIDATES]
+            ],
+        }
+
+    def api_probe(self, keyword: str = "魏依珂") -> Dict[str, Any]:
+        """连通性自检（供配置页排障用）。
+
+        ``keyword`` 是**演员名**（走站外索引 → 演员页），默认给一个实测有档案的演员，
+        这样这一段的 ``index_hits`` / ``detail.works`` 才有参考价值。
+        """
         report: Dict[str, Any] = {
             "enabled": self._enabled,
             "media_source": MEDIA_SOURCE_KEY,
             "domain": self._domain,
             "media_info_model": getattr(_HostMediaInfo, "__name__", None),
-            "browser_available": _launch_browser_context is not None,
+            "web_index": {
+                "available": _DDGS is not None,
+                "enabled": self._web_index_search,
+                "backend": self._web_index_backend,
+            },
         }
 
         robots = self._request(f"{self._domain}/robots.txt")
@@ -3102,15 +2637,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "disallow_search": "drama/search" in (getattr(robots, "text", "") or ""),
         }
 
-        catalog_html = self._fetch_catalog_page(1)
-        catalog_cards = parse_org_cards(catalog_html, self._domain) if catalog_html else []
-        report["catalog"] = {
-            "url": f"{self._domain}{CATALOG_PATH}",
-            "cards": len(catalog_cards),
-            "total_pages": parse_org_total_pages(catalog_html) if catalog_html else 0,
-            "sample": [card["title"] for card in catalog_cards[:5]],
-        }
-
+        # 榜单：既是探索页的内容来源，也是检索的第一级降级素材
         top_html, top_status = self._get(f"{self._domain}{TOP_PATH.format(key=DEFAULT_TOP_KEY)}")
         top_cards = parse_org_cards(top_html, self._domain) if top_html else []
         report["top"] = {
@@ -3120,8 +2647,9 @@ class ShortDramaBaikeSource(_PluginBase):
             "sample": [card["title"] for card in top_cards[:5]],
         }
 
-        if catalog_cards:
-            first = catalog_cards[0]["native_id"]
+        # 详情页：拿榜单第一条当样本（顺带验证演员阵容 / 剧照 / 集数都能解析）
+        if top_cards:
+            first = top_cards[0]["native_id"]
             detail = self._fetch_detail(f"org:{first}", use_cache=False)
             report["detail"] = {
                 "media_id": f"org:{first}",
@@ -3131,9 +2659,23 @@ class ShortDramaBaikeSource(_PluginBase):
                 "stills": len((detail or {}).get("stills") or []),
             }
 
-        report["ok"] = bool(report["catalog"]["cards"] or report["top"]["cards"])
-        report["quota"] = self._quota_state()
-        report["stats"] = dict(self._stats)
+        # 演员通道：先按姓名走站外索引，再抓第一个命中的演员页看作品数
+        actors = self._search_actors_via_web_index(_clean(keyword)) if self._web_index_search else []
+        report["actor"] = {
+            "keyword": _clean(keyword),
+            "index_hits": len(actors),
+            "sample": [row.get("name") for row in actors[:5]],
+        }
+        if actors:
+            profile = self._fetch_actor(actors[0]["actor_id"], use_cache=False)
+            report["actor"]["detail"] = {
+                "actor_id": actors[0]["actor_id"],
+                "name": (profile or {}).get("name"),
+                "works": len((profile or {}).get("works") or []),
+                "coactors": len((profile or {}).get("coactors") or []),
+            }
+
+        report["ok"] = bool(report["top"]["cards"] or report["actor"]["index_hits"])
         return report
 
     def api_search(self, keyword: str = "", year: str = "") -> Dict[str, Any]:
@@ -3146,7 +2688,6 @@ class ShortDramaBaikeSource(_PluginBase):
             "success": bool(candidates),
             "keyword": query,
             "count": len(candidates),
-            "indexed": len(self._index),
             "candidates": [
                 {
                     "media_id": candidate.get("media_id"),
@@ -3159,62 +2700,25 @@ class ShortDramaBaikeSource(_PluginBase):
             ],
         }
 
-    def api_index(self, pages: int = 0, reason: str = "manual") -> Dict[str, Any]:
-        """手动推进本地目录索引（配置页 / 外部脚本可用）。
-
-        ``pages`` 省略（或传 0）时用配置里的「每轮页数」。这里**不做上限放宽** ——
-        配额闸门在 ``_request`` 里，所以就算传了 200 页，撞到 403 也会立刻停手。
-        """
-        if not self.get_state():
-            return {"success": False, "message": "插件未启用"}
-        # ``pages or …``：0 / None 都视为「用配置值」，否则 _as_range 会把 0 钳成下限 1
-        wanted = self._as_range(
-            pages or self._index_pages_per_run,
-            self._index_pages_per_run,
-            1,
-            MAX_INDEX_PAGES_PER_RUN,
-        )
-        return self.build_index_step(pages=wanted, reason=reason)
-
     def api_status(self) -> Dict[str, Any]:
-        """查看索引与配额状态。"""
+        """查看榜单快照 / 站外索引 / 缓存状态。"""
+        with self._cache_lock:
+            cached_detail = len([key for key in self._cache if str(key).startswith("detail:")])
+            cached_actor = len([key for key in self._cache if str(key).startswith("actor:")])
         return {
             "enabled": self._enabled,
-            "indexed": len(self._index),
-            "index_state": dict(self._index_state),
             "top_lists": sorted(self._top_cache),
-            "quota": self._quota_state(),
-            "stats": dict(self._stats),
-            "browser_available": _launch_browser_context is not None,
-        }
-
-    def _bucket_state(self, bucket: str) -> Dict[str, Any]:
-        """单个限流池的可读状态。"""
-        now = time.time()
-        until = self._bucket_blocked_until(bucket)
-        return {
-            "cooling_down": until > now,
-            "remaining_seconds": max(0, int(until - now)),
-            "max_requests": self._bucket_limit(bucket),
-            "remaining_requests": self._quota_remaining(bucket),
-        }
-
-    def _quota_state(self) -> Dict[str, Any]:
-        """把配额闸门的内部状态整理成可读形式（目录页 / 宽松池分开报）。"""
-        now = time.time()
-        catalog_until = self._bucket_blocked_until(QUOTA_BUCKET_CATALOG)
-        return {
-            "window_minutes": self._quota_window_minutes,
-            "min_interval": self._min_interval,
-            "catalog": self._bucket_state(QUOTA_BUCKET_CATALOG),
-            "open": self._bucket_state(QUOTA_BUCKET_OPEN),
-            # 下面是兼容旧调用方的平铺字段，指向**目录页**（唯一会撞墙的那个池）
-            "cooling_down": catalog_until > now,
-            "remaining_seconds": max(0, int(catalog_until - now)),
-            "max_requests": self._bucket_limit(QUOTA_BUCKET_CATALOG),
-            "remaining_requests": self._quota_remaining(QUOTA_BUCKET_CATALOG),
-            "blocked_count": int(self._stats.get("blocked_count") or 0),
-            "ok_count": int(self._stats.get("ok_count") or 0),
+            "top_snapshot": self._top_snapshot_summary(),
+            "cache": {"detail": cached_detail, "actor": cached_actor},
+            "web_index": {
+                "available": _DDGS is not None,
+                "enabled": self._web_index_search,
+                "backend": self._web_index_backend,
+            },
+            "actor": {
+                "enabled": bool(self._enabled and self._web_index_search and _DDGS is not None),
+                "max_candidates": MAX_ACTOR_CANDIDATES,
+            },
         }
 
     # ── 内部工具 ──────────────────────────────────────────────────
@@ -3257,8 +2761,12 @@ class ShortDramaBaikeSource(_PluginBase):
         return best if best_score >= 40 else None
 
     @staticmethod
+    def _as_choice(value: Any, default: str, options: Tuple[str, ...]) -> str:
+        text = _clean(value).lower()
+        return text if text in options else default
+
+    @staticmethod
     def _as_bool(value: Any, default: bool) -> bool:
-        """把配置值稳健地转成布尔。"""
         if value is None:
             return default
         if isinstance(value, bool):
@@ -3269,18 +2777,8 @@ class ShortDramaBaikeSource(_PluginBase):
 
     @staticmethod
     def _as_range(value: Any, default: int, low: int, high: int) -> int:
-        """把配置值钳到闭区间内；非法值回落默认。"""
         try:
             number = int(str(value).strip())
-        except (TypeError, ValueError):
-            return default
-        return max(low, min(high, number))
-
-    @staticmethod
-    def _as_float(value: Any, default: float, low: float, high: float) -> float:
-        """把配置值钳到闭区间内（浮点版）；非法值回落默认。"""
-        try:
-            number = float(str(value).strip())
         except (TypeError, ValueError):
             return default
         return max(low, min(high, number))
@@ -3307,7 +2805,6 @@ class ShortDramaBaikeSource(_PluginBase):
 
     @staticmethod
     def _as_domain(value: Any, default: str) -> str:
-        """规范化站点域名配置（补协议、去尾斜杠）。"""
         text = _clean(value) or default
         if not text.startswith(("http://", "https://")):
             text = f"https://{text}"
