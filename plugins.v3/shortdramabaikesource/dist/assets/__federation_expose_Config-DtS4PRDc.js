@@ -142,7 +142,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       web_index_search: true,
       web_index_backend: "auto",
       proxy: false,
-      detail_facts: true,
+      detail_facts: false,
       follow_links: true
     };
     const FALLBACK_BACKENDS = ["auto", "duckduckgo", "yandex", "google", "brave", "mojeek"];
@@ -578,6 +578,6 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-72375673"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-332c2ac0"]]);
 
 export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };

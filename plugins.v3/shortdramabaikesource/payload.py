@@ -67,6 +67,16 @@ def build_detail_facts(item: Dict[str, Any]) -> str:
     episodes = item.get("episode_count")
     if isinstance(episodes, int) and episodes > 0:
         parts.append(f"全 {episodes} 集")
+    # ⚠️ 站点给的「时长」是**全集总时长**（《失控交易》77 集共 130 分钟），而宿主详情页
+    # 标题下方那行的 ``runtime`` 也会把这个数当「时长 N 分钟」印出来 —— 不点破的话
+    # 一律被当成单集时长。这里把两层都写出来，顺便给出折算的单集时长。
+    total = item.get("duration_minutes")
+    if isinstance(total, int) and total > 0:
+        each = item.get("episode_minutes")
+        parts.append(
+            f"全集 {total} 分钟"
+            + (f"（单集约 {each} 分钟）" if isinstance(each, int) and each > 0 else "")
+        )
     names = [
         _clean(actor.get("name"))
         for actor in (item.get("actors") or [])
@@ -174,6 +184,7 @@ PUBLIC_RECORD_FIELDS = (
     "backdrop",
     "episode_count",
     "duration_minutes",
+    "episode_minutes",
     "release_date",
     "rating",
     "heat",

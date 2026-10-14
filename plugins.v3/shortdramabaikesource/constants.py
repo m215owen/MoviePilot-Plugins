@@ -15,7 +15,7 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "2.1.1"
+PLUGIN_VERSION = "2.2.0"
 
 # ── 数据源契约 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
@@ -69,6 +69,11 @@ EXACT_TITLE_SCORE = 100
 # ``parser.href_points_to_simplified``）。引擎三到五成结果给的是繁体标题，不换掉就会
 # 跟简体关键词字面对不上、被当无关候选丢掉；补抓有 TTL 缓存，之后识别零成本。
 DISCOVER_TITLE_ENRICH_LIMIT = 3
+# 演员档案里的作品条目是**卡片摘要**：题材标签只印 1~3 个（实测《失控交易》卡片上只有
+# 「爱情」，详情页有 5 个），也没有版权方 / 简介。要这些只能抓详情页 —— 一个演员动辄
+# 几十部作品，全抓一遍既不现实也容易撞风控，所以 ``enrich`` 只补前 N 部（有 TTL 缓存，
+# 补过的不会重复请求）。面板上是**按需**补（点哪部补哪部），不走这个上限。
+ACTOR_WORKS_ENRICH_LIMIT = 10
 # 自检（/probe）在「检索没命中」时用来兜底的详情样本：实测存在且字段完整的作品
 PROBE_SAMPLE_MEDIA_ID = "org:45982"
 

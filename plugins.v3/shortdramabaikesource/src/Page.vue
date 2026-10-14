@@ -518,10 +518,10 @@
                     />
                     <div class="flex-grow-1" style="min-width: 0">
                       <div class="text-body-2 sdbs-work-title">{{ work.title || '（无标题）' }}</div>
-                      <div class="text-caption sdbs-dim mt-1">{{ workMeta(work) }}</div>
-                      <div v-if="work.tags?.length" class="mt-1">
+                      <div class="text-caption sdbs-dim mt-1">{{ workMeta(workView(index)) }}</div>
+                      <div v-if="workTags(index, work).length" class="mt-1">
                         <v-chip
-                          v-for="tag in work.tags.slice(0, 3)"
+                          v-for="tag in workTags(index, work)"
                           :key="tag"
                           size="x-small"
                           variant="tonal"
@@ -544,12 +544,24 @@
                     >
                       站点
                     </v-btn>
+                    <v-btn
+                      size="x-small"
+                      variant="text"
+                      :loading="workLoadingIndex === index"
+                      :disabled="Boolean(workFull[index])"
+                      :title="workFull[index]
+                        ? '已按详情页补全（完整标签 / 首播 / 版权方 / 时长）'
+                        : '演员页卡片是摘要（标签只印 1~3 个、没有版权方），抓一次详情页补全'"
+                      @click="loadWorkDetail(index)"
+                    >
+                      {{ workFull[index] ? '已补全' : '完整信息' }}
+                    </v-btn>
                     <v-spacer />
                     <v-btn size="x-small" variant="text" @click="toggleWorkRaw(index)">
                       {{ openWorks.has(index) ? '收起' : '原始数据' }}
                     </v-btn>
                   </div>
-                  <pre v-if="openWorks.has(index)" class="sdbs-pre mt-1">{{ pretty(work) }}</pre>
+                  <pre v-if="openWorks.has(index)" class="sdbs-pre mt-1">{{ pretty(workView(index)) }}</pre>
                 </v-card>
               </v-col>
             </v-row>
@@ -663,6 +675,17 @@ const actorRawOpen = ref(false)
 const actorLoadingId = ref('')
 /** 已展开原始数据的作品下标（作品可能几十部，逐个展开比一次全铺清爽） */
 const openWorks = ref(new Set<number>())
+/**
+ * 作品墙里**已补全**的作品（下标 → 完整记录）。
+ *
+ * ⚠️ 演员页的卡片是**摘要视图**：站点在卡片上只印 1~3 个题材标签（实测《失控交易》
+ * 卡片上只有「爱情」，而它详情页有 5 个），完整标签只有详情页的 JSON-LD 里才有。
+ * 一个演员动辄几十部作品，一次性全抓既不现实也容易撞风控 —— 所以这里按需补：
+ * 点卡片上的「完整标签」才抓这一部的详情页，抓到就整条替换进卡片。
+ */
+const workFull = ref<Record<number, MediaRecord>>({})
+/** 正在补全的作品下标（按钮 loading 态） */
+const workLoadingIndex = ref<number | null>(null)
 
 // ── URL 库（插件自有数据库） ──
 const libraryOpen = ref(false)
@@ -706,8 +729,17 @@ const titleMeta = computed(() => {
   if (!record) return ''
   const parts: string[] = []
   if (record.year) parts.push(record.year)
+  if (record.release_date) parts.push(`首播 ${record.release_date}`)
   if (record.episode_count) parts.push(`共 ${record.episode_count} 集`)
-  if (record.duration_minutes) parts.push(`单集 ${record.duration_minutes} 分钟`)
+  // ⚠️ 站点给的「时长」是**全集总时长**（77 集共 130 分钟那种），不是单集时长；
+  // 旧版把它标成「单集 N 分钟」是错的。单集时长由后端按集数折算给出。
+  if (record.duration_minutes) {
+    parts.push(
+      `全集 ${record.duration_minutes} 分钟`
+      + (record.episode_minutes ? `（单集约 ${record.episode_minutes} 分钟）` : ''),
+    )
+  }
+  if (record.studio) parts.push(record.studio)
   if (record.kind) parts.push(record.kind)
   if (record.rating) parts.push(`评分 ${record.rating}`)
   if (record.heat) parts.push(`热度 ${formatCount(record.heat)}`)
@@ -749,7 +781,13 @@ const hasResult = computed(() => hasTitlePanel.value || hasActorPanel.value)
 function workMeta(work: WorkItem): string {
   const parts: string[] = []
   if (work.kind) parts.push(work.kind)
+  if (work.release_date) parts.push(`首播 ${work.release_date}`)
   if (work.episode_count) parts.push(`${work.episode_count} 集`)
+  // 站点给的「时长」是**全集**总时长，不点破会被当成单集时长
+  if (work.duration_minutes) {
+    parts.push(`全集 ${work.duration_minutes} 分钟` + (work.episode_minutes ? `（单集约 ${work.episode_minutes} 分钟）` : ''))
+  }
+  if (work.studio) parts.push(work.studio)
   if (work.rating) parts.push(`评分 ${work.rating}`)
   if (work.heat) parts.push(`热度 ${formatCount(work.heat)}`)
   if (work.play_count) parts.push(`播放 ${formatCount(work.play_count)}`)
@@ -864,6 +902,8 @@ function resetActor(): void {
   actorRawOpen.value = false
   actorLoadingId.value = ''
   openWorks.value = new Set<number>()
+  workFull.value = {}
+  workLoadingIndex.value = null
 }
 
 async function pickActor(candidate: ActorCandidate): Promise<void> {
@@ -891,6 +931,48 @@ function clearAll(): void {
   hint.value = ''
   resetTitle()
   resetActor()
+}
+
+/**
+ * 卡片上真正用来渲染的那条记录：补全过就用完整记录，否则用演员页卡片的摘要。
+ *
+ * 两者字段一致（都出自同一套解析），只是完整记录多出标签 / 简介 / 剧照这些
+ * 详情页才有的内容。
+ */
+function workView(index: number): WorkItem {
+  const works = actorProfile.value?.works || []
+  return (workFull.value[index] as WorkItem | undefined) ?? works[index] ?? {}
+}
+
+/**
+ * 卡片上的标签：补全过就全给，没补全时**照旧只给卡片上那 1~3 个**。
+ *
+ * 卡片印多少就是多少，不补齐也不假装 —— 摘要里没有的东西不能凭空造。
+ */
+function workTags(index: number, work: WorkItem): string[] {
+  const tags = (workFull.value[index]?.tags ?? work.tags) || []
+  return workFull.value[index] ? tags : tags.slice(0, 3)
+}
+
+/**
+ * 抓一部作品的详情页，把卡片补成完整记录（按需，一部一次请求）。
+ *
+ * 演员页的作品卡只印 1~3 个题材标签（《失控交易》只有「爱情」，详情页却有 5 个），
+ * 一个演员几十部作品全抓一遍既不现实也容易撞站点风控 —— 所以交给用户点。
+ */
+async function loadWorkDetail(index: number): Promise<void> {
+  const api = resolveApi(props)
+  const work = (actorProfile.value?.works || [])[index]
+  if (!api || !work?.media_id || workFull.value[index]) return
+  workLoadingIndex.value = index
+  try {
+    const report = await recognizeTitle(api, { media_id: work.media_id })
+    if (report?.success && report.record) {
+      workFull.value = { ...workFull.value, [index]: report.record }
+    }
+  } finally {
+    workLoadingIndex.value = null
+  }
 }
 
 function toggleWorkRaw(index: number): void {

@@ -323,6 +323,9 @@ _ORG_TAG_RE = re.compile(r'<span class="inline-block rounded bg-blue-100[^"]*">\
 # 「11721万热度/648万播放」——两个数各自独立，播放数可能缺省
 _ORG_HEAT_RE = re.compile(r"(?P<value>[\d.]+\s*[万亿]?)\s*热度")
 _ORG_PLAYS_RE = re.compile(r"(?P<value>[\d.]+\s*[万亿]?)\s*播放")
+# 卡片上的首播日期：演员页 / 榜单页的卡片都印这一行（「首播： 2026-09-19」），
+# 而作品条目此前只有集数与评分 —— 首播时间是短剧区分同名版本的重要判据之一。
+_ORG_CARD_RELEASE_RE = re.compile(r"首播\s*[：:]\s*(?P<date>\d{4}-\d{2}-\d{2})")
 # 站点的 ``genre`` 里混着集数说明（实测「家庭」「女性成长」后面跟着「全72集」），
 # 它不是类型标签，直接丢掉 —— 否则详情页的类型行会显示成「… | 全72集」。
 _ORG_COUNT_TAG_RE = re.compile(r"^(?:全|共|更新至|已更新至)?\s*\d+\s*集$")
@@ -436,10 +439,13 @@ def parse_org_cards(html: str, domain: str = ORG_DEFAULT_DOMAIN) -> List[Dict[st
 
 
 def _parse_org_card_extras(region: str) -> Dict[str, Any]:
-    """从**整张卡**的 HTML 里取「真人/AI、状态、评分、集数、系列季、热度、播放、标签」。
+    """从**整张卡**的 HTML 里取「真人/AI、状态、评分、集数、首播、系列季、热度、播放、标签」。
 
     这些字段是**锦上添花**：站点在不同版式下渲染的字段并不一致（榜单页就没有），
     所以每个字段都独立判空，取不到就整条不带，绝不让缺失变成异常。
+
+    ⚠️ 卡片印的题材标签是**摘要**（只印 1~3 个，实测《失控交易》卡片上只有「爱情」，
+    而它详情页有 5 个），卡片上也没有**版权方** —— 这两样只有详情页才有。
     """
     extras: Dict[str, Any] = {}
     if not region:
@@ -462,6 +468,13 @@ def _parse_org_card_extras(region: str) -> Dict[str, Any]:
     episodes = _ORG_EPISODES_RE.search(region)
     if episodes:
         extras["episode_count"] = int(episodes.group("count"))
+
+    release = _ORG_CARD_RELEASE_RE.search(region)
+    if release:
+        extras["release_date"] = _clean(release.group("date"))
+        year = _parse_year(extras["release_date"])
+        if year:
+            extras["year"] = year
 
     series = _ORG_SERIES_RE.search(region)
     if series and _clean(series.group("series")):
@@ -743,6 +756,9 @@ def parse_org_detail(html: str, native_id: str, domain: str = ORG_DEFAULT_DOMAIN
     data["poster"] = cover
 
     data["episode_count"] = _parse_int(series.get("numberOfEpisodes"))
+    # ⚠️ 站点给的 ``duration`` 是**全集总时长**，不是单集时长（实测《失控交易》
+    # ``"PT2H10M10S"`` = 130 分钟 / 77 集，页面上写的「时长 2小时10分」也是全集）。
+    # 单集时长由下面按集数折算，两个字段都给，消费方按自己要什么取。
     data["duration_minutes"] = _parse_duration_minutes(series.get("duration"))
 
     published = _clean(series.get("datePublished"))
@@ -786,6 +802,12 @@ def parse_org_detail(html: str, native_id: str, domain: str = ORG_DEFAULT_DOMAIN
             data["studio"] = value
         elif label in ("类型", "标签") and not data.get("tags"):
             data["tags"] = _clean_tags(re.split(r"[，,、/\s]+", value))
+
+    # 单集时长 = 全集总时长 ÷ 集数（站点只给全集，短剧每集 1~3 分钟，折算值够用）
+    episodes = data.get("episode_count")
+    total = data.get("duration_minutes")
+    if isinstance(episodes, int) and episodes > 0 and isinstance(total, int) and total > 0:
+        data["episode_minutes"] = max(1, round(total / episodes))
 
     # 播放 / 收藏 / 评分（JSON-LD 里没有）
     for match in _ORG_STAT_RE.finditer(source):

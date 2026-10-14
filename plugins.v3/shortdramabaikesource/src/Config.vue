@@ -189,7 +189,7 @@ const DEFAULTS: PluginConfig = {
   web_index_search: true,
   web_index_backend: 'auto',
   proxy: false,
-  detail_facts: true,
+  detail_facts: false,
   follow_links: true,
 }
 

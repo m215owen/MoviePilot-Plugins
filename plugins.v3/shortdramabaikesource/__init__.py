@@ -65,6 +65,7 @@ from app.sdk.plugin import _PluginBase
 from .constants import (
     ACTOR_ID_PREFIX,
     ACTOR_PATH,
+    ACTOR_WORKS_ENRICH_LIMIT,
     DEFAULT_CACHE_TTL,
     DEFAULT_TIMEOUT,
     DEFAULT_WEB_INDEX_BACKEND,
@@ -90,6 +91,7 @@ from .constants import (
 from .discover import WebIndex, extract_urls
 from .parser import (
     _clean,
+    _has_value,
     _match_title,
     _normalize_image,
     _normalize_title,
@@ -164,7 +166,9 @@ class ShortDramaBaikeSource(_PluginBase):
     _web_index_search: bool = True
     _web_index_backend: str = DEFAULT_WEB_INDEX_BACKEND
     _proxy: bool = False
-    _detail_facts: bool = True
+    # 宿主媒体详情页的「摘要行」（tagline：评分/集数/主演/时长拼一行）—— **默认关**：
+    # 那一行文案用户明确说不要（2026-10-15），要主演信息的再手动打开
+    _detail_facts: bool = False
     # 解析页面时顺带把页面里的演员 / 作品链接写进 URL 库
     _follow_links: bool = True
 
@@ -197,7 +201,7 @@ class ShortDramaBaikeSource(_PluginBase):
             config.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
         )
         self._proxy = bool(config.get("proxy"))
-        self._detail_facts = self._as_bool(config.get("detail_facts"), True)
+        self._detail_facts = self._as_bool(config.get("detail_facts"), False)
         self._follow_links = self._as_bool(config.get("follow_links"), True)
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定（它们是类属性）。
@@ -1079,11 +1083,57 @@ class ShortDramaBaikeSource(_PluginBase):
             return None
         return self._fetch_actor(native_id, url)
 
+    def _enrich_works(
+        self,
+        profile: Dict[str, Any],
+        limit: int = ACTOR_WORKS_ENRICH_LIMIT,
+    ) -> int:
+        """给演员档案里的作品条目**补详情页字段**，返回补了几部。
+
+        演员页卡片是摘要：题材标签只印 1~3 个、没有版权方、没有简介与剧照。要这些
+        只能抓详情页 —— 一个演员动辄几十部作品（实测曹天恺 42 部），全抓一遍既不现实
+        也容易撞站点风控，所以限量补前 ``limit`` 部；详情有 TTL 缓存，补过的零成本。
+
+        只覆盖**详情页才有**的字段，卡片上已有的（片名 / 海报 / 集数 / 评分 / 热度）
+        保持不动 —— 补抓是为了补齐，不是为了改写。
+        """
+        works = profile.get("works") or []
+        if not isinstance(works, list) or limit <= 0:
+            return 0
+        fields = (
+            "tags", "studio", "release_date", "year", "episode_count",
+            "duration_minutes", "episode_minutes", "overview", "backdrop",
+        )
+        filled = 0
+        for work in works[:limit]:
+            if not isinstance(work, dict):
+                continue
+            native_id = _clean(work.get("native_id"))
+            if not native_id:
+                continue
+            detail = self._fetch_detail(native_id, _clean(work.get("url")))
+            if not detail:
+                continue
+            for field in fields:
+                if _has_value(detail.get(field)):
+                    work[field] = detail[field]
+            filled += 1
+        if filled:
+            logger.info(
+                f"{PLUGIN_NAME} 演员「{profile.get('name') or '?'}」作品补全 {filled} 部"
+                f"（共 {len(works)} 部，上限 {limit}）：补上完整标签 / 首播 / 版权方 / 时长"
+            )
+        return filled
+
     def actor_works(self, actor_id: str = "", name: str = "", **kwargs: Any) -> List[Dict[str, Any]]:
         """查一位演员参演的全部作品（**跨插件调用的主入口**）。
 
         ``actor_works(actor_id="371")`` 最省事（库里直接有 URL，零引擎请求）；
         只有姓名时先解析出 ID 再抓演员页。
+
+        ``enrich=True`` 时给作品条目补抓详情页（完整标签 / 首播 / 版权方 / 时长），
+        最多补 ``ACTOR_WORKS_ENRICH_LIMIT`` 部 —— 默认**不补**：跨插件批量调用不该
+        为了几个标签搭上几十次请求。
         """
         if not self._enabled:
             return []
@@ -1094,6 +1144,8 @@ class ShortDramaBaikeSource(_PluginBase):
                 f" 姓名={_clean(name) or '-'}"
             )
             return []
+        if kwargs.get("enrich"):
+            self._enrich_works(profile)
         works = [dict(work) for work in (profile.get("works") or [])]
         logger.debug(
             f"{PLUGIN_NAME} 演员「{profile.get('name')}」（{profile.get('actor_id') or _clean(actor_id)}）"
@@ -1104,13 +1156,21 @@ class ShortDramaBaikeSource(_PluginBase):
     async def async_actor_works(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self.actor_works, *args, **kwargs)
 
-    def actor_profile(self, actor_id: str = "", name: str = "") -> Dict[str, Any]:
-        """取演员完整档案（含全部作品与合作演员）—— 纯 JSON，供外部消费。"""
+    def actor_profile(
+        self, actor_id: str = "", name: str = "", enrich: bool = False
+    ) -> Dict[str, Any]:
+        """取演员完整档案（含全部作品与合作演员）—— 纯 JSON，供外部消费。
+
+        ``enrich=True`` 时给作品条目补抓详情页（完整标签 / 首播 / 版权方 / 时长），
+        最多补 ``ACTOR_WORKS_ENRICH_LIMIT`` 部。
+        """
         if not self._enabled:
             return {}
         profile = self._resolve_actor(actor_id=actor_id, name=name)
         if not profile:
             return {}
+        if enrich:
+            self._enrich_works(profile)
         return build_public_actor(profile)
 
     # ── HTTP 接口 ─────────────────────────────────────────────────
@@ -1286,11 +1346,20 @@ class ShortDramaBaikeSource(_PluginBase):
             return {"success": False, "message": "没找到对应作品", "record": None}
         return {"success": True, "record": build_public_record(record, origin="detail")}
 
-    def api_actor(self, actor_id: str = "", name: str = "") -> Dict[str, Any]:
-        """``GET /actor`` —— 演员出口（纯 JSON，含全部作品与合作演员）。"""
+    def api_actor(self, actor_id: str = "", name: str = "", enrich: str = "") -> Dict[str, Any]:
+        """``GET /actor`` —— 演员出口（纯 JSON，含全部作品与合作演员）。
+
+        ``enrich=1`` 时给作品条目补抓详情页（完整标签 / 首播 / 版权方 / 时长），最多补
+        ``ACTOR_WORKS_ENRICH_LIMIT`` 部 —— 面板上是按需补（点哪部补哪部），这个参数
+        给外部脚本一次性拿全用。
+        """
         if not _clean(actor_id) and not _clean(name):
             return {"success": False, "message": "需要 actor_id 或 name 之一", "actor": None}
-        profile = self.actor_profile(actor_id=_clean(actor_id), name=_clean(name))
+        profile = self.actor_profile(
+            actor_id=_clean(actor_id),
+            name=_clean(name),
+            enrich=_clean(enrich).lower() in ("1", "true", "yes", "on"),
+        )
         if not profile:
             return {"success": False, "message": "没找到该演员", "actor": None}
         return {"success": True, "actor": profile}
@@ -1417,7 +1486,7 @@ class ShortDramaBaikeSource(_PluginBase):
                 merged.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
             ),
             "proxy": bool(merged.get("proxy")),
-            "detail_facts": self._as_bool(merged.get("detail_facts"), True),
+            "detail_facts": self._as_bool(merged.get("detail_facts"), False),
             "follow_links": self._as_bool(merged.get("follow_links"), True),
         }
         self.update_config(normalized)
@@ -1496,7 +1565,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_search": True,
             "web_index_backend": DEFAULT_WEB_INDEX_BACKEND,
             "proxy": False,
-            "detail_facts": True,
+            "detail_facts": False,
             "follow_links": True,
         }
 

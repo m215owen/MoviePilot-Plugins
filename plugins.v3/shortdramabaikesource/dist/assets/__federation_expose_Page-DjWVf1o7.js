@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import Config, { p as proxyImage, r as resolveApi, f as fetchStatus, a as fetchConfig, s as saveConfig, l as lookupKeyword, b as recognizeTitle, c as fetchActor, d as fetchUrls, e as clearUrls, _ as _export_sfc } from './__federation_expose_Config-C7yMZ37G.js';
+import Config, { p as proxyImage, r as resolveApi, f as fetchStatus, a as fetchConfig, s as saveConfig, l as lookupKeyword, b as recognizeTitle, c as fetchActor, d as fetchUrls, e as clearUrls, _ as _export_sfc } from './__federation_expose_Config-DtS4PRDc.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -160,6 +160,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     const actorRawOpen = ref(false);
     const actorLoadingId = ref("");
     const openWorks = ref(/* @__PURE__ */ new Set());
+    const workFull = ref({});
+    const workLoadingIndex = ref(null);
     const libraryOpen = ref(false);
     const libraryLoading = ref(false);
     const libraryKeyword = ref("");
@@ -193,8 +195,14 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       if (!record) return "";
       const parts = [];
       if (record.year) parts.push(record.year);
+      if (record.release_date) parts.push(`首播 ${record.release_date}`);
       if (record.episode_count) parts.push(`共 ${record.episode_count} 集`);
-      if (record.duration_minutes) parts.push(`单集 ${record.duration_minutes} 分钟`);
+      if (record.duration_minutes) {
+        parts.push(
+          `全集 ${record.duration_minutes} 分钟` + (record.episode_minutes ? `（单集约 ${record.episode_minutes} 分钟）` : "")
+        );
+      }
+      if (record.studio) parts.push(record.studio);
       if (record.kind) parts.push(record.kind);
       if (record.rating) parts.push(`评分 ${record.rating}`);
       if (record.heat) parts.push(`热度 ${formatCount(record.heat)}`);
@@ -228,7 +236,12 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     function workMeta(work) {
       const parts = [];
       if (work.kind) parts.push(work.kind);
+      if (work.release_date) parts.push(`首播 ${work.release_date}`);
       if (work.episode_count) parts.push(`${work.episode_count} 集`);
+      if (work.duration_minutes) {
+        parts.push(`全集 ${work.duration_minutes} 分钟` + (work.episode_minutes ? `（单集约 ${work.episode_minutes} 分钟）` : ""));
+      }
+      if (work.studio) parts.push(work.studio);
       if (work.rating) parts.push(`评分 ${work.rating}`);
       if (work.heat) parts.push(`热度 ${formatCount(work.heat)}`);
       if (work.play_count) parts.push(`播放 ${formatCount(work.play_count)}`);
@@ -327,6 +340,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       actorRawOpen.value = false;
       actorLoadingId.value = "";
       openWorks.value = /* @__PURE__ */ new Set();
+      workFull.value = {};
+      workLoadingIndex.value = null;
     }
     async function pickActor(candidate) {
       const api = resolveApi(props);
@@ -351,6 +366,28 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       hint.value = "";
       resetTitle();
       resetActor();
+    }
+    function workView(index) {
+      const works = actorProfile.value?.works || [];
+      return workFull.value[index] ?? works[index] ?? {};
+    }
+    function workTags(index, work) {
+      const tags = (workFull.value[index]?.tags ?? work.tags) || [];
+      return workFull.value[index] ? tags : tags.slice(0, 3);
+    }
+    async function loadWorkDetail(index) {
+      const api = resolveApi(props);
+      const work = (actorProfile.value?.works || [])[index];
+      if (!api || !work?.media_id || workFull.value[index]) return;
+      workLoadingIndex.value = index;
+      try {
+        const report = await recognizeTitle(api, { media_id: work.media_id });
+        if (report?.success && report.record) {
+          workFull.value = { ...workFull.value, [index]: report.record };
+        }
+      } finally {
+        workLoadingIndex.value = null;
+      }
     }
     function toggleWorkRaw(index) {
       const next = new Set(openWorks.value);
@@ -1283,9 +1320,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                                       }, null, 8, ["src"]),
                                       _createElementVNode("div", _hoisted_39, [
                                         _createElementVNode("div", _hoisted_40, _toDisplayString(work.title || "（无标题）"), 1),
-                                        _createElementVNode("div", _hoisted_41, _toDisplayString(workMeta(work)), 1),
-                                        work.tags?.length ? (_openBlock(), _createElementBlock("div", _hoisted_42, [
-                                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(work.tags.slice(0, 3), (tag) => {
+                                        _createElementVNode("div", _hoisted_41, _toDisplayString(workMeta(workView(index))), 1),
+                                        workTags(index, work).length ? (_openBlock(), _createElementBlock("div", _hoisted_42, [
+                                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(workTags(index, work), (tag) => {
                                             return _openBlock(), _createBlock(_component_v_chip, {
                                               key: tag,
                                               size: "x-small",
@@ -1316,6 +1353,19 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                                         ])]),
                                         _: 1
                                       }, 8, ["href"])) : _createCommentVNode("", true),
+                                      _createVNode(_component_v_btn, {
+                                        size: "x-small",
+                                        variant: "text",
+                                        loading: workLoadingIndex.value === index,
+                                        disabled: Boolean(workFull.value[index]),
+                                        title: workFull.value[index] ? "已按详情页补全（完整标签 / 首播 / 版权方 / 时长）" : "演员页卡片是摘要（标签只印 1~3 个、没有版权方），抓一次详情页补全",
+                                        onClick: ($event) => loadWorkDetail(index)
+                                      }, {
+                                        default: _withCtx(() => [
+                                          _createTextVNode(_toDisplayString(workFull.value[index] ? "已补全" : "完整信息"), 1)
+                                        ]),
+                                        _: 2
+                                      }, 1032, ["loading", "disabled", "title", "onClick"]),
                                       _createVNode(_component_v_spacer),
                                       _createVNode(_component_v_btn, {
                                         size: "x-small",
@@ -1328,7 +1378,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                                         _: 2
                                       }, 1032, ["onClick"])
                                     ]),
-                                    openWorks.value.has(index) ? (_openBlock(), _createElementBlock("pre", _hoisted_44, _toDisplayString(pretty(work)), 1)) : _createCommentVNode("", true)
+                                    openWorks.value.has(index) ? (_openBlock(), _createElementBlock("pre", _hoisted_44, _toDisplayString(pretty(workView(index))), 1)) : _createCommentVNode("", true)
                                   ]),
                                   _: 2
                                 }, 1024)
@@ -1382,6 +1432,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-4f54462e"]]);
+const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-0eebfbcd"]]);
 
 export { Page as default };

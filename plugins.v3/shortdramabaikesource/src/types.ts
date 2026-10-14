@@ -26,7 +26,10 @@ export interface MediaRecord {
   poster?: string
   backdrop?: string
   episode_count?: number
+  /** ⚠️ **全集总时长**（站点给的「时长」就是全集，不是单集） */
   duration_minutes?: number
+  /** 单集时长 = 全集时长 ÷ 集数（短剧每集 1~3 分钟，折算值够用） */
+  episode_minutes?: number
   release_date?: string
   rating?: number
   /** 站点自己的热度指标（「354万 热度」已还原成 3540000） */
@@ -66,7 +69,18 @@ export interface WorkItem {
   url?: string
   kind?: string
   episode_count?: number
+  /** ⚠️ **全集总时长**（只有补全过详情页才有） */
+  duration_minutes?: number
+  episode_minutes?: number
+  release_date?: string
+  year?: string
+  studio?: string
+  overview?: string
   rating?: number
+  /**
+   * 卡片上印的题材标签是**摘要**（只印 1~3 个），完整标签要抓详情页才有
+   * —— 点卡片上的「完整信息」按需补。
+   */
   tags?: string[]
   heat?: number
   play_count?: number
