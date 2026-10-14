@@ -122,7 +122,7 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "1.8.0"
+PLUGIN_VERSION = "1.8.1"
 
 # ── 数据源常量 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
@@ -780,10 +780,15 @@ def parse_org_detail(html: str, native_id: str, domain: str = ORG_DEFAULT_DOMAIN
     data: Dict[str, Any] = {
         "media_id": f"org:{native_id}",
         "native_id": native_id,
+        # 兜底地址：只在页面自己没声明 url 时使用（见下方 JSON-LD 覆写）
         "url": f"{domain.rstrip('/')}/zh-Hans/drama/{native_id}",
     }
 
     series, page = _org_json_ld(source)
+
+    # JSON-LD 里就有这条页面的规范地址（实测 TVSeries 的 ``url``，带 zh-Hans / zh-Hant
+    # 语言前缀）—— 有就用它，别拿 ID 拼一个出来。
+    data["url"] = _clean(series.get("url") or page.get("url")) or data["url"]
 
     data["title"] = _clean(series.get("name") or page.get("name"))
     if not data["title"]:
@@ -1619,6 +1624,10 @@ class ShortDramaBaikeSource(_PluginBase):
         只认 ``/drama/<数字>`` 形态的 URL —— 结果里混着演员页（``/actor/371``）、
         图集页（``/drama/37508/photos``）与外站域名，它们都拿不到作品 ID，一律剔除。
 
+        ``url`` 直接用**引擎返回的那条完整地址**（``row["href"]``，实测 ddgs 的每行就是
+        ``title`` / ``href`` / ``body``，``href`` 即详情页 URL），不再拿 ID 反向拼一个
+        —— 引擎给的地址是什么语言前缀就是什么，别自作主张改写。
+
         :param rows: 已经取回的原始检索结果（``api_lookup`` 一次检索要同时喂给作品与
             演员两条解析路，避免为此多打一次引擎）；为 None 时自己查一次。
         """
@@ -1626,7 +1635,8 @@ class ShortDramaBaikeSource(_PluginBase):
         results: List[Dict[str, Any]] = []
         seen: set = set()
         for row in (self._site_search(query) if rows is None else rows):
-            native_id = _web_index_native_id(row.get("href") or "", host)
+            href = _clean(row.get("href") or row.get("url") or "")
+            native_id = _web_index_native_id(href, host)
             title = row.get("title") or ""
             if not native_id or not title or native_id in seen:
                 continue
@@ -1636,6 +1646,7 @@ class ShortDramaBaikeSource(_PluginBase):
                     "native_id": native_id,
                     "title": title,
                     "media_id": f"org:{native_id}",
+                    "url": href,
                     "source": "web_index",
                 }
             )
@@ -1656,13 +1667,16 @@ class ShortDramaBaikeSource(_PluginBase):
         **按名字再筛一遍**：只有 ``_match_title`` 给分 > 0 的才留下，且按分排序
         —— 调用方取第一条就是最像的那个。
 
+        同 ``_search_via_web_index``：``url`` 就是引擎返回的 ``href`` 原样带出。
+
         :param rows: 同 ``_search_via_web_index``：可复用一次检索的原始结果。
         """
         host = self._domain_host()
         results: List[Dict[str, Any]] = []
         seen: set = set()
         for row in (self._site_search(name) if rows is None else rows):
-            actor_id = _web_index_actor_id(row.get("href") or "", host)
+            href = _clean(row.get("href") or row.get("url") or "")
+            actor_id = _web_index_actor_id(href, host)
             actor_name = row.get("title") or ""
             if not actor_id or not actor_name or actor_id in seen:
                 continue
@@ -1675,7 +1689,7 @@ class ShortDramaBaikeSource(_PluginBase):
                     "actor_id": actor_id,
                     "name": actor_name,
                     "media_id": f"{ACTOR_ID_PREFIX}:{actor_id}",
-                    "url": f"{self._domain}{ACTOR_PATH.format(id=actor_id)}",
+                    "url": href,
                     "source": "web_index",
                     "_score": score,
                 }
