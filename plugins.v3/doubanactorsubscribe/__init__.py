@@ -211,6 +211,10 @@ _STALE_IDENTITY_FIELDS = (
 # ``_prune_orphan_cache``）。注意 ``key`` 不在其中 —— 它只是键名的副本，不是状态。
 _CACHE_MEANINGFUL_FIELDS = ("id", "joined_at", "baseline_at")
 
+# 换源（豆瓣 → TMDB）时被彻底删掉的配置键。已落库的旧值没有代码会读，但面板上也看不到、
+# 删不掉，只能靠 ``_drop_legacy_config_keys`` 收尾（见 ``api_update_config`` 的同名兜底）。
+_LEGACY_CONFIG_KEYS = ("douban_cookie",)
+
 
 def _media_server_oper() -> Any:
     """惰性构造宿主的媒体库查询对象（``MediaServerOper``）。
@@ -622,6 +626,9 @@ class DoubanActorSubscribe(_PluginBase):
                 cfg["onlyonce"] = False
                 self.update_config(cfg)
 
+        # 清掉换源后已彻底删除的配置键（就地改 cfg，后面若还有写回也带上干净版本）
+        self._drop_legacy_config_keys(cfg)
+
         # 演员列表变更，或尚无任何快照数据时，短延迟后自动补一次刷新，
         # 让面板不必等到下一个 cron 周期才更新。
         need_refresh = actors_changed or not self._load_works()
@@ -749,6 +756,34 @@ class DoubanActorSubscribe(_PluginBase):
         self.save_data(self._DATA_ACTORS, kept)
         logger.info(f"{self.plugin_name} 清理了解析缓存里 {removed} 条已无任何信息的空壳条目")
         return removed
+
+    def _drop_legacy_config_keys(self, cfg: Dict[str, Any]) -> None:
+        """把换源后已经没有代码读取的旧配置键从 ``config_data`` 里摘掉。
+
+        删掉整套 Cookie 逻辑时，用户库里那份配置还留着 ``"douban_cookie": ""``。
+        它既不读也不影响功能，但面板上同样看不到、删不掉（表单里已经没有这个字段了），
+        只能在这里收尾。**就地修改传入的 ``cfg``** —— 这样本次初始化后续若有写回
+        （例如 ``onlyonce`` 分支）也会带上干净版本，不会把旧键又写回去。
+
+        写回一次即收敛：下次初始化时该键已不存在，直接返回，不会每次加载都触发宿主
+        reconcile。
+
+        :param cfg: ``init_plugin`` 收到的配置字典（会被就地修改）
+        """
+        present = [key for key in _LEGACY_CONFIG_KEYS if key in cfg]
+        if not present:
+            return
+        for key in present:
+            cfg.pop(key, None)
+        try:
+            ok = self.update_config(cfg)
+        except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+            logger.debug(f"{self.plugin_name} 清理失效配置键时跳过：{err}")
+            return
+        if ok is False:
+            logger.warning(f"{self.plugin_name} 清理失效配置键失败，下次保存配置时会自动去掉")
+            return
+        logger.info(f"{self.plugin_name} 已清理配置里失效的旧字段：{'、'.join(present)}")
 
     def _drop_stale_snapshot(self) -> None:
         """丢弃已不再属于配置的演员快照。
