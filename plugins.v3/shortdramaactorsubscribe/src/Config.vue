@@ -175,10 +175,11 @@
             density="compact"
           />
           <div class="text-caption sdas-dim">
-            默认<b>开启</b>：经跨插件通道调用 ShortDramaBaikeSource，按演员名在
-            duanjubaike.org 取全部参演作品（短剧覆盖比 TMDB/豆瓣全得多）。
+            默认<b>开启</b>：作品墙<b>只展示短剧百科（duanjubaike.org）里有的作品</b>
+            —— 短剧百科的数据 TMDB/豆瓣不一定有，展示必须全在百科。
+            经跨插件通道调用 ShortDramaBaikeSource 取全部参演作品；
             每位演员首次解析要多花约 10 秒（站外索引检索一次），之后按缓存的百科 ID 直连演员页。
-            关闭即回到「TMDB + 豆瓣」并集。
+            关闭则回到「TMDB + 豆瓣」并集（覆盖不全，不推荐）。
           </div>
         </v-col>
         <v-col cols="12">

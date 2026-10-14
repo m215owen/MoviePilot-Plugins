@@ -21,9 +21,13 @@
 
 决策基线（本插件据此实现，改动前先看这里）
 ------------------------------------------
-1. 发现源 = TMDB + 豆瓣 + **短剧百科**并集（用户 2026-10-15 指定接入百科），任一可用即可
-   工作。百科走**跨插件模块方法**（ShortDramaBaikeSource 的 ``search_actors`` /
-   ``actor_works``，经宿主 ``run_module`` 分发），演员页与配额纪律都在百科插件侧；
+1. 发现源两档（``use_baike`` 开关）：**开（默认）= 只看短剧百科**——用户定稿
+   （2026-10-15）：「短剧百科的数据在 TMDB 不一定有，展示的作品要全在短剧百科」，
+   因此百科模式下豆瓣/TMDB 整条跳过，作品墙只出百科收录的剧；**关 = TMDB + 豆瓣并集**。
+   百科走**跨插件模块方法**（ShortDramaBaikeSource 的 ``search_actors`` /
+   ``actor_works``，经 ``self.chain.run_module`` 分发——⚠️ V3 SDK 的 ``_PluginBase``
+   **不继承** ChainBase，``self.run_module`` 不存在，必须走成员 ``self.chain``；
+   生产实证过的坑），演员页与配额纪律都在百科插件侧；
    百科作品卡片**没有年份**（站点就不给），因此年份缺失放行是常态而非例外。
 2. 候选范围 = **仅演员本人**（不含编剧/导演）。
 3. 轮询 = **只发现，不下载**（用户定稿 2026-10-14）：定时轮询只刷新演员作品快照，
@@ -1118,10 +1122,12 @@ class _TmdbClient:
 
 # ─────────────────────── 短剧百科发现源（跨插件） ───────────────────────
 #
-# 数据来自 ShortDramaBaikeSource（duanjubaike.org），经宿主 run_module 分发调用：
+# 数据来自 ShortDramaBaikeSource（duanjubaike.org），经 ``self.chain.run_module`` 分发调用：
 #   search_actors(name)    → 候选 {actor_id, name, media_id, url}
 #   actor_works(actor_id)  → 作品卡 {title, poster, rating, media_id, …}（**无年份**）
 # 演员页抓取与站点纪律（/zh-Hans 前缀等）都在百科插件侧，本插件只消费结果。
+# ⚠️ 必须走 ``self.chain``：V3 SDK 的 ``_PluginBase`` 不继承 ChainBase，
+# ``self.run_module`` 不存在（生产报过 ``no attribute 'run_module'``）。
 
 
 def _actor_name_key(name: Any) -> str:
@@ -3022,7 +3028,14 @@ class ShortDramaActorSubscribe(_PluginBase):
         return cookie
 
     def _discover_actor(self, key: str) -> Dict[str, Any]:
-        """发现单个演员的作品列表（TMDB + 豆瓣 + 短剧百科 并集）。
+        """发现单个演员的作品列表。
+
+        两档（``use_baike`` 开关）：
+
+        - **开（默认）**：只看短剧百科 —— 用户定稿（2026-10-15）：短剧百科的数据
+          在 TMDB/豆瓣不一定有，展示的作品要**全**在短剧百科，因此豆瓣/TMDB 整条
+          跳过（豆瓣配额极紧、Cookie 常态失效，不调它们顺便把这摊烦全免了）；
+        - **关**：TMDB + 豆瓣并集（旧口径）。
 
         返回 ``{"key", "name", "douban_id", "tmdb_id", "baike_id", "works": [...],
         "errors": [...]}``。所有来源都失败时 ``works`` 为空、``errors`` 有可读原因。
@@ -3038,7 +3051,6 @@ class ShortDramaActorSubscribe(_PluginBase):
         }
         works: List[Dict[str, Any]] = []
 
-        # ── 豆瓣：可填人物 ID 或主页链接，否则按名称搜索 ──
         existing = self._load_actors().get(key)
         if isinstance(existing, dict):
             record["douban_id"] = str(existing.get("douban_id") or "")
@@ -3048,6 +3060,14 @@ class ShortDramaActorSubscribe(_PluginBase):
             record["baike_id"] = str(existing.get("baike_id") or "")
             record["name"] = str(existing.get("name") or key)
 
+        if self._use_baike:
+            # ── 百科单源模式：作品墙只展示短剧百科里有的作品 ──
+            self._baike_works(record, works)
+            record["works"] = works  # 单源无需跨源合并
+            record["state"] = record_state(record)
+            return record
+
+        # ── 豆瓣：可填人物 ID 或主页链接，否则按名称搜索 ──
         person_id = record["douban_id"] or self._extract_person_id(key)
         person_id = person_id or ""
         if self._douban_blocked:
@@ -3086,10 +3106,6 @@ class ShortDramaActorSubscribe(_PluginBase):
                 record["errors"].append(f"TMDB：{tmdb.last_error}")
             works.extend(credits)
 
-        # ── 短剧百科（跨插件模块方法；短剧覆盖最全的一等来源） ──
-        if self._use_baike:
-            self._baike_works(record, works)
-
         record["works"] = self._merge_works(works)
         # 展示状态：面板据此决定是「安静等待自动重试」还是「中性说明豆瓣确无影视条目」，
         # 而不是把 errors 逐条铺给用户（临时性失败插件每轮都会自己重试）。
@@ -3099,14 +3115,14 @@ class ShortDramaActorSubscribe(_PluginBase):
     def _baike_works(self, record: Dict[str, Any], works: List[Dict[str, Any]]) -> None:
         """从短剧百科插件取一位演员的全部作品（就地追加进 ``works``）。
 
-        链路（全部经宿主 ``run_module`` 分发给 ShortDramaBaikeSource）：
+        链路（全部经 ``self.chain.run_module`` 分发给 ShortDramaBaikeSource；
 
         1. 快照里已缓存 ``baike_id`` → 直接 ``actor_works(actor_id)``（库里已有 URL，零引擎请求）；
         2. 没缓存 → ``search_actors(name)`` 按名字解析。站外索引召回**含模糊结果**
            （实测搜「王石」会带出「王碩」），因此只收**归一化名字精确相等**的候选，
            宁可漏也不错配；解析成功后把 ``actor_id`` 写回 ``record`` 供下轮复用。
 
-        任何异常都只记进 ``errors``，不影响豆瓣/TMDB 两路的结果。
+        任何异常都只记进 ``errors``，不会拖垮发现任务。
         """
         key = _clean_text(record.get("key"))
         if not key:
@@ -3114,9 +3130,9 @@ class ShortDramaActorSubscribe(_PluginBase):
         try:
             baike_id = _clean_text(record.get("baike_id"))
             if baike_id:
-                cards = self.run_module("actor_works", actor_id=baike_id) or []
+                cards = self.chain.run_module("actor_works", actor_id=baike_id) or []
             else:
-                candidates = self.run_module("search_actors", name=key) or []
+                candidates = self.chain.run_module("search_actors", name=key) or []
                 matched = [
                     row
                     for row in candidates
@@ -3132,7 +3148,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                     return
                 baike_id = _clean_text(matched[0].get("actor_id"))
                 record["baike_id"] = baike_id
-                cards = self.run_module("actor_works", actor_id=baike_id) or []
+                cards = self.chain.run_module("actor_works", actor_id=baike_id) or []
             for card in cards or []:
                 candidate = baike_work_to_candidate(card)
                 if candidate:

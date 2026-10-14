@@ -33,7 +33,10 @@ export interface PluginConfig {
    * 打开后会把快照里所有没下过的作品批量提交下载，慎用。
    */
   auto_download: boolean
-  /** 是否用「短剧百科」发现演员作品（跨插件调用 ShortDramaBaikeSource），默认 true */
+  /**
+   * 是否用「短剧百科」作为作品展示源（跨插件调用 ShortDramaBaikeSource），默认 true。
+   * 开启后作品墙只展示百科里有的作品（TMDB/豆瓣整条跳过）；关闭回到双源并集。
+   */
   use_baike: boolean
   /** 演员作品快照的整体刷新间隔（小时，默认 24）：期间轮询直接用缓存，省豆瓣额度 */
   snapshot_hours: number
