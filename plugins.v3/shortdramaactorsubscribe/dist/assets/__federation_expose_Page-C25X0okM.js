@@ -1,10 +1,10 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import ConfigPanel from './__federation_expose_Config-PiCSsvVH.js';
-import { p as proxyImage, m as mediaPageUrl, c as resourceSearchUrl, _ as _export_sfc, f as formatTime, d as formatCooldown, r as resolveApi, e as fetchWorks, P as PLUGIN_ID, g as refreshWorks, s as subscribeWork, a as fetchStatus, h as fetchConfig, b as runOnce, o as organizeNow, i as saveConfig, j as removeLedgerEntry, k as clearLedger, l as clearCooldown } from './_plugin-vue_export-helper-BPSYN_be.js';
+import ConfigPanel from './__federation_expose_Config-D2DxONUJ.js';
+import { p as proxyImage, m as mediaPageUrl, c as resourceSearchUrl, _ as _export_sfc, f as formatTime, d as formatCooldown, r as resolveApi, e as fetchWorks, P as PLUGIN_ID, g as refreshWorks, s as subscribeWork, u as unsubscribeWork, h as subscribeWorksBatch, i as unsubscribeWorksBatch, a as fetchStatus, j as fetchConfig, b as runOnce, o as organizeNow, k as saveConfig, l as removeLedgerEntry, n as clearLedger, q as clearCooldown } from './_plugin-vue_export-helper-cVwX3IEQ.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 
-const {toDisplayString:_toDisplayString$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createCommentVNode:_createCommentVNode$1,renderList:_renderList$1,Fragment:_Fragment$1,unref:_unref$1,resolveComponent:_resolveComponent$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,withCtx:_withCtx$1,createTextVNode:_createTextVNode$1,createBlock:_createBlock$1} = await importShared('vue');
+const {toDisplayString:_toDisplayString$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createCommentVNode:_createCommentVNode$1,renderList:_renderList$1,Fragment:_Fragment$1,unref:_unref$1,resolveComponent:_resolveComponent$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,withCtx:_withCtx$1,createTextVNode:_createTextVNode$1,createBlock:_createBlock$1,withModifiers:_withModifiers,normalizeClass:_normalizeClass$1} = await importShared('vue');
 
 const _hoisted_1$1 = {
   key: 0,
@@ -36,19 +36,38 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
     works: {},
     pendingKey: {},
     emptyText: {},
-    sites: { default: () => [] }
+    sites: { default: () => [] },
+    selectable: { type: Boolean },
+    selectedKeys: { default: () => [] }
   },
-  emits: ["subscribe"],
+  emits: ["subscribe", "unsubscribe", "toggle-select"],
   setup(__props, { emit: __emit }) {
     const props = __props;
     const emit = __emit;
+    function isSelected(work) {
+      return props.selectedKeys.includes(work.key);
+    }
+    function selectableState(work) {
+      return work.state === "pending" || work.state === "cooling" || work.state === "subscribed";
+    }
+    function onCardClick(work) {
+      if (!props.selectable || !selectableState(work)) return;
+      emit("toggle-select", work);
+    }
     function sourceLabel(source) {
       if (source === "tmdb") return "TMDB";
       if (source === "douban") return "豆瓣";
       return "未知";
     }
     function actable(work) {
-      return work.state === "pending" || work.state === "cooling";
+      return work.state === "pending" || work.state === "cooling" || work.state === "subscribed";
+    }
+    function onAction(work) {
+      if (work.state === "subscribed") {
+        emit("unsubscribe", work);
+        return;
+      }
+      emit("subscribe", work);
     }
     function statusOf(work) {
       if (work.state === "organized") {
@@ -69,6 +88,15 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
           title: work.torrent_title ? `已提交下载：${work.torrent_title}${work.site_name ? ` @ ${work.site_name}` : ""}（等待整理）` : "已提交下载，等待整理入库"
         };
       }
+      if (work.state === "subscribed") {
+        return {
+          text: "订阅中",
+          action: "取消订阅",
+          color: "secondary",
+          icon: "mdi-bookmark-check-outline",
+          title: work.remaining_minutes ? `已订阅，但站点暂时没搜到资源（${work.remaining_minutes} 分钟前刚搜过）；插件每轮都会自动重试。点此取消订阅` : "已订阅：插件会按轮询节奏一直重试，直到下载成功。点此取消订阅"
+        };
+      }
       if (work.state === "cooling") {
         return {
           text: "冷却",
@@ -83,7 +111,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
         action: "订阅",
         color: "primary",
         icon: "mdi-plus",
-        title: "立即按剧名到站点搜索并择优下载一条"
+        title: "订阅这部剧：立即按剧名到站点搜索并择优下载一条；这次没下到会自动重试"
       };
     }
     function detailHref(work) {
@@ -97,6 +125,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
       const _component_v_icon = _resolveComponent$1("v-icon");
       const _component_v_img = _resolveComponent$1("v-img");
       const _component_v_chip = _resolveComponent$1("v-chip");
+      const _component_v_checkbox_btn = _resolveComponent$1("v-checkbox-btn");
       const _component_v_card_text = _resolveComponent$1("v-card-text");
       const _component_v_btn = _resolveComponent$1("v-btn");
       const _component_v_card_actions = _resolveComponent$1("v-card-actions");
@@ -107,7 +136,8 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
             return _openBlock$1(), _createBlock$1(_component_v_card, {
               key: work.key,
               variant: "outlined",
-              class: "sdas-card"
+              class: _normalizeClass$1(["sdas-card", { "sdas-card-picked": __props.selectable && isSelected(work) }]),
+              onClick: ($event) => onCardClick(work)
             }, {
               default: _withCtx$1(() => [
                 _createElementVNode$1("div", _hoisted_3$1, [
@@ -158,7 +188,19 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                       _createTextVNode$1(_toDisplayString$1(sourceLabel(work.source)), 1)
                     ]),
                     _: 2
-                  }, 1032, ["title"])) : _createCommentVNode$1("", true)
+                  }, 1032, ["title"])) : _createCommentVNode$1("", true),
+                  __props.selectable ? (_openBlock$1(), _createBlock$1(_component_v_checkbox_btn, {
+                    key: 1,
+                    "model-value": isSelected(work),
+                    disabled: !selectableState(work),
+                    color: "primary",
+                    density: "compact",
+                    class: "sdas-pick",
+                    title: selectableState(work) ? isSelected(work) ? "取消选择" : "选择这部剧" : "已下载/已入库的作品不支持批量订阅",
+                    onClick: _cache[0] || (_cache[0] = _withModifiers(() => {
+                    }, ["stop"])),
+                    "onUpdate:modelValue": ($event) => emit("toggle-select", work)
+                  }, null, 8, ["model-value", "disabled", "title", "onUpdate:modelValue"])) : _createCommentVNode$1("", true)
                 ]),
                 _createVNode$1(_component_v_card_text, { class: "pa-2 pb-1 sdas-body" }, {
                   default: _withCtx$1(() => [
@@ -206,7 +248,10 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                   ]),
                   _: 2
                 }, 1024),
-                _createVNode$1(_component_v_card_actions, { class: "pa-2 pt-0 sdas-actions" }, {
+                !__props.selectable ? (_openBlock$1(), _createBlock$1(_component_v_card_actions, {
+                  key: 0,
+                  class: "pa-2 pt-0 sdas-actions"
+                }, {
                   default: _withCtx$1(() => [
                     _createVNode$1(_component_v_btn, {
                       size: "small",
@@ -217,7 +262,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                       loading: __props.pendingKey === work.key,
                       disabled: !actable(work),
                       title: statusOf(work).title,
-                      onClick: ($event) => emit("subscribe", work)
+                      onClick: ($event) => onAction(work)
                     }, {
                       default: _withCtx$1(() => [
                         _createTextVNode$1(_toDisplayString$1(statusOf(work).action), 1)
@@ -246,10 +291,10 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                     }, null, 8, ["href"])) : _createCommentVNode$1("", true)
                   ]),
                   _: 2
-                }, 1024)
+                }, 1024)) : _createCommentVNode$1("", true)
               ]),
               _: 2
-            }, 1024);
+            }, 1032, ["class", "onClick"]);
           }), 128))
         ]))
       ]);
@@ -257,7 +302,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-6b2e73f8"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-318698b9"]]);
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -289,55 +334,61 @@ const _hoisted_14 = { class: "d-flex align-center flex-wrap mt-2 sdas-toolbar" }
 const _hoisted_15 = { class: "text-caption sdas-dim sdas-count" };
 const _hoisted_16 = {
   key: 1,
+  class: "d-flex align-center flex-wrap mt-2 sdas-pickbar"
+};
+const _hoisted_17 = { class: "text-caption" };
+const _hoisted_18 = { class: "text-caption sdas-dim" };
+const _hoisted_19 = {
+  key: 2,
   class: "text-caption sdas-dim mt-2"
 };
-const _hoisted_17 = {
+const _hoisted_20 = {
   key: 0,
   class: "text-caption sdas-dim"
 };
-const _hoisted_18 = {
+const _hoisted_21 = {
   key: 1,
   class: "text-caption sdas-dim"
 };
-const _hoisted_19 = { class: "px-3 pb-3" };
-const _hoisted_20 = {
+const _hoisted_22 = { class: "px-3 pb-3" };
+const _hoisted_23 = {
   key: 1,
   class: "d-flex align-center justify-center mt-3 ga-2"
 };
-const _hoisted_21 = { class: "sdas-page-info" };
-const _hoisted_22 = {
+const _hoisted_24 = { class: "sdas-page-info" };
+const _hoisted_25 = {
   class: "d-flex align-center pa-3 pb-1 flex-wrap",
   style: { "gap": "8px" }
 };
-const _hoisted_23 = { class: "text-subtitle-2" };
-const _hoisted_24 = ["title"];
-const _hoisted_25 = { class: "text-caption" };
-const _hoisted_26 = { class: "text-caption" };
-const _hoisted_27 = { class: "text-caption" };
+const _hoisted_26 = { class: "text-subtitle-2" };
+const _hoisted_27 = ["title"];
 const _hoisted_28 = { class: "text-caption" };
-const _hoisted_29 = {
+const _hoisted_29 = { class: "text-caption" };
+const _hoisted_30 = { class: "text-caption" };
+const _hoisted_31 = { class: "text-caption" };
+const _hoisted_32 = {
   key: 0,
   class: "text-caption sdas-dim ml-1",
   title: "同剧命中多个资源，已择优"
 };
-const _hoisted_30 = { class: "text-end text-no-wrap" };
-const _hoisted_31 = { key: 0 };
-const _hoisted_32 = {
+const _hoisted_33 = { class: "text-end text-no-wrap" };
+const _hoisted_34 = { key: 0 };
+const _hoisted_35 = {
   colspan: "7",
   class: "text-center text-caption sdas-dim py-3"
 };
-const _hoisted_33 = { class: "d-flex align-center pa-3 pb-1" };
-const _hoisted_34 = { class: "text-subtitle-2" };
-const _hoisted_35 = { class: "px-3 pb-3" };
-const _hoisted_36 = {
+const _hoisted_36 = { class: "d-flex align-center pa-3 pb-1" };
+const _hoisted_37 = { class: "text-subtitle-2" };
+const _hoisted_38 = { class: "px-3 pb-3" };
+const _hoisted_39 = {
   class: "d-flex flex-wrap",
   style: { "gap": "6px" }
 };
-const _hoisted_37 = { class: "sdas-dim ml-1" };
-const _hoisted_38 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_39 = { class: "d-flex" };
-const _hoisted_40 = { class: "d-flex" };
-const _hoisted_41 = { class: "sdas-settings" };
+const _hoisted_40 = { class: "sdas-dim ml-1" };
+const _hoisted_41 = { class: "text-subtitle-2 mb-2" };
+const _hoisted_42 = { class: "d-flex" };
+const _hoisted_43 = { class: "d-flex" };
+const _hoisted_44 = { class: "sdas-settings" };
 const {computed,onMounted,ref,watch} = await importShared('vue');
 const WORK_PAGE_SIZE = 20;
 const ALL_ACTORS = "all";
@@ -374,7 +425,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     const siteOptions = ref([]);
     const works = ref({
       items: [],
-      summary: { total: 0, pending: 0, cooling: 0, downloaded: 0 },
+      summary: { total: 0, pending: 0, subscribed: 0, cooling: 0, downloaded: 0 },
       refreshed_at: "",
       running: false,
       configured: false,
@@ -610,6 +661,92 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         await load(false);
       } finally {
         subscribingKey.value = "";
+      }
+    }
+    async function doUnsubscribe(row) {
+      const api = resolveApi(props);
+      if (!api) return;
+      subscribingKey.value = row.key;
+      workMessage.value = "";
+      try {
+        const res = await unsubscribeWork(api, { key: row.key });
+        workMessage.value = res.message;
+        await loadWorks();
+        await load(false);
+      } finally {
+        subscribingKey.value = "";
+      }
+    }
+    const selectMode = ref(false);
+    const selectedKeys = ref([]);
+    const batching = ref(false);
+    const batchAction = ref("");
+    function pickable(row) {
+      return row.state === "pending" || row.state === "cooling" || row.state === "subscribed";
+    }
+    const selectedSubscribable = computed(
+      () => selectedWorks.value.filter((row) => row.state === "pending" || row.state === "cooling")
+    );
+    const selectedSubscribed = computed(
+      () => selectedWorks.value.filter((row) => row.state === "subscribed")
+    );
+    const selectedWorks = computed(() => {
+      const wanted = new Set(selectedKeys.value);
+      return works.value.items.filter((row) => wanted.has(row.key));
+    });
+    function toggleSelectMode() {
+      selectMode.value = !selectMode.value;
+      if (!selectMode.value) selectedKeys.value = [];
+    }
+    function toggleSelect(row) {
+      const index = selectedKeys.value.indexOf(row.key);
+      if (index >= 0) selectedKeys.value.splice(index, 1);
+      else selectedKeys.value.push(row.key);
+    }
+    function clearSelection() {
+      selectedKeys.value = [];
+    }
+    function selectAllVisible() {
+      const keys = pagedWorks.value.filter(pickable).map((row) => row.key);
+      const merged = /* @__PURE__ */ new Set([...selectedKeys.value, ...keys]);
+      selectedKeys.value = Array.from(merged);
+    }
+    async function doBatchSubscribe() {
+      const api = resolveApi(props);
+      if (!api || !selectedSubscribable.value.length) return;
+      batching.value = true;
+      batchAction.value = "subscribe";
+      workMessage.value = "";
+      try {
+        const res = await subscribeWorksBatch(api, {
+          keys: selectedSubscribable.value.map((row) => row.key)
+        });
+        workMessage.value = res.message;
+        await loadWorks();
+        await load(false);
+        emit("action");
+      } finally {
+        batching.value = false;
+        batchAction.value = "";
+      }
+    }
+    async function doBatchUnsubscribe() {
+      const api = resolveApi(props);
+      if (!api || !selectedSubscribed.value.length) return;
+      batching.value = true;
+      batchAction.value = "unsubscribe";
+      workMessage.value = "";
+      try {
+        const res = await unsubscribeWorksBatch(api, {
+          keys: selectedSubscribed.value.map((row) => row.key)
+        });
+        workMessage.value = res.message;
+        await loadWorks();
+        await load(false);
+        emit("action");
+      } finally {
+        batching.value = false;
+        batchAction.value = "";
       }
     }
     function apply(data) {
@@ -865,6 +1002,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             variant: "tonal",
             "prepend-icon": "mdi-play",
             loading: running.value,
+            title: "立刻跑一轮：刷新演员作品并重试已订阅的作品（不会下载未订阅的剧）",
             onClick: doRun
           }, {
             default: _withCtx(() => [..._cache[20] || (_cache[20] = [
@@ -990,8 +1128,19 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   ]),
                   _: 1
                 })) : _createCommentVNode("", true),
-                worksSummary.value.cooling ? (_openBlock(), _createBlock(_component_v_chip, {
+                worksSummary.value.subscribed ? (_openBlock(), _createBlock(_component_v_chip, {
                   key: 1,
+                  size: "small",
+                  variant: "tonal",
+                  color: "secondary"
+                }, {
+                  default: _withCtx(() => [
+                    _createTextVNode(" 订阅中 " + _toDisplayString(worksSummary.value.subscribed), 1)
+                  ]),
+                  _: 1
+                })) : _createCommentVNode("", true),
+                worksSummary.value.cooling ? (_openBlock(), _createBlock(_component_v_chip, {
+                  key: 2,
                   size: "small",
                   variant: "tonal",
                   color: "warning"
@@ -1002,7 +1151,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   _: 1
                 })) : _createCommentVNode("", true),
                 worksSummary.value.downloaded ? (_openBlock(), _createBlock(_component_v_chip, {
-                  key: 2,
+                  key: 3,
                   size: "small",
                   variant: "tonal",
                   color: "info"
@@ -1112,9 +1261,18 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       }),
                       _createVNode(_component_v_btn, {
                         size: "small",
-                        value: "cooling"
+                        value: "subscribed"
                       }, {
                         default: _withCtx(() => [..._cache[31] || (_cache[31] = [
+                          _createTextVNode("订阅中", -1)
+                        ])]),
+                        _: 1
+                      }),
+                      _createVNode(_component_v_btn, {
+                        size: "small",
+                        value: "cooling"
+                      }, {
+                        default: _withCtx(() => [..._cache[32] || (_cache[32] = [
                           _createTextVNode("冷却中", -1)
                         ])]),
                         _: 1
@@ -1123,7 +1281,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         size: "small",
                         value: "downloaded"
                       }, {
-                        default: _withCtx(() => [..._cache[32] || (_cache[32] = [
+                        default: _withCtx(() => [..._cache[33] || (_cache[33] = [
                           _createTextVNode("已下载", -1)
                         ])]),
                         _: 1
@@ -1143,9 +1301,81 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     class: "sdas-filter"
                   }, null, 8, ["modelValue"]),
                   _createVNode(_component_v_spacer),
-                  _createElementVNode("span", _hoisted_15, " 筛出 " + _toDisplayString(filteredWorks.value.length) + " 部 ", 1)
+                  _createElementVNode("span", _hoisted_15, " 筛出 " + _toDisplayString(filteredWorks.value.length) + " 部 ", 1),
+                  _createVNode(_component_v_btn, {
+                    size: "small",
+                    variant: selectMode.value ? "flat" : "tonal",
+                    color: selectMode.value ? "primary" : void 0,
+                    "prepend-icon": "mdi-checkbox-multiple-marked-outline",
+                    title: selectMode.value ? "退出多选" : "多选：勾选多部作品后一次批量订阅（已下载/已入库的不可选）",
+                    onClick: toggleSelectMode
+                  }, {
+                    default: _withCtx(() => [
+                      _createTextVNode(_toDisplayString(selectMode.value ? "退出多选" : "多选"), 1)
+                    ]),
+                    _: 1
+                  }, 8, ["variant", "color", "title"])
                 ]),
-                actorsHint.value ? (_openBlock(), _createElementBlock("div", _hoisted_16, _toDisplayString(actorsHint.value), 1)) : _createCommentVNode("", true)
+                selectMode.value ? (_openBlock(), _createElementBlock("div", _hoisted_16, [
+                  _createElementVNode("span", _hoisted_17, [
+                    _cache[34] || (_cache[34] = _createTextVNode(" 已选 ", -1)),
+                    _createElementVNode("b", null, _toDisplayString(selectedKeys.value.length), 1),
+                    _cache[35] || (_cache[35] = _createTextVNode(" 部 ", -1))
+                  ]),
+                  _createElementVNode("span", _hoisted_18, " 待订阅 " + _toDisplayString(selectedSubscribable.value.length) + " ｜ 订阅中 " + _toDisplayString(selectedSubscribed.value.length), 1),
+                  _createVNode(_component_v_btn, {
+                    size: "x-small",
+                    variant: "text",
+                    color: "primary",
+                    onClick: selectAllVisible
+                  }, {
+                    default: _withCtx(() => [..._cache[36] || (_cache[36] = [
+                      _createTextVNode(" 选中本页可订阅的 ", -1)
+                    ])]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_btn, {
+                    size: "x-small",
+                    variant: "text",
+                    disabled: !selectedKeys.value.length,
+                    onClick: clearSelection
+                  }, {
+                    default: _withCtx(() => [..._cache[37] || (_cache[37] = [
+                      _createTextVNode(" 清空 ", -1)
+                    ])]),
+                    _: 1
+                  }, 8, ["disabled"]),
+                  _createVNode(_component_v_spacer),
+                  _createVNode(_component_v_btn, {
+                    size: "small",
+                    color: "secondary",
+                    variant: "tonal",
+                    "prepend-icon": "mdi-bookmark-remove-outline",
+                    disabled: !selectedSubscribed.value.length || batching.value,
+                    loading: batching.value && batchAction.value === "unsubscribe",
+                    onClick: doBatchUnsubscribe
+                  }, {
+                    default: _withCtx(() => [
+                      _createTextVNode(" 批量取消订阅（" + _toDisplayString(selectedSubscribed.value.length) + "） ", 1)
+                    ]),
+                    _: 1
+                  }, 8, ["disabled", "loading"]),
+                  _createVNode(_component_v_btn, {
+                    size: "small",
+                    color: "primary",
+                    variant: "flat",
+                    "prepend-icon": "mdi-bookmark-plus-outline",
+                    disabled: !selectedSubscribable.value.length || batching.value,
+                    loading: batching.value && batchAction.value === "subscribe",
+                    onClick: doBatchSubscribe
+                  }, {
+                    default: _withCtx(() => [
+                      _createTextVNode(" 批量订阅（" + _toDisplayString(selectedSubscribable.value.length) + "） ", 1)
+                    ]),
+                    _: 1
+                  }, 8, ["disabled", "loading"])
+                ])) : _createCommentVNode("", true),
+                actorsHint.value ? (_openBlock(), _createElementBlock("div", _hoisted_19, _toDisplayString(actorsHint.value), 1)) : _createCommentVNode("", true)
               ]),
               _: 1
             }),
@@ -1158,11 +1388,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             }, {
               default: _withCtx(() => [
                 _createTextVNode(_toDisplayString(workMessage.value) + " ", 1),
-                organizeEnabled.value ? (_openBlock(), _createElementBlock("div", _hoisted_17, " 下载完成后由「整理入库」搬到媒体库，可在下方账本查看。 ")) : (_openBlock(), _createElementBlock("div", _hoisted_18, " 下载完成后由外部整理器入库（本插件不参与整理），可在下方账本查看。 "))
+                organizeEnabled.value ? (_openBlock(), _createElementBlock("div", _hoisted_20, " 下载完成后由「整理入库」搬到媒体库，可在下方账本查看。 ")) : (_openBlock(), _createElementBlock("div", _hoisted_21, " 下载完成后由外部整理器入库（本插件不参与整理），可在下方账本查看。 "))
               ]),
               _: 1
             })) : _createCommentVNode("", true),
-            _createElementVNode("div", _hoisted_19, [
+            _createElementVNode("div", _hoisted_22, [
               works.value.running || refreshingWorks.value ? (_openBlock(), _createBlock(_component_v_progress_linear, {
                 key: 0,
                 indeterminate: "",
@@ -1174,9 +1404,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 "pending-key": subscribingKey.value,
                 sites: searchSites.value,
                 "empty-text": worksEmptyHint.value,
-                onSubscribe: doSubscribe
-              }, null, 8, ["works", "pending-key", "sites", "empty-text"]),
-              workPageCount.value > 1 ? (_openBlock(), _createElementBlock("div", _hoisted_20, [
+                selectable: selectMode.value,
+                "selected-keys": selectedKeys.value,
+                onSubscribe: doSubscribe,
+                onUnsubscribe: doUnsubscribe,
+                onToggleSelect: toggleSelect
+              }, null, 8, ["works", "pending-key", "sites", "empty-text", "selectable", "selected-keys"]),
+              workPageCount.value > 1 ? (_openBlock(), _createElementBlock("div", _hoisted_23, [
                 _createVNode(_component_v_btn, {
                   size: "small",
                   variant: "tonal",
@@ -1184,7 +1418,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   disabled: workPage.value <= 1,
                   onClick: _cache[7] || (_cache[7] = ($event) => workPage.value = Math.max(1, workPage.value - 1))
                 }, null, 8, ["disabled"]),
-                _createElementVNode("span", _hoisted_21, "第 " + _toDisplayString(workPage.value) + " / " + _toDisplayString(workPageCount.value) + " 页", 1),
+                _createElementVNode("span", _hoisted_24, "第 " + _toDisplayString(workPage.value) + " / " + _toDisplayString(workPageCount.value) + " 页", 1),
                 _createVNode(_component_v_btn, {
                   size: "small",
                   variant: "tonal",
@@ -1203,13 +1437,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           class: "mb-3"
         }, {
           default: _withCtx(() => [
-            _createElementVNode("div", _hoisted_22, [
+            _createElementVNode("div", _hoisted_25, [
               _createVNode(_component_v_icon, {
                 icon: "mdi-book-check-outline",
                 size: "18",
                 class: "mr-2"
               }),
-              _createElementVNode("span", _hoisted_23, "已下载账本（" + _toDisplayString(ledger.value.length) + "）", 1),
+              _createElementVNode("span", _hoisted_26, "已下载账本（" + _toDisplayString(ledger.value.length) + "）", 1),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_text_field, {
                 modelValue: keyword.value,
@@ -1228,7 +1462,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 disabled: !ledger.value.length,
                 onClick: _cache[10] || (_cache[10] = ($event) => confirmClear.value = true)
               }, {
-                default: _withCtx(() => [..._cache[33] || (_cache[33] = [
+                default: _withCtx(() => [..._cache[38] || (_cache[38] = [
                   _createTextVNode(" 清空账本 ", -1)
                 ])]),
                 _: 1
@@ -1240,7 +1474,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               class: "sdas-table"
             }, {
               default: _withCtx(() => [
-                _cache[34] || (_cache[34] = _createElementVNode("thead", null, [
+                _cache[39] || (_cache[39] = _createElementVNode("thead", null, [
                   _createElementVNode("tr", null, [
                     _createElementVNode("th", { class: "text-start" }, "剧名"),
                     _createElementVNode("th", { class: "text-start" }, "年份"),
@@ -1260,12 +1494,12 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         _createElementVNode("div", {
                           class: "sdas-title",
                           title: row.torrent_title || row.title
-                        }, _toDisplayString(row.title), 9, _hoisted_24)
+                        }, _toDisplayString(row.title), 9, _hoisted_27)
                       ]),
-                      _createElementVNode("td", _hoisted_25, _toDisplayString(row.year || "—"), 1),
-                      _createElementVNode("td", _hoisted_26, _toDisplayString(row.episodes ? `全${row.episodes}集` : "—"), 1),
-                      _createElementVNode("td", _hoisted_27, _toDisplayString(row.site_name || "—"), 1),
-                      _createElementVNode("td", _hoisted_28, _toDisplayString(row.actor || "—"), 1),
+                      _createElementVNode("td", _hoisted_28, _toDisplayString(row.year || "—"), 1),
+                      _createElementVNode("td", _hoisted_29, _toDisplayString(row.episodes ? `全${row.episodes}集` : "—"), 1),
+                      _createElementVNode("td", _hoisted_30, _toDisplayString(row.site_name || "—"), 1),
+                      _createElementVNode("td", _hoisted_31, _toDisplayString(row.actor || "—"), 1),
                       _createElementVNode("td", null, [
                         _createVNode(_component_v_chip, {
                           size: "x-small",
@@ -1278,9 +1512,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                           ]),
                           _: 2
                         }, 1032, ["color", "title"]),
-                        (row.alternatives || 0) > 1 ? (_openBlock(), _createElementBlock("span", _hoisted_29, _toDisplayString(row.alternatives) + " 选 1 ", 1)) : _createCommentVNode("", true)
+                        (row.alternatives || 0) > 1 ? (_openBlock(), _createElementBlock("span", _hoisted_32, _toDisplayString(row.alternatives) + " 选 1 ", 1)) : _createCommentVNode("", true)
                       ]),
-                      _createElementVNode("td", _hoisted_30, [
+                      _createElementVNode("td", _hoisted_33, [
                         _createVNode(_component_v_btn, {
                           size: "x-small",
                           variant: "text",
@@ -1301,8 +1535,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       ])
                     ]);
                   }), 128)),
-                  !visibleLedger.value.length ? (_openBlock(), _createElementBlock("tr", _hoisted_31, [
-                    _createElementVNode("td", _hoisted_32, _toDisplayString(ledger.value.length ? "没有匹配的记录" : "暂无记录，运行一轮后这里会出现已下载的剧"), 1)
+                  !visibleLedger.value.length ? (_openBlock(), _createElementBlock("tr", _hoisted_34, [
+                    _createElementVNode("td", _hoisted_35, _toDisplayString(ledger.value.length ? "没有匹配的记录" : "暂无记录，运行一轮后这里会出现已下载的剧"), 1)
                   ])) : _createCommentVNode("", true)
                 ])
               ]),
@@ -1317,27 +1551,27 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           class: "mb-3"
         }, {
           default: _withCtx(() => [
-            _createElementVNode("div", _hoisted_33, [
+            _createElementVNode("div", _hoisted_36, [
               _createVNode(_component_v_icon, {
                 icon: "mdi-timer-sand",
                 size: "18",
                 class: "mr-2"
               }),
-              _createElementVNode("span", _hoisted_34, "未命中冷却（" + _toDisplayString(cooldown.value.length) + "）", 1),
+              _createElementVNode("span", _hoisted_37, "未命中冷却（" + _toDisplayString(cooldown.value.length) + "）", 1),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_btn, {
                 size: "small",
                 variant: "text",
                 onClick: doClearCooldown
               }, {
-                default: _withCtx(() => [..._cache[35] || (_cache[35] = [
+                default: _withCtx(() => [..._cache[40] || (_cache[40] = [
                   _createTextVNode("清空冷却", -1)
                 ])]),
                 _: 1
               })
             ]),
-            _createElementVNode("div", _hoisted_35, [
-              _createElementVNode("div", _hoisted_36, [
+            _createElementVNode("div", _hoisted_38, [
+              _createElementVNode("div", _hoisted_39, [
                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(cooldown.value, (row) => {
                   return _openBlock(), _createBlock(_component_v_chip, {
                     key: row.key,
@@ -1348,13 +1582,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   }, {
                     default: _withCtx(() => [
                       _createTextVNode(_toDisplayString(row.title) + " ", 1),
-                      _createElementVNode("span", _hoisted_37, _toDisplayString(_unref(formatCooldown)(row.remaining_minutes)), 1)
+                      _createElementVNode("span", _hoisted_40, _toDisplayString(_unref(formatCooldown)(row.remaining_minutes)), 1)
                     ]),
                     _: 2
                   }, 1032, ["title"]);
                 }), 128))
               ]),
-              _cache[36] || (_cache[36] = _createElementVNode("div", { class: "text-caption sdas-dim mt-2" }, " 这些剧在站点上暂时搜不到资源，24 小时内不再重复搜索（成功下载或手动清空后恢复）。 ", -1))
+              _cache[41] || (_cache[41] = _createElementVNode("div", { class: "text-caption sdas-dim mt-2" }, " 这些剧在站点上暂时搜不到资源，24 小时内不再重复搜索（成功下载或手动清空后恢复）。 ", -1))
             ])
           ]),
           _: 1
@@ -1367,15 +1601,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           default: _withCtx(() => [
             _createVNode(_component_v_card, { class: "pa-4" }, {
               default: _withCtx(() => [
-                _createElementVNode("div", _hoisted_38, "从账本移除「" + _toDisplayString(removeTarget.value?.title) + "」？", 1),
-                _cache[39] || (_cache[39] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 移除后这部剧会在下一轮轮询时重新搜索并下载，已下载的文件不会被删除。 ", -1)),
-                _createElementVNode("div", _hoisted_39, [
+                _createElementVNode("div", _hoisted_41, "从账本移除「" + _toDisplayString(removeTarget.value?.title) + "」？", 1),
+                _cache[44] || (_cache[44] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 移除后这部剧会在下一轮轮询时重新搜索并下载，已下载的文件不会被删除。 ", -1)),
+                _createElementVNode("div", _hoisted_42, [
                   _createVNode(_component_v_spacer),
                   _createVNode(_component_v_btn, {
                     variant: "text",
                     onClick: _cache[11] || (_cache[11] = ($event) => removeDialog.value = false)
                   }, {
-                    default: _withCtx(() => [..._cache[37] || (_cache[37] = [
+                    default: _withCtx(() => [..._cache[42] || (_cache[42] = [
                       _createTextVNode("取消", -1)
                     ])]),
                     _: 1
@@ -1386,7 +1620,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     loading: removing.value,
                     onClick: doRemove
                   }, {
-                    default: _withCtx(() => [..._cache[38] || (_cache[38] = [
+                    default: _withCtx(() => [..._cache[43] || (_cache[43] = [
                       _createTextVNode("移除", -1)
                     ])]),
                     _: 1
@@ -1406,15 +1640,19 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           default: _withCtx(() => [
             _createVNode(_component_v_card, { class: "pa-4" }, {
               default: _withCtx(() => [
-                _cache[42] || (_cache[42] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "清空全部账本记录？", -1)),
-                _cache[43] || (_cache[43] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, " 账本用于去重：清空后所有剧都会被当作未下载，下一轮会重新搜索并下载（已下载文件不受影响）。 同时会清空未命中冷却。 ", -1)),
-                _createElementVNode("div", _hoisted_40, [
+                _cache[47] || (_cache[47] = _createElementVNode("div", { class: "text-subtitle-2 mb-2" }, "清空全部账本记录？", -1)),
+                _cache[48] || (_cache[48] = _createElementVNode("div", { class: "text-caption sdas-dim mb-3" }, [
+                  _createTextVNode(" 账本用于去重与「已下载」状态：清空后这些剧会回到「待订阅」，"),
+                  _createElementVNode("b", null, "不会自动重新下载"),
+                  _createTextVNode(" （订阅制下只有你点「订阅」的才会下）。同时会清空未命中冷却。 ")
+                ], -1)),
+                _createElementVNode("div", _hoisted_43, [
                   _createVNode(_component_v_spacer),
                   _createVNode(_component_v_btn, {
                     variant: "text",
                     onClick: _cache[13] || (_cache[13] = ($event) => confirmClear.value = false)
                   }, {
-                    default: _withCtx(() => [..._cache[40] || (_cache[40] = [
+                    default: _withCtx(() => [..._cache[45] || (_cache[45] = [
                       _createTextVNode("取消", -1)
                     ])]),
                     _: 1
@@ -1425,7 +1663,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     loading: clearing.value,
                     onClick: doClear
                   }, {
-                    default: _withCtx(() => [..._cache[41] || (_cache[41] = [
+                    default: _withCtx(() => [..._cache[46] || (_cache[46] = [
                       _createTextVNode("清空", -1)
                     ])]),
                     _: 1
@@ -1443,7 +1681,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           "max-width": "1000"
         }, {
           default: _withCtx(() => [
-            _createElementVNode("div", _hoisted_41, [
+            _createElementVNode("div", _hoisted_44, [
               settingsDialog.value ? (_openBlock(), _createBlock(ConfigPanel, {
                 key: 0,
                 "initial-config": settingsConfig.value,
@@ -1461,6 +1699,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Panel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-23b7842e"]]);
+const Panel = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-1848ec35"]]);
 
 export { Panel as default };

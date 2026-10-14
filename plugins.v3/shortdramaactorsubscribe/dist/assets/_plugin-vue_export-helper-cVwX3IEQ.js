@@ -220,7 +220,35 @@ async function fetchWorks(api) {
 async function subscribeWork(api, payload) {
   try {
     const res = normalizeResult(await api.post(`${API_BASE}/works/subscribe`, payload));
-    return { ok: res.ok, message: res.message || (res.ok ? "已提交下载" : "订阅失败"), data: res.data };
+    return { ok: res.ok, message: res.message || (res.ok ? "已订阅" : "订阅失败"), data: res.data };
+  } catch (err) {
+    return { ok: false, message: extractError(err) };
+  }
+}
+async function unsubscribeWork(api, payload) {
+  try {
+    const res = normalizeResult(await api.post(`${API_BASE}/works/unsubscribe`, payload));
+    return { ok: res.ok, message: res.message || (res.ok ? "已取消订阅" : "取消失败") };
+  } catch (err) {
+    return { ok: false, message: extractError(err) };
+  }
+}
+async function subscribeWorksBatch(api, payload) {
+  try {
+    const res = normalizeResult(
+      await api.post(`${API_BASE}/works/subscribe_batch`, payload)
+    );
+    return { ok: res.ok, message: res.message || (res.ok ? "已提交批量订阅" : "批量订阅失败") };
+  } catch (err) {
+    return { ok: false, message: extractError(err) };
+  }
+}
+async function unsubscribeWorksBatch(api, payload) {
+  try {
+    const res = normalizeResult(
+      await api.post(`${API_BASE}/works/unsubscribe_batch`, payload)
+    );
+    return { ok: res.ok, message: res.message || (res.ok ? "已取消订阅" : "取消失败") };
   } catch (err) {
     return { ok: false, message: extractError(err) };
   }
@@ -252,4 +280,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { PLUGIN_ID as P, _export_sfc as _, fetchStatus as a, runOnce as b, resourceSearchUrl as c, formatCooldown as d, fetchWorks as e, formatTime as f, refreshWorks as g, fetchConfig as h, saveConfig as i, removeLedgerEntry as j, clearLedger as k, clearCooldown as l, mediaPageUrl as m, searchActor as n, organizeNow as o, proxyImage as p, fetchOptions as q, resolveApi as r, subscribeWork as s };
+export { PLUGIN_ID as P, _export_sfc as _, fetchStatus as a, runOnce as b, resourceSearchUrl as c, formatCooldown as d, fetchWorks as e, formatTime as f, refreshWorks as g, subscribeWorksBatch as h, unsubscribeWorksBatch as i, fetchConfig as j, saveConfig as k, removeLedgerEntry as l, mediaPageUrl as m, clearLedger as n, organizeNow as o, proxyImage as p, clearCooldown as q, resolveApi as r, subscribeWork as s, searchActor as t, unsubscribeWork as u, fetchOptions as v };

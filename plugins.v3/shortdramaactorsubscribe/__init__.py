@@ -23,7 +23,14 @@
 ------------------------------------------
 1. 发现源 = TMDB + 豆瓣**并集**，任一可用即可工作，两源都失败才报错。
 2. 候选范围 = **仅演员本人**（不含编剧/导演）。
-3. 轮询 = **真订阅**：定时轮询 + 已下账本（ledger），已下过的剧不重复下载。
+3. 轮询 = **只发现，不下载**（用户定稿 2026-10-14）：定时轮询只刷新演员作品快照，
+   把新出现的作品摆到作品墙上；**下载一律由人触发** —— 在作品墙点「订阅」。
+   原因见下「下载闸门」一节。已自动下载过的剧由账本（ledger）去重。
+3.1 下载闸门（**订阅制**）：默认 ``auto_download=False``。历史教训 —— 一旦轮询自己
+   下载，插件会把「快照里所有不在账本里的作品」挨个搜索下载；演员名单到几十上百位时
+   快照上千部，一轮就是上千个种子，会把下载器灌爆，而且这类**批量提交不可逆**
+   （种子里已经进了下载器）。因此下载权收回给用户，轮询只负责发现。
+   需要恢复「自动下全部」的老行为时，在配置页打开「自动下载」开关即可（代码保留）。
 4. 匹配主键 = 剧名（**含序号**，如「云渺3：镇魔世家」的 3）归一化后**精确相等**。
 5. 年份 = 可选校验；**任一侧缺失即放行**（宽进）。
 6. 去重键 = 剧名 + 年份(可空)，**不含集数**。同一部剧的 90 集版与 100 集整合版是
@@ -107,6 +114,9 @@ except ImportError as _err:  # pragma: no cover - 取决于宿主版本
 # 插件数据键（写入插件数据目录，不写回源码目录）
 _DATA_ACTORS = "actors_state"
 _DATA_LEDGER = "ledger"
+# 订阅表：用户在作品墙上点「订阅」但**还没下到**的作品（值含剧名/年份/演员/时间戳等）。
+# 订阅是**持久**的：插件每轮都会重试，直到成功下载进账本；用户点「取消订阅」才移除。
+_DATA_SUBS = "subscriptions"
 _DATA_STATS = "stats"
 _DATA_MISS = "misses"
 
@@ -335,6 +345,17 @@ def is_retry_candidate(record: Dict[str, Any]) -> bool:
     if _clean_text(record.get("state")) == "waiting":
         return True
     return not record.get("state") and not record.get("works")
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    """宽松布尔转换：前端可能传真布尔，也可能传 "true"/"on"/"1" 之类的字符串。"""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
 def _to_int(value: Any) -> int:
@@ -1437,9 +1458,9 @@ class ShortDramaActorSubscribe(_PluginBase):
     # 引用变量会被判定为「缺少 plugin_name」；一致性由 scripts/verify_plugin.py 校验。
     plugin_name = "短剧演员订阅"
     plugin_desc = (
-        "跟着喜欢的演员追短剧：合并 TMDB 与豆瓣的演员作品列表，用剧名直接在站点搜索并按"
-        "「做种数→体积→分辨率」择优下载，凭账本去重、全程不依赖宿主识别器，长尾短剧也能追；"
-        "入库交给外部整理器（需要时可在插件内开启自带整理）。"
+        "跟着喜欢的演员追短剧：合并 TMDB 与豆瓣的演员作品列表，把作品摆到作品墙上；"
+        "点「订阅」即用剧名直接在站点搜索并按「做种数→体积→分辨率」择优下载，凭账本去重、"
+        "全程不依赖宿主识别器，长尾短剧也能追；入库交给外部整理器（需要时可在插件内开启自带整理）。"
     )
     plugin_icon = (
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
@@ -1475,6 +1496,10 @@ class ShortDramaActorSubscribe(_PluginBase):
     _douban_cookie = ""
     _proxy = False
     _max_works = 10
+    # ⚠️ 下载闸门 = **订阅制（默认关闭自动下载）**。轮询只做发现；下载必须由用户在
+    # 作品墙点「订阅」。历史事故：轮询自动下载时，快照里所有没下过的作品会被挨个
+    # 搜索下载（演员名单到几十上百位 ⇒ 上千个种子瞬间灌进下载器，不可逆）。
+    _auto_download = False
     _sidebar_nav = True
     # 同一进程内的重入保护：定时任务与手动触发可能撞在一起
     _lock = threading.Lock()
@@ -1522,6 +1547,8 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._douban_cookie = str(config.get("douban_cookie") or "").strip()
         self._proxy = bool(config.get("proxy"))
         self._max_works = min(10, max(1, _to_int(config.get("max_works")) or 10))
+        # ⚠️ 缺省必须是 False（订阅制）：读成 True 会让轮询重新开始批量下载
+        self._auto_download = _to_bool(config.get("auto_download"), False)
         self._sidebar_nav = bool(config.get("sidebar_nav", True))
 
         # 配置变更后让 CookieCloud 缓存立刻失效，避免刚填好的 Cookie 不生效
@@ -1587,6 +1614,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "douban_cookie": self._douban_cookie,
             "proxy": self._proxy,
             "max_works": self._max_works,
+            "auto_download": self._auto_download,
             "sidebar_nav": self._sidebar_nav,
         }
 
@@ -1612,6 +1640,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "douban_cookie": "",
             "proxy": False,
             "max_works": 10,
+            "auto_download": False,
             "sidebar_nav": True,
         }
 
@@ -1700,11 +1729,15 @@ class ShortDramaActorSubscribe(_PluginBase):
     # ── 后台能力 ──
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """注册定时服务：订阅轮询 + 解析失败重试；整理扫描仅在「启用整理入库」时注册。
+        """注册定时服务：作品发现 + 解析失败重试；整理扫描仅在「启用整理入库」时注册。
+
+        ⚠️ **订阅制（默认）**：作品发现服务只刷新演员作品快照，**不下载任何东西** ——
+        下载一律由用户在作品墙点「订阅」触发。打开「自动下载」开关后，这个定时服务
+        才会顺带执行搜索与下载（老行为）。
 
         两个发现层服务的节奏刻意分开（用户定稿 2026-10-14）：
 
-        * **订阅轮询**（``interval_hours``，默认 6 小时）：完整一轮 = 发现 + 搜索 + 下载；
+        * **作品发现**（``interval_hours``，默认 6 小时）：完整一轮 = 发现（+ 可选下载）；
           其中发现层只在快照到期（``snapshot_hours``，默认一天）时才真的去请求豆瓣 / TMDB，
           其余轮次直接用缓存，因此轮询频繁也不会额外消耗豆瓣额度。
         * **失败重试**（``retry_minutes``，默认 20 分钟）：只重解析上一轮失败的演员，
@@ -1727,7 +1760,9 @@ class ShortDramaActorSubscribe(_PluginBase):
             services.append(
                 {
                     "id": f"{self.__class__.__name__}.Refresh",
-                    "name": f"{self.plugin_name}·订阅轮询",
+                    "name": f"{self.plugin_name}·作品发现（订阅制不自动下载）"
+                    if not self._auto_download
+                    else f"{self.plugin_name}·作品发现+自动下载",
                     "trigger": IntervalTrigger(hours=self._interval_hours),
                     "func": self.execute_task,
                     "func_kwargs": {"trigger": "interval"},
@@ -1865,7 +1900,28 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "endpoint": self.api_subscribe,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "按作品立即搜索并下载一条",
+                "summary": "订阅一部作品：立即搜一次，没下到则持续重试",
+            },
+            {
+                "path": "/works/unsubscribe",
+                "endpoint": self.api_unsubscribe,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "取消订阅（仅未下到的订阅）",
+            },
+            {
+                "path": "/works/subscribe_batch",
+                "endpoint": self.api_subscribe_batch,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "批量订阅（多选后一次提交，后台依次下载）",
+            },
+            {
+                "path": "/works/unsubscribe_batch",
+                "endpoint": self.api_unsubscribe_batch,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "批量取消订阅",
             },
             {
                 "path": "/works/refresh",
@@ -1928,6 +1984,10 @@ class ShortDramaActorSubscribe(_PluginBase):
         )
         merged["organize_interval_minutes"] = max(5, _to_int(merged.get("organize_interval_minutes")) or 30)
         merged["max_works"] = min(10, max(1, _to_int(merged.get("max_works")) or 10))
+        # ⚠️ 前端「保存」的 payload 可能不含这个键（旧前端 / 只改其它字段）。
+        # 这里必须兜成 **False**：兜成 True 等于用户随手保存一次就把自动下载打开，
+        # 下一轮轮询立刻批量灌下载器。
+        merged["auto_download"] = _to_bool(merged.get("auto_download"), False)
         merged["douban_cookie"] = str(merged.get("douban_cookie") or "").strip()
 
         self.update_config(merged)
@@ -2048,6 +2108,8 @@ class ShortDramaActorSubscribe(_PluginBase):
                     "actor_count": len(self._load_actors()),
                     "candidate_count": _to_int(stats.get("candidates")),
                     "downloaded_count": len(ledger),
+                    "subscribed_count": len(self._load_subs()),
+                    "auto_download": self._auto_download,
                     "organized_count": sum(
                         1
                         for item in ledger.values()
@@ -2062,7 +2124,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         }
 
     def api_run(self) -> Dict[str, Any]:
-        """立即触发一次订阅轮询。"""
+        """立即触发一次作品发现（订阅制下**不下载**，只刷新作品墙）。"""
         if not self.get_state():
             return {"success": False, "message": "插件未启用", "data": None}
         self._add_once_job(delay_seconds=1, trigger="api")
@@ -2101,11 +2163,14 @@ class ShortDramaActorSubscribe(_PluginBase):
 
         * ``organized``  —— 账本命中且已整理入库
         * ``downloaded`` —— 账本命中（已提交下载）
+        * ``subscribed``  —— **你订阅了、插件还没下到**（每轮都会重试，直到下到为止）
         * ``cooling``    —— 搜过但站点暂无资源，冷却中
-        * ``pending``    —— 还没处理过（下一轮会自动下载，也可手动「订阅」）
+        * ``pending``    —— 还没处理过（**订阅制：不会自动下载**，点「订阅」才下；
+          已打开「自动下载」开关时则下一轮会自行下载）
         """
         ledger = self._load_ledger()
         misses = self._load_misses()
+        subs = self._load_subs()
         now = time.time()
         lifetime = _MISS_COOLDOWN_HOURS * 3600
         rows: List[Dict[str, Any]] = []
@@ -2134,6 +2199,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                     "poster": _clean_text(work.get("poster")),
                     "vote": _to_float(work.get("vote")),
                     "state": "pending",
+                    "subscribed": key in subs,
                     "remaining_minutes": 0,
                     "site_name": "",
                     "torrent_title": "",
@@ -2146,15 +2212,21 @@ class ShortDramaActorSubscribe(_PluginBase):
                     row["torrent_title"] = _clean_text(entry.get("torrent_title"))
                     row["time"] = _clean_text(entry.get("time"))
                 else:
+                    # 订阅中优先于冷却：订阅是你明确要的，站点暂时没资源也仍显示「订阅中」
+                    # （剩余冷却时间照样带出去，前端可以补一句「站点暂无资源」）
+                    if row["subscribed"]:
+                        row["state"] = "subscribed"
                     last = _to_float(misses.get(key))
                     if last:
                         remaining = int(lifetime - (now - last))
                         if remaining > 0:
-                            row["state"] = "cooling"
+                            if not row["subscribed"]:
+                                row["state"] = "cooling"
                             row["remaining_minutes"] = max(1, remaining // 60)
                 rows.append(row)
 
-        order = {"pending": 0, "cooling": 1, "downloaded": 2, "organized": 3}
+        # 待办在前：订阅中 → 待订阅 → 冷却 → 已下载 → 已入库
+        order = {"subscribed": 0, "pending": 1, "cooling": 2, "downloaded": 3, "organized": 4}
         rows.sort(
             key=lambda item: (
                 order.get(str(item.get("state")), 9),
@@ -2188,6 +2260,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "summary": {
                     "total": len(rows),
                     "pending": sum(1 for item in rows if item["state"] == "pending"),
+                    "subscribed": sum(1 for item in rows if item["state"] == "subscribed"),
                     "cooling": sum(1 for item in rows if item["state"] == "cooling"),
                     "downloaded": sum(
                         1 for item in rows if item["state"] in ("downloaded", "organized")
@@ -2221,11 +2294,190 @@ class ShortDramaActorSubscribe(_PluginBase):
                     return found
         return None
 
-    def api_subscribe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """按作品立即搜索并下载（作品墙上每条的「订阅」按钮）。
+    @staticmethod
+    def _sub_record(work: Dict[str, Any]) -> Dict[str, Any]:
+        """订阅表里一条记录的形状（够重试用：剧名 / 年份 / 别名 / 来源 id / 演员）。"""
+        return {
+            "title": _clean_text(work.get("title")),
+            "year": _clean_text(work.get("year")),
+            "alt_title": _clean_text(work.get("alt_title")),
+            "media_source": _clean_text(work.get("media_source")),
+            "media_id": _clean_text(work.get("media_id")),
+            "actor": _clean_text(work.get("actor")),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
-        与定时轮询走**同一条**「搜索 → 匹配 → 择优 → 下载」链路，因此手动订阅的
-        条目同样会写账本、清冷却，下一轮不会被重复下载。同步执行（单条通常几秒）；
+    def _remember_sub(self, entry_key: str, work: Dict[str, Any]) -> None:
+        """把一部作品记进**订阅表**（你点名要的剧，插件负责一直试到下到为止）。
+
+        与账本的区别：账本 = **已下到**（去重用），订阅表 = **还没下到但你要**（重试用）。
+        """
+        if not entry_key:
+            return
+        subs = self._load_subs()
+        subs[entry_key] = self._sub_record(work)
+        self._save_subs(subs)
+
+    def drain_subscriptions_task(self, trigger: str = "manual") -> bool:
+        """立刻把订阅表处理一遍（批量订阅之后马上开工用）。
+
+        与轮询里的订阅重试是同一段逻辑；这里只做「你订阅过、还没下到」的条目，
+        绝不会碰未订阅的作品。
+        """
+        if not self.get_state():
+            return False
+        if not self._sites or not self._download_path or not self._downloader:
+            return False
+        if not self._lock.acquire(blocking=False):
+            logger.info(f"{PLUGIN_NAME} 后台任务执行中，跳过本次订阅下载（{trigger}）")
+            return False
+        self._running = True
+        try:
+            outcome = self._run_subscriptions()
+            message = (
+                f"订阅下载完成（{trigger}）：成功 {outcome['downloaded']} 部，"
+                f"仍待下载 {outcome['pending']} 部"
+            )
+            self._last_result = {"success": True, "message": message}
+            logger.info(f"{PLUGIN_NAME} {message}")
+            return True
+        except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务挂掉
+            logger.error(f"{PLUGIN_NAME} 订阅下载异常：{err}")
+            return False
+        finally:
+            self._running = False
+            self._lock.release()
+
+    def api_subscribe_batch(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """批量订阅（作品墙多选后一次提交）。
+
+        只把选中的作品写进订阅表，随后登记一个后台任务依次下载 —— 一次选几十部时，
+        同步接口会超时，所以这里立即返回、后台慢慢跑（进度看作品墙的状态徽标）。
+        """
+        payload = payload or {}
+        keys = [str(item or "").strip() for item in (payload.get("keys") or [])]
+        keys = [item for item in keys if item]
+        if not keys:
+            return {"success": False, "message": "没有选中任何作品", "data": None}
+        if not self.get_state():
+            return {"success": False, "message": "插件未启用", "data": None}
+        if not self._sites:
+            return {"success": False, "message": "未配置搜索站点", "data": None}
+        if not self._download_path or not self._downloader:
+            return {"success": False, "message": "未配置下载目录或下载器", "data": None}
+
+        ledger = self._load_ledger()
+        subs = self._load_subs()
+        added: List[str] = []
+        already = 0
+        for key in keys:
+            if key in ledger:
+                already += 1
+                continue
+            work = self._find_work(key)
+            if work is None or not _clean_text(work.get("title")):
+                continue
+            subs[key] = self._sub_record(work)
+            added.append(_clean_text(work.get("title")))
+        self._save_subs(subs)
+        if added:
+            self._add_once_job(
+                delay_seconds=1,
+                trigger="batch",
+                func=self.drain_subscriptions_task,
+                job_id=f"{_ONCE_JOB_ID}_batch",
+                job_name=f"{PLUGIN_NAME}批量订阅下载",
+            )
+        message = f"已订阅 {len(added)} 部，正在后台依次下载；站点暂无资源的会持续重试"
+        if already:
+            message += f"（{already} 部已在账本里，跳过）"
+        return {"success": True, "message": message, "data": {"added": len(added), "skipped": already}}
+
+    def api_unsubscribe_batch(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """批量取消订阅（只影响「订阅中」的条目，已下载的走「移出账本」）。"""
+        payload = payload or {}
+        keys = [str(item or "").strip() for item in (payload.get("keys") or [])]
+        keys = [item for item in keys if item]
+        if not keys:
+            return {"success": False, "message": "没有选中任何作品", "data": None}
+        subs = self._load_subs()
+        removed = 0
+        for key in keys:
+            if subs.pop(key, None) is not None:
+                removed += 1
+        self._save_subs(subs)
+        return {"success": True, "message": f"已取消 {removed} 部作品的订阅", "data": {"removed": removed}}
+
+    def _run_subscriptions(self, searcher: Optional["_SiteSearcher"] = None) -> Dict[str, int]:
+        """处理订阅表：把「你订阅了但还没下到」的作品逐条重试一遍。
+
+        订阅制下这是**唯一**会主动下载的入口（另一个是你在作品墙现场点「订阅」）。
+        成功的进账本并移出订阅表；站点仍无资源的留在表里，下一轮继续。
+        返回 ``{"downloaded": n, "pending": m}``。
+        """
+        subs = self._load_subs()
+        if not subs:
+            return {"downloaded": 0, "pending": 0}
+        ledger = self._load_ledger()
+        misses = self._load_misses()
+        searcher = searcher or _SiteSearcher(
+            self._sites, prefer_short_drama_category=self._prefer_short_drama_category
+        )
+        downloaded = 0
+        for key, info in list(subs.items()):
+            info = info if isinstance(info, dict) else {}
+            title = _clean_text(info.get("title"))
+            if not title:
+                subs.pop(key, None)
+                continue
+            if key in ledger:
+                # 已经下到了（可能在作品墙手动订阅过），订阅表收拾干净
+                subs.pop(key, None)
+                continue
+            work = {
+                "title": title,
+                "year": _clean_text(info.get("year")),
+                "alt_title": _clean_text(info.get("alt_title")),
+                "media_source": _clean_text(info.get("media_source")),
+                "media_id": _clean_text(info.get("media_id")),
+                "actor": _clean_text(info.get("actor")),
+            }
+            try:
+                outcome = self._process_candidate(work, searcher)
+            except Exception as err:  # noqa: BLE001 - 单条失败不影响其它订阅
+                logger.error(f"{PLUGIN_NAME} 订阅「{title}」重试异常：{err}")
+                continue
+            if outcome and outcome.get("ok"):
+                ledger[key] = outcome["entry"]
+                self._save_ledger(ledger)
+                subs.pop(key, None)
+                misses.pop(key, None)
+                downloaded += 1
+                logger.info(f"{PLUGIN_NAME} 订阅已下载：{title}（{outcome['entry'].get('site_name') or '未知站点'}）")
+            else:
+                # 站点暂无资源 / 提交失败：留在订阅表，更新一次冷却时间供页面提示
+                misses[key] = time.time()
+        self._save_subs(subs)
+        self.save_data(_DATA_MISS, misses)
+        return {"downloaded": downloaded, "pending": len(subs)}
+
+    def api_unsubscribe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """取消订阅（只在还没下到时有意义；已下载的请用「移出账本」）。"""
+        payload = payload or {}
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            return {"success": False, "message": "缺少 key", "data": None}
+        subs = self._load_subs()
+        if subs.pop(key, None) is None:
+            return {"success": False, "message": "该作品不在订阅表里", "data": None}
+        self._save_subs(subs)
+        return {"success": True, "message": "已取消订阅", "data": None}
+
+    def api_subscribe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """订阅一部作品（作品墙上每条的「订阅」按钮）：立即试一次，没下到就持续重试。
+
+        与轮询里的订阅重试走**同一条**「搜索 → 匹配 → 择优 → 下载」链路，因此订阅的
+        条目同样会写账本、清冷却，不会被重复下载。同步执行（单条通常几秒）；
         若后台正有一轮任务在跑则直接拒绝，避免同一部剧被提交两次。
         """
         payload = payload or {}
@@ -2269,23 +2521,33 @@ class ShortDramaActorSubscribe(_PluginBase):
             )
             outcome = self._process_candidate(work, searcher)
             if outcome is None:
+                # 站点暂时没有资源：**订阅照样成立**（订阅是持续的），
+                # 记一条冷却时间供页面显示「站点暂无资源」，插件每轮会重试。
                 misses = self._load_misses()
                 misses[entry_key] = time.time()
                 self.save_data(_DATA_MISS, misses)
+                self._remember_sub(entry_key, work)
                 return {
-                    "success": False,
-                    "message": f"站点暂无「{title}」的资源（已进入冷却，24 小时后自动重试）",
+                    "success": True,
+                    "message": f"已订阅「{title}」：站点暂时没有资源，插件会持续重试",
                     "data": None,
                 }
             if not outcome.get("ok"):
+                self._remember_sub(entry_key, work)
                 return {
-                    "success": False,
-                    "message": f"「{title}」下载失败：{outcome.get('reason') or '未知原因'}",
+                    "success": True,
+                    "message": (
+                        f"已订阅「{title}」：本次下载提交失败"
+                        f"（{outcome.get('reason') or '未知原因'}），插件会持续重试"
+                    ),
                     "data": None,
                 }
             entry = outcome["entry"]
             ledger[entry_key] = entry
             self._save_ledger(ledger)
+            subs = self._load_subs()
+            if subs.pop(entry_key, None) is not None:
+                self._save_subs(subs)
             misses = self._load_misses()
             if misses.pop(entry_key, None) is not None:
                 self.save_data(_DATA_MISS, misses)
@@ -2483,6 +2745,15 @@ class ShortDramaActorSubscribe(_PluginBase):
     def _save_ledger(self, ledger: Dict[str, Any]) -> None:
         """保存账本。"""
         self.save_data(_DATA_LEDGER, ledger)
+
+    def _load_subs(self) -> Dict[str, Any]:
+        """读取订阅表（键与账本一致：``归一化剧名|年份``）。"""
+        data = self.get_data(_DATA_SUBS)
+        return data if isinstance(data, dict) else {}
+
+    def _save_subs(self, subs: Dict[str, Any]) -> None:
+        """保存订阅表。"""
+        self.save_data(_DATA_SUBS, subs)
 
     def _load_actors(self) -> Dict[str, Any]:
         """读取演员及其作品快照。"""
@@ -3034,9 +3305,17 @@ class ShortDramaActorSubscribe(_PluginBase):
     # ── 主流程 ──
 
     def execute_task(self, trigger: str = "manual") -> bool:
-        """执行一轮完整任务：发现 → 搜索 → 匹配 → 择优 → 下载。
+        """执行一轮任务：**发现**（+ 订阅重试 / 可选全量下载）。
 
-        返回是否成功（无异常即视为成功，即使没有新剧可下）。
+        订阅制（默认，``auto_download=False``）下本函数只做两件事：
+
+        1. **刷新演员作品快照** —— 新作品自动出现在作品墙；
+        2. **重试订阅表** —— 你在作品墙点过「订阅」但还没下到的作品，每轮再试一次。
+
+        未订阅的作品**永远不会**被下载。打开「自动下载」开关后恢复老行为：
+        发现 → 把快照里所有没下过的作品挨个搜索下载（会把下载器灌爆，慎用）。
+
+        返回是否成功（无异常即视为成功，即使没有新作品）。
         """
         if not self.get_state():
             return False
@@ -3055,6 +3334,37 @@ class ShortDramaActorSubscribe(_PluginBase):
             # 省下极紧的豆瓣额度；手动触发（立即运行 / 命令 / 一次性）一律强制重解析，
             # 用户点了按钮却看不到新作品才叫奇怪。
             candidates = self._refresh_actors(force=trigger != "interval")
+
+            # ── 订阅制：本轮到此为止（发现已完成） ────────────────
+            # 唯一会主动下载的是**订阅表**里的条目（你在作品墙点过「订阅」的）。
+            # 未订阅的作品永远不会被下载 —— 这类批量提交不可逆（种子进下载器就收不回来）。
+            if not self._auto_download:
+                outcome = self._run_subscriptions()
+                total_sub = outcome["downloaded"] + outcome["pending"]
+                if total_sub:
+                    message = (
+                        f"本轮仅发现：候选 {len(candidates)} 部；订阅重试 {total_sub} 部"
+                        f"（成功 {outcome['downloaded']} 部，仍待下载 {outcome['pending']} 部）"
+                    )
+                else:
+                    message = (
+                        f"本轮仅发现：候选 {len(candidates)} 部（订阅制：未自动下载；"
+                        f"在作品墙点「订阅」才会下载）"
+                    )
+                stats = self._load_stats()
+                stats.update(
+                    {
+                        "candidates": len(candidates),
+                        "last_run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "elapsed": round(time.time() - started, 1),
+                    }
+                )
+                stats["downloaded"] = len(self._load_ledger())
+                self._save_stats(stats)
+                self._last_result = {"success": True, "message": message}
+                logger.info(f"{PLUGIN_NAME} {message}")
+                return True
+
             ledger = self._load_ledger()
             misses = self._load_misses()
             searcher = _SiteSearcher(self._sites, prefer_short_drama_category=self._prefer_short_drama_category)
@@ -3092,6 +3402,10 @@ class ShortDramaActorSubscribe(_PluginBase):
                 elif outcome.get("ok"):
                     misses.pop(key, None)
                     ledger[key] = outcome["entry"]
+                    # ⚠️ **增量落盘**：账本若只在整轮结束时写一次，中途被宿主重载 /
+                    # 异常打断就会把本轮所有下载丢出去重记录，下一轮**重复下载**同一批。
+                    # 这一条曾经真的发生过（一轮 114 部全丢）。每成功一部立刻落盘。
+                    self._save_ledger(ledger)
                     downloaded.append(outcome["entry"])
                 else:
                     misses[key] = time.time()

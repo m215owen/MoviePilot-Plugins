@@ -200,6 +200,18 @@
         </v-btn>
       </div>
       <v-switch
+        v-model="local.auto_download"
+        label="自动下载（不推荐）"
+        color="primary"
+        hide-details
+        density="compact"
+      />
+      <div class="text-caption sdas-dim mb-3">
+        默认<b>关闭</b>：定时轮询只负责发现 —— 把新作品摆到作品墙，<b>你在作品墙点「订阅」才会下载</b>。
+        打开后，轮询会把快照里<b>所有没下过的作品</b>挨个搜索下载（演员一多就是上千个种子），
+        会把下载器灌爆，而且这类批量提交不可逆，请谨慎打开。
+      </div>
+      <v-switch
         v-model="local.organize_enabled"
         label="由本插件整理入库"
         color="primary"
@@ -373,6 +385,7 @@ const defaults: PluginConfig = {
   retry_minutes: 20,
   organize_enabled: false,
   organize_interval_minutes: 30,
+  auto_download: false,
   notify: true,
   douban_cookie: '',
   proxy: false,

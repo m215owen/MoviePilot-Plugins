@@ -5,7 +5,14 @@
     </div>
 
     <div v-else class="sdas-grid">
-      <v-card v-for="work in works" :key="work.key" variant="outlined" class="sdas-card">
+      <v-card
+        v-for="work in works"
+        :key="work.key"
+        variant="outlined"
+        class="sdas-card"
+        :class="{ 'sdas-card-picked': selectable && isSelected(work) }"
+        @click="onCardClick(work)"
+      >
         <div class="sdas-poster">
           <v-img :src="proxyImage(work.poster)" :aspect-ratio="2 / 3" cover class="sdas-poster-img">
             <template #placeholder>
@@ -39,6 +46,24 @@
           >
             {{ sourceLabel(work.source) }}
           </v-chip>
+          <!-- 多选模式：勾选框画在海报左下角，不与状态/来源徽标抢位置 -->
+          <v-checkbox-btn
+            v-if="selectable"
+            :model-value="isSelected(work)"
+            :disabled="!selectableState(work)"
+            color="primary"
+            density="compact"
+            class="sdas-pick"
+            :title="
+              selectableState(work)
+                ? isSelected(work)
+                  ? '取消选择'
+                  : '选择这部剧'
+                : '已下载/已入库的作品不支持批量订阅'
+            "
+            @click.stop
+            @update:model-value="emit('toggle-select', work)"
+          />
         </div>
 
         <v-card-text class="pa-2 pb-1 sdas-body">
@@ -59,7 +84,8 @@
           </div>
         </v-card-text>
 
-        <v-card-actions class="pa-2 pt-0 sdas-actions">
+        <!-- 多选模式下隐藏单卡动作，避免误触发单个订阅 -->
+        <v-card-actions v-if="!selectable" class="pa-2 pt-0 sdas-actions">
           <v-btn
             size="small"
             class="sdas-sub-btn"
@@ -69,7 +95,7 @@
             :loading="pendingKey === work.key"
             :disabled="!actable(work)"
             :title="statusOf(work).title"
-            @click="emit('subscribe', work)"
+            @click="onAction(work)"
           >
             {{ statusOf(work).action }}
           </v-btn>
@@ -124,13 +150,35 @@ const props = withDefaults(
     emptyText?: string
     /** 插件配置里的搜索站点，用于「搜索资源」深链（留空则用宿主自己的默认站点） */
     sites?: number[]
+    /** 多选模式：卡片上出现勾选框，点卡片即勾选（用于批量订阅） */
+    selectable?: boolean
+    /** 已勾选的作品键 */
+    selectedKeys?: string[]
   }>(),
-  { sites: () => [] }
+  { sites: () => [], selectedKeys: () => [] }
 )
 
 const emit = defineEmits<{
   (e: 'subscribe', work: WorkItem): void
+  (e: 'unsubscribe', work: WorkItem): void
+  (e: 'toggle-select', work: WorkItem): void
 }>()
+
+/** 该条是否处于已勾选状态 */
+function isSelected(work: WorkItem): boolean {
+  return props.selectedKeys.includes(work.key)
+}
+
+/** 可勾选的状态：待订阅 / 冷却 / 订阅中（已下载、已入库的不能再订阅） */
+function selectableState(work: WorkItem): boolean {
+  return work.state === 'pending' || work.state === 'cooling' || work.state === 'subscribed'
+}
+
+/** 多选模式下点整张卡片即勾选/取消（单选按钮被 @click.stop 挡住，不走这里） */
+function onCardClick(work: WorkItem): void {
+  if (!props.selectable || !selectableState(work)) return
+  emit('toggle-select', work)
+}
 
 /** 发现来源 → 展示名 */
 function sourceLabel(source?: string): string {
@@ -139,9 +187,18 @@ function sourceLabel(source?: string): string {
   return '未知'
 }
 
-/** 只有还没处理过的作品才允许点「订阅」 */
+/** 可点的状态：待订阅 / 冷却（再试一次）/ 订阅中（取消订阅） */
 function actable(work: WorkItem): boolean {
-  return work.state === 'pending' || work.state === 'cooling'
+  return work.state === 'pending' || work.state === 'cooling' || work.state === 'subscribed'
+}
+
+/** 主按钮的动作按状态分派：「订阅中」的按钮是取消订阅，其余是订阅 */
+function onAction(work: WorkItem): void {
+  if (work.state === 'subscribed') {
+    emit('unsubscribe', work)
+    return
+  }
+  emit('subscribe', work)
 }
 
 /** 状态 → 徽标与按钮的文案 / 配色 / 说明（口径与后端 `_work_rows` 一致） */
@@ -172,6 +229,17 @@ function statusOf(work: WorkItem): {
         : '已提交下载，等待整理入库',
     }
   }
+  if (work.state === 'subscribed') {
+    return {
+      text: '订阅中',
+      action: '取消订阅',
+      color: 'secondary',
+      icon: 'mdi-bookmark-check-outline',
+      title: work.remaining_minutes
+        ? `已订阅，但站点暂时没搜到资源（${work.remaining_minutes} 分钟前刚搜过）；插件每轮都会自动重试。点此取消订阅`
+        : '已订阅：插件会按轮询节奏一直重试，直到下载成功。点此取消订阅',
+    }
+  }
   if (work.state === 'cooling') {
     return {
       text: '冷却',
@@ -186,7 +254,7 @@ function statusOf(work: WorkItem): {
     action: '订阅',
     color: 'primary',
     icon: 'mdi-plus',
-    title: '立即按剧名到站点搜索并择优下载一条',
+    title: '订阅这部剧：立即按剧名到站点搜索并择优下载一条；这次没下到会自动重试',
   }
 }
 
@@ -219,6 +287,20 @@ function resourceHref(work: WorkItem): string {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* 多选模式：已勾选的卡片描边醒目一点 */
+.sdas-card-picked {
+  border-color: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 0 1px rgb(var(--v-theme-primary)) inset;
+}
+
+.sdas-pick {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  background-color: rgba(var(--v-theme-surface), 0.72);
+  border-radius: 50%;
 }
 
 .sdas-poster {

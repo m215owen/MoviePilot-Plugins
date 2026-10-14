@@ -75,6 +75,7 @@
         variant="tonal"
         prepend-icon="mdi-play"
         :loading="running"
+        title="立刻跑一轮：刷新演员作品并重试已订阅的作品（不会下载未订阅的剧）"
         @click="doRun"
       >
         立即运行
@@ -154,6 +155,9 @@
         <v-chip v-if="worksSummary.pending" size="small" variant="tonal" color="primary">
           待订阅 {{ worksSummary.pending }}
         </v-chip>
+        <v-chip v-if="worksSummary.subscribed" size="small" variant="tonal" color="secondary">
+          订阅中 {{ worksSummary.subscribed }}
+        </v-chip>
         <v-chip v-if="worksSummary.cooling" size="small" variant="tonal" color="warning">
           冷却 {{ worksSummary.cooling }}
         </v-chip>
@@ -221,6 +225,7 @@
           <v-btn-toggle v-model="workState" density="compact" variant="outlined" divided>
             <v-btn size="small" value="all">全部</v-btn>
             <v-btn size="small" value="pending">待订阅</v-btn>
+            <v-btn size="small" value="subscribed">订阅中</v-btn>
             <v-btn size="small" value="cooling">冷却中</v-btn>
             <v-btn size="small" value="downloaded">已下载</v-btn>
           </v-btn-toggle>
@@ -238,6 +243,59 @@
           <span class="text-caption sdas-dim sdas-count">
             筛出 {{ filteredWorks.length }} 部
           </span>
+          <v-btn
+            size="small"
+            :variant="selectMode ? 'flat' : 'tonal'"
+            :color="selectMode ? 'primary' : undefined"
+            prepend-icon="mdi-checkbox-multiple-marked-outline"
+            :title="
+              selectMode
+                ? '退出多选'
+                : '多选：勾选多部作品后一次批量订阅（已下载/已入库的不可选）'
+            "
+            @click="toggleSelectMode"
+          >
+            {{ selectMode ? '退出多选' : '多选' }}
+          </v-btn>
+        </div>
+
+        <!-- 多选操作条：只在多选模式下出现，动作只针对勾选的作品 -->
+        <div v-if="selectMode" class="d-flex align-center flex-wrap mt-2 sdas-pickbar">
+          <span class="text-caption">
+            已选 <b>{{ selectedKeys.length }}</b> 部
+          </span>
+          <span class="text-caption sdas-dim">
+            待订阅 {{ selectedSubscribable.length }} ｜ 订阅中 {{ selectedSubscribed.length }}
+          </span>
+          <v-btn size="x-small" variant="text" color="primary" @click="selectAllVisible">
+            选中本页可订阅的
+          </v-btn>
+          <v-btn size="x-small" variant="text" :disabled="!selectedKeys.length" @click="clearSelection">
+            清空
+          </v-btn>
+          <v-spacer />
+          <v-btn
+            size="small"
+            color="secondary"
+            variant="tonal"
+            prepend-icon="mdi-bookmark-remove-outline"
+            :disabled="!selectedSubscribed.length || batching"
+            :loading="batching && batchAction === 'unsubscribe'"
+            @click="doBatchUnsubscribe"
+          >
+            批量取消订阅（{{ selectedSubscribed.length }}）
+          </v-btn>
+          <v-btn
+            size="small"
+            color="primary"
+            variant="flat"
+            prepend-icon="mdi-bookmark-plus-outline"
+            :disabled="!selectedSubscribable.length || batching"
+            :loading="batching && batchAction === 'subscribe'"
+            @click="doBatchSubscribe"
+          >
+            批量订阅（{{ selectedSubscribable.length }}）
+          </v-btn>
         </div>
 
         <!-- 演员解析状态只留一句汇总（演员清单本身由上面的筛选 chip 承担，不再另开一块，
@@ -276,7 +334,11 @@
           :pending-key="subscribingKey"
           :sites="searchSites"
           :empty-text="worksEmptyHint"
+          :selectable="selectMode"
+          :selected-keys="selectedKeys"
           @subscribe="doSubscribe"
+          @unsubscribe="doUnsubscribe"
+          @toggle-select="toggleSelect"
         />
 
         <!-- 分页：作品多时每页只渲染 20 张，避免长列表拖垮渲染。
@@ -439,8 +501,8 @@
       <v-card class="pa-4">
         <div class="text-subtitle-2 mb-2">清空全部账本记录？</div>
         <div class="text-caption sdas-dim mb-3">
-          账本用于去重：清空后所有剧都会被当作未下载，下一轮会重新搜索并下载（已下载文件不受影响）。
-          同时会清空未命中冷却。
+          账本用于去重与「已下载」状态：清空后这些剧会回到「待订阅」，<b>不会自动重新下载</b>
+          （订阅制下只有你点「订阅」的才会下）。同时会清空未命中冷却。
         </div>
         <div class="d-flex">
           <v-spacer />
@@ -474,10 +536,13 @@
 /**
  * 插件详情页 / 侧栏全页面板（联邦暴露名 ./Page，侧栏全页经 AppPage 薄壳复用）。
  *
- * 数据全部来自插件自己的 `GET /status`：账本、冷却、演员快照与运行摘要。
- * 本插件不走宿主订阅系统，因此这里没有任何订阅按钮 —— 面板的核心动作是
- * 「设置」（就地打开完整配置弹窗）、「立即运行」「整理入库」「移出账本」与
- * 「人工到站点复核」。
+ * 数据全部来自插件自己的 `GET /status` 与 `GET /works`：账本、订阅表、冷却、
+ * 演员快照与运行摘要。
+ *
+ * 核心口径（用户定稿）：**演员作品自动刷新，订阅的作品才下载** ——
+ * 定时轮询只刷新作品墙（并重试已订阅但还没下到的），
+ * 未订阅的作品永远不会被提交下载。面板动作：作品墙（单选「订阅」/ 多选批量订阅）
+ * → 账本 → 冷却，外加「设置」与「立即运行」。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import ConfigPanel from './Config.vue'
@@ -500,6 +565,9 @@ import {
   runOnce,
   saveConfig,
   subscribeWork,
+  subscribeWorksBatch,
+  unsubscribeWork,
+  unsubscribeWorksBatch,
 } from './api'
 import type {
   ActorRecord,
@@ -561,7 +629,7 @@ const siteOptions = ref<SiteOption[]>([])
 /** 作品墙数据（发现层快照 + 每条状态），来自 GET /works */
 const works = ref<WorksPayload>({
   items: [],
-  summary: { total: 0, pending: 0, cooling: 0, downloaded: 0 },
+  summary: { total: 0, pending: 0, subscribed: 0, cooling: 0, downloaded: 0 },
   refreshed_at: '',
   running: false,
   configured: false,
@@ -886,6 +954,108 @@ async function doSubscribe(row: WorkItem): Promise<void> {
   }
 }
 
+/** 取消订阅：把这条从订阅表里摘掉，之后不再自动重试 */
+async function doUnsubscribe(row: WorkItem): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  subscribingKey.value = row.key
+  workMessage.value = ''
+  try {
+    const res = await unsubscribeWork(api, { key: row.key })
+    workMessage.value = res.message
+    await loadWorks()
+    await load(false)
+  } finally {
+    subscribingKey.value = ''
+  }
+}
+
+// ── 多选 / 批量订阅 ────────────────────────────────────────────
+
+const selectMode = ref(false)
+const selectedKeys = ref<string[]>([])
+const batching = ref(false)
+const batchAction = ref<'subscribe' | 'unsubscribe' | ''>('')
+
+/** 勾选状态：已下载/已入库的作品不参与（没什么可订阅的） */
+function pickable(row: WorkItem): boolean {
+  return row.state === 'pending' || row.state === 'cooling' || row.state === 'subscribed'
+}
+
+/** 当前勾选里的「可订阅」（待订阅 / 冷却）与「订阅中」两类，按钮按各自数量给动作 */
+const selectedSubscribable = computed(() =>
+  selectedWorks.value.filter((row) => row.state === 'pending' || row.state === 'cooling')
+)
+const selectedSubscribed = computed(() =>
+  selectedWorks.value.filter((row) => row.state === 'subscribed')
+)
+const selectedWorks = computed<WorkItem[]>(() => {
+  const wanted = new Set(selectedKeys.value)
+  return works.value.items.filter((row) => wanted.has(row.key))
+})
+
+function toggleSelectMode(): void {
+  selectMode.value = !selectMode.value
+  if (!selectMode.value) selectedKeys.value = []
+}
+
+function toggleSelect(row: WorkItem): void {
+  const index = selectedKeys.value.indexOf(row.key)
+  if (index >= 0) selectedKeys.value.splice(index, 1)
+  else selectedKeys.value.push(row.key)
+}
+
+function clearSelection(): void {
+  selectedKeys.value = []
+}
+
+/** 一键选中当前页里所有可订阅的作品（不用几十次点击） */
+function selectAllVisible(): void {
+  const keys = pagedWorks.value.filter(pickable).map((row) => row.key)
+  const merged = new Set([...selectedKeys.value, ...keys])
+  selectedKeys.value = Array.from(merged)
+}
+
+async function doBatchSubscribe(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api || !selectedSubscribable.value.length) return
+  batching.value = true
+  batchAction.value = 'subscribe'
+  workMessage.value = ''
+  try {
+    const res = await subscribeWorksBatch(api, {
+      keys: selectedSubscribable.value.map((row) => row.key),
+    })
+    workMessage.value = res.message
+    await loadWorks()
+    await load(false)
+    emit('action')
+  } finally {
+    batching.value = false
+    batchAction.value = ''
+  }
+}
+
+async function doBatchUnsubscribe(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api || !selectedSubscribed.value.length) return
+  batching.value = true
+  batchAction.value = 'unsubscribe'
+  workMessage.value = ''
+  try {
+    const res = await unsubscribeWorksBatch(api, {
+      keys: selectedSubscribed.value.map((row) => row.key),
+    })
+    workMessage.value = res.message
+    await loadWorks()
+    await load(false)
+    emit('action')
+  } finally {
+    batching.value = false
+    batchAction.value = ''
+  }
+}
+
 function apply(data: StatusPayload): void {
   payload.value = data
 }
@@ -1113,6 +1283,14 @@ void API_BASE
 
 .sdas-count {
   white-space: nowrap;
+}
+
+/* 多选操作条：轻底色，强调「这段动作只作用于勾选的条目」 */
+.sdas-pickbar {
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background-color: rgba(var(--v-theme-primary), 0.06);
 }
 
 .sdas-label {

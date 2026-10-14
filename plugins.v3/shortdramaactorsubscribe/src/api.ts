@@ -412,8 +412,8 @@ export async function fetchWorks(api: PluginApi): Promise<WorksPayload | null> {
 }
 
 /**
- * 立即订阅一条作品：后端按同一条「搜索 → 匹配 → 择优 → 下载」链路处理，
- * 成功后写账本（因此不会与自动轮询重复下载）。
+ * 订阅一条作品：后端立即按「搜索 → 匹配 → 择优 → 下载」链路试一次；
+ * 站点暂无资源也会**保留订阅**，之后每轮自动重试，直到下到为止。
  */
 export async function subscribeWork(
   api: PluginApi,
@@ -421,7 +421,53 @@ export async function subscribeWork(
 ): Promise<{ ok: boolean; message: string; data?: WorkItem }> {
   try {
     const res = normalizeResult<WorkItem>(await api.post(`${API_BASE}/works/subscribe`, payload))
-    return { ok: res.ok, message: res.message || (res.ok ? '已提交下载' : '订阅失败'), data: res.data }
+    return { ok: res.ok, message: res.message || (res.ok ? '已订阅' : '订阅失败'), data: res.data }
+  } catch (err) {
+    return { ok: false, message: extractError(err) }
+  }
+}
+
+/** 取消订阅（只对「还没下到」的订阅有意义）。 */
+export async function unsubscribeWork(
+  api: PluginApi,
+  payload: { key: string }
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = normalizeResult<null>(await api.post(`${API_BASE}/works/unsubscribe`, payload))
+    return { ok: res.ok, message: res.message || (res.ok ? '已取消订阅' : '取消失败') }
+  } catch (err) {
+    return { ok: false, message: extractError(err) }
+  }
+}
+
+/**
+ * 批量订阅（作品墙多选）。后端只把选中的作品写进订阅表并登记后台任务，
+ * 因此立即返回；下载进度看作品墙的状态徽标（订阅中 → 已下载）。
+ */
+export async function subscribeWorksBatch(
+  api: PluginApi,
+  payload: { keys: string[] }
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = normalizeResult<{ added: number; skipped: number }>(
+      await api.post(`${API_BASE}/works/subscribe_batch`, payload)
+    )
+    return { ok: res.ok, message: res.message || (res.ok ? '已提交批量订阅' : '批量订阅失败') }
+  } catch (err) {
+    return { ok: false, message: extractError(err) }
+  }
+}
+
+/** 批量取消订阅（只影响「订阅中」的条目）。 */
+export async function unsubscribeWorksBatch(
+  api: PluginApi,
+  payload: { keys: string[] }
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = normalizeResult<{ removed: number }>(
+      await api.post(`${API_BASE}/works/unsubscribe_batch`, payload)
+    )
+    return { ok: res.ok, message: res.message || (res.ok ? '已取消订阅' : '取消失败') }
   } catch (err) {
     return { ok: false, message: extractError(err) }
   }

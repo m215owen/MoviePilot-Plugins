@@ -27,6 +27,12 @@ export interface PluginConfig {
   transfer_type: string
   /** 订阅轮询间隔（小时） */
   interval_hours: number
+  /**
+   * 定时轮询是否顺带自动下载。**默认 false（订阅制）**：
+   * 轮询只做发现，下载由用户在作品墙点「订阅」触发。
+   * 打开后会把快照里所有没下过的作品批量提交下载，慎用。
+   */
+  auto_download: boolean
   /** 演员作品快照的整体刷新间隔（小时，默认 24）：期间轮询直接用缓存，省豆瓣额度 */
   snapshot_hours: number
   /** 解析失败后的重试间隔（分钟，默认 20）：登录态恢复后能很快自愈 */
@@ -235,7 +241,7 @@ export interface OptionsPayload {
 }
 
 /** 作品墙里的状态 */
-export type WorkState = 'pending' | 'cooling' | 'downloaded' | 'organized'
+export type WorkState = 'pending' | 'subscribed' | 'cooling' | 'downloaded' | 'organized'
 
 /** 作品墙的一条：演员参演作品 + 它当前的处理状态 */
 export interface WorkItem {
@@ -256,6 +262,8 @@ export interface WorkItem {
   /** 评分，0 表示无评分（卡片上不展示） */
   vote?: number
   state: WorkState
+  /** 是否已订阅（订阅中：插件每轮都会重试，直到下到为止） */
+  subscribed?: boolean
   /** 冷却剩余分钟（state = cooling 时有意义） */
   remaining_minutes?: number
   /** 已下载时有：命中站点 */
@@ -269,7 +277,10 @@ export interface WorkItem {
 /** 作品墙顶部统计 */
 export interface WorksSummary {
   total: number
+  /** 还没订阅、也没下载（点「订阅」才下） */
   pending: number
+  /** 已订阅但还没下到（插件每轮重试） */
+  subscribed: number
   cooling: number
   downloaded: number
 }
