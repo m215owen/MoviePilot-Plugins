@@ -187,7 +187,7 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "1.2.0"
+PLUGIN_VERSION = "1.3.0"
 
 # ── 数据源常量 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
@@ -469,6 +469,21 @@ _ORG_HEAT_RE = re.compile(r"(?P<value>[\d.]+\s*[万亿]?)\s*热度")
 _ORG_PLAYS_RE = re.compile(r"(?P<value>[\d.]+\s*[万亿]?)\s*播放")
 # 目录页底部：<span …>第 1 页，共 1879 页</span>
 _ORG_TOTAL_PAGES_RE = re.compile(r"共\s*(?P<total>\d+)\s*页")
+# 站点的 ``genre`` 里混着集数说明（实测「家庭」「女性成长」后面跟着「全72集」），
+# 它不是类型标签，直接丢掉 —— 否则详情页的类型行会显示成「… | 全72集」。
+_ORG_COUNT_TAG_RE = re.compile(r"^(?:全|共|更新至|已更新至)?\s*\d+\s*集$")
+
+
+def _clean_tags(values: Any) -> List[str]:
+    """清洗类型标签：去空白、去重、丢掉站点误塞进来的集数说明。"""
+    tags: List[str] = []
+    for value in values if isinstance(values, (list, tuple)) else [values]:
+        tag = _clean(value)
+        if not tag or _ORG_COUNT_TAG_RE.match(tag):
+            continue
+        if tag not in tags:
+            tags.append(tag)
+    return tags
 
 
 def _org_card_regions(source: str) -> List[str]:
@@ -601,11 +616,7 @@ def _parse_org_card_extras(region: str) -> Dict[str, Any]:
         if season:
             extras["season"] = int(season.group("season"))
 
-    tags = []
-    for match in _ORG_TAG_RE.finditer(region):
-        tag = _clean(match.group("tag"))
-        if tag and tag not in tags:
-            tags.append(tag)
+    tags = _clean_tags([match.group("tag") for match in _ORG_TAG_RE.finditer(region)])
     if tags:
         extras["tags"] = tags
 
@@ -885,14 +896,23 @@ def parse_org_detail(html: str, native_id: str, domain: str = ORG_DEFAULT_DOMAIN
         data["year"] = _parse_year(published)
 
     genre = series.get("genre")
-    if isinstance(genre, list):
-        data["tags"] = [_clean(item) for item in genre if _clean(item)]
-    elif isinstance(genre, str) and genre.strip():
-        data["tags"] = [_clean(genre)]
+    if _has_value(genre):
+        data["tags"] = _clean_tags(genre)
 
     holder = series.get("copyrightHolder")
     if isinstance(holder, dict):
         data["studio"] = _clean(holder.get("name"))
+
+    # 评分：结构化数据里的 aggregateRating 优先（站上多数作品没有这一项）
+    aggregate = series.get("aggregateRating")
+    if isinstance(aggregate, dict):
+        score = _clean(aggregate.get("ratingValue"))
+    elif isinstance(aggregate, (str, int, float)):
+        score = _clean(aggregate)
+    else:
+        score = ""
+    if score:
+        data["rating"] = score
 
     # 正文「标签：值」区块：补齐 JSON-LD 缺的字段
     for match in _ORG_FIELD_RE.finditer(source):
@@ -910,16 +930,22 @@ def parse_org_detail(html: str, native_id: str, domain: str = ORG_DEFAULT_DOMAIN
         elif label == "出品方" and not data.get("studio"):
             data["studio"] = value
         elif label in ("类型", "标签") and not data.get("tags"):
-            data["tags"] = [tag for tag in re.split(r"[，,、/\s]+", value) if tag]
+            data["tags"] = _clean_tags(re.split(r"[，,、/\s]+", value))
 
-    # 播放 / 收藏（JSON-LD 里没有）
+    # 播放 / 收藏 / 评分（JSON-LD 里没有）
     for match in _ORG_STAT_RE.finditer(source):
         label = _clean(match.group("label"))
-        amount = _parse_wannum(match.group("value").replace(",", ""))
+        text = match.group("value").replace(",", "")
         if label == "播放":
-            data["play_count"] = amount
+            data["play_count"] = _parse_wannum(text)
         elif label == "收藏":
-            data["favorite_count"] = amount
+            data["favorite_count"] = _parse_wannum(text)
+        elif label == "评分" and not _has_value(data.get("rating")):
+            # 详情页的「评分」与卡片上的星星是同一个分值。站点无值时整个统计项不渲染，
+            # 所以这里取不到就留空，绝不塞 0 —— 0 分会被宿主当成「有评分」显示出来。
+            score = _clean(text)
+            if score:
+                data["rating"] = score
 
     # 剧照 → 背景图
     stills = parse_org_gallery(source)
@@ -957,7 +983,34 @@ def media_source_value() -> Any:
         return MEDIA_SOURCE_KEY
 
 
-def build_media_info(item: Dict[str, Any]) -> Any:
+def build_detail_facts(item: Dict[str, Any]) -> str:
+    """把「评分 / 集数 / 主演」拼成一行摘要，供详情页的 ``tagline`` 位使用。
+
+    这是**有意的补偿**，不是照抄站点字段：宿主的媒体详情页里，「评分」区与
+    「演职员」区是前端按 **TMDB / 豆瓣 / Bangumi 三个来源硬编码**渲染的 —— 判定
+    条件就是媒体有没有 ``tmdb_id`` / ``douban_id`` / ``bangumi_id``，自定义来源
+    （本插件）无论如何都拿不到这两个位置。整页里唯一能承载这类信息的**自由文本
+    位**是 ``tagline``（它渲染在「简介」标题的正上方），所以把评分与主演收进
+    这一行，是让它们在详情页可见的唯一办法。``detail_facts`` 开关可以关掉它。
+    """
+    parts: List[str] = []
+    rating = _clean(item.get("rating"))
+    if rating:
+        parts.append(f"评分 {rating}")
+    episodes = item.get("episode_count")
+    if isinstance(episodes, int) and episodes > 0:
+        parts.append(f"全 {episodes} 集")
+    names = [
+        _clean(actor.get("name"))
+        for actor in (item.get("actors") or [])
+        if isinstance(actor, dict) and _clean(actor.get("name"))
+    ]
+    if names:
+        parts.append("主演 " + "、".join(names[:3]) + (" 等" if len(names) > 3 else ""))
+    return " · ".join(parts)
+
+
+def build_media_info(item: Dict[str, Any], facts: bool = True) -> Any:
     """把解析结果映射成宿主 ``MediaInfo``。
 
     宿主对插件返回值的唯一硬要求是「能当 ``MediaInfo`` 用」，因此这里先按
@@ -966,6 +1019,9 @@ def build_media_info(item: Dict[str, Any]) -> Any:
     ``media_source`` / ``media_id`` —— ``MediaInfo.__post_init__`` 会调用
     ``resolve_media_identity``，自定义来源有被归一化掉的风险，而已装插件
     ``iqiyidiscover`` 正是用「构造后再赋值」这一姿势绕开它的。
+
+    ``facts`` 控制是否写入那行事实摘要（见 :func:`build_detail_facts`）——
+    探索页的卡片不渲染 ``tagline``，只有媒体详情页会渲染，所以由调用方按配置决定。
     """
     media_id = str(item.get("media_id") or "")
     title = _clean(item.get("title"))
@@ -990,6 +1046,7 @@ def build_media_info(item: Dict[str, Any]) -> Any:
         "title": title,
         "year": item.get("year") or None,
         "overview": _clean(item.get("overview")) or None,
+        "tagline": (build_detail_facts(item) or None) if facts else None,
         "poster_path": _normalize_image(item.get("poster")) or None,
         "backdrop_path": _normalize_image(item.get("backdrop")) or None,
         "vote_average": vote_average,
@@ -1181,6 +1238,9 @@ class ShortDramaBaikeSource(_PluginBase):
     _proxy: bool = False
     # 探索页每次请求最多回填几部作品的详情（0 = 不额外请求，只读本地快照）
     _explore_detail_fetch: int = EXPLORE_DETAIL_FETCH_DEFAULT
+    # 详情页事实摘要行（评分 · 集数 · 主演）：宿主详情页没有给自定义来源留位置，
+    # 只能借 tagline 位承载，见 build_detail_facts()
+    _detail_facts: bool = True
 
     # ── 运行时状态（由 init_plugin 重建，保证可重复初始化） ──
     _cache: Dict[str, Tuple[float, Any]] = {}
@@ -1240,6 +1300,7 @@ class ShortDramaBaikeSource(_PluginBase):
             0,
             MAX_EXPLORE_DETAIL_FETCH,
         )
+        self._detail_facts = self._as_bool(config.get("detail_facts"), True)
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定。它们是类属性，若只原地 clear()
         # 或干脆不动，同一进程里被重建的插件实例（宿主 reconcile 会反复重建）会共用
@@ -1400,7 +1461,10 @@ class ShortDramaBaikeSource(_PluginBase):
         item = self._resolve_item(media_id=media_id, meta=meta, use_cache=cache)
         if not item:
             return None
-        return build_media_info(item)
+        # 作品详情页没有评分（评分只渲染在目录页的卡片上），所以这里再向本地索引
+        # 借一次 —— 同一部作品两边 native_id 相同，零请求就能把评分/标签补上。
+        item = self._merge_index_extras(item)
+        return build_media_info(item, facts=self._detail_facts)
 
     async def async_recognize_media(self, *args: Any, **kwargs: Any) -> Any:
         """``recognize_media`` 的异步版本（网络请求放到线程池）。"""
@@ -1436,7 +1500,7 @@ class ShortDramaBaikeSource(_PluginBase):
         candidates = self._search_by_title(query, target_year=target_year)
         medias: List[Any] = []
         for candidate in candidates[:MAX_CANDIDATES]:
-            mediainfo = build_media_info(candidate)
+            mediainfo = build_media_info(candidate, facts=self._detail_facts)
             if mediainfo is not None:
                 medias.append(mediainfo)
         return medias
@@ -1829,7 +1893,26 @@ class ShortDramaBaikeSource(_PluginBase):
             rows.sort(key=lambda row: int(str(row.get("native_id") or 0) or 0), reverse=True)
             return rows
         entry = self._top_cache.get(key) or {}
-        return [dict(item) for item in (entry.get("items") or [])]
+        return [self._merge_index_extras(dict(item)) for item in (entry.get("items") or [])]
+
+    def _merge_index_extras(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """用本地目录索引给一条记录补齐评分 / 标签这类**卡片字段**（**零请求**）。
+
+        评分与标签只在**目录页的卡片**上渲染：榜单页卡片只有「标题 + 海报 + 集数 +
+        热度」，作品详情页更是只有「简介 + 播放 + 收藏」。所以不管是探索页的榜单条目
+        还是详情识别，都可以按 ``native_id`` 去本地索引里取一份来补 —— 同一部作品在
+        三处的 ID 完全相同，而索引本来就在本地。只补**缺失**字段，已有的（尤其是
+        榜单/详情里更新的集数）一律不动。
+        """
+        native_id = self._native_id(row.get("media_id") or row.get("native_id"))
+        record = self._index.get(native_id) if native_id else None
+        if not record:
+            return row
+        merged = dict(row)
+        for field in ("rating", "tags", "episode_count", "series", "season", "kind"):
+            if not _has_value(merged.get(field)) and _has_value(record.get(field)):
+                merged[field] = record[field]
+        return merged
 
     def _explore_enrich(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """把探索页条目的**详情字段**补齐（简介 / 年份 / 类型 / 演员 / 评分）。
@@ -1971,7 +2054,7 @@ class ShortDramaBaikeSource(_PluginBase):
             size = self._as_range(count, EXPLORE_DEFAULT_COUNT, 1, MAX_EXPLORE_COUNT)
             start = (current - 1) * size
             for row in self._explore_enrich(rows[start : start + size]):
-                mediainfo = build_media_info(row)
+                mediainfo = build_media_info(row, facts=False)
                 if mediainfo is None:
                     continue
                 payload = _media_to_dict(mediainfo)
@@ -2222,6 +2305,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "proxy": False,
             "top_keys": list(DEFAULT_TOP_KEYS),
             "explore_detail_fetch": EXPLORE_DETAIL_FETCH_DEFAULT,
+            "detail_facts": True,
         }
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -2580,8 +2664,28 @@ class ShortDramaBaikeSource(_PluginBase):
                                             "type": "number",
                                             "hint": (
                                                 "榜单卡片只有标题和海报；填几就在打开探索页时"
-                                                "最多抓几部作品的简介/年份/类型/演员。"
+                                                "最多抓几部作品的简介/年份/类型/主演。"
                                                 "0 = 完全不额外请求"
+                                            ),
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "detail_facts",
+                                            "label": "详情页摘要行",
+                                            "hint": (
+                                                "在作品详情页「简介」上方显示一行"
+                                                "「评分 · 全 N 集 · 主演 X、Y」。"
+                                                "宿主的评分区与演职员区只对 TMDB/豆瓣/"
+                                                "Bangumi 来源渲染，自定义来源靠这行承载"
                                             ),
                                             "persistent-hint": True,
                                         },
@@ -2713,7 +2817,27 @@ class ShortDramaBaikeSource(_PluginBase):
                                 ],
                             }
                         ],
-                    }
+                    },
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [
+                            {
+                                "component": "VCard",
+                                "props": {"variant": "tonal"},
+                                "content": [
+                                    {
+                                        "component": "VCardText",
+                                        "text": (
+                                            "详情页摘要行：已开启（评分 · 全 N 集 · 主演）"
+                                            if self._detail_facts
+                                            else "详情页摘要行：已关闭"
+                                        ),
+                                    }
+                                ],
+                            }
+                        ],
+                    },
                 ],
             },
             {
