@@ -1005,7 +1005,7 @@ def build_media_info(item: Dict[str, Any], facts: bool = True) -> Any:
     ``iqiyidiscover`` 正是用「构造后再赋值」这一姿势绕开它的。
 
     ``facts`` 控制是否写入那行事实摘要（见 :func:`build_detail_facts`）——
-    探索页的卡片不渲染 ``tagline``，只有媒体详情页会渲染，所以由调用方按配置决定。
+    ``tagline`` 只有媒体详情页会渲染，所以由调用方按配置决定。
     """
     media_id = str(item.get("media_id") or "")
     title = _clean(item.get("title"))
@@ -1114,7 +1114,8 @@ def build_public_record(item: Optional[Dict[str, Any]], origin: str = "detail") 
     """把一条作品记录压成**纯 JSON** 载荷（其它插件调用的统一形状）。
 
     :param item: ``parse_org_detail`` / ``parse_org_cards`` 产出的记录
-    :param origin: ``detail``（来自详情页，字段全）或 ``card``（来自榜单/演员页卡片，字段少）
+    :param origin: ``detail``（详情页，字段全）或 ``search``（详情页没抓到，退回检索结果——
+        只有 ID 与片名，其余字段为空）
     """
     record: Dict[str, Any] = {
         "media_source": MEDIA_SOURCE_KEY,
