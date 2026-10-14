@@ -168,6 +168,21 @@
         </v-col>
         <v-col cols="12">
           <v-switch
+            v-model="local.use_baike"
+            label="使用「短剧百科」发现演员作品（推荐）"
+            color="primary"
+            hide-details
+            density="compact"
+          />
+          <div class="text-caption sdas-dim">
+            默认<b>开启</b>：经跨插件通道调用 ShortDramaBaikeSource，按演员名在
+            duanjubaike.org 取全部参演作品（短剧覆盖比 TMDB/豆瓣全得多）。
+            每位演员首次解析要多花约 10 秒（站外索引检索一次），之后按缓存的百科 ID 直连演员页。
+            关闭即回到「TMDB + 豆瓣」并集。
+          </div>
+        </v-col>
+        <v-col cols="12">
+          <v-switch
             v-model="local.prefer_short_drama_category"
             label="优先在站点「短剧」分类内搜索（可显著降低同名误命中；站点没有该分类时自动退化为全站搜索）"
             color="primary"
@@ -386,6 +401,7 @@ const defaults: PluginConfig = {
   organize_enabled: false,
   organize_interval_minutes: 30,
   auto_download: false,
+  use_baike: true,
   notify: true,
   douban_cookie: '',
   proxy: false,

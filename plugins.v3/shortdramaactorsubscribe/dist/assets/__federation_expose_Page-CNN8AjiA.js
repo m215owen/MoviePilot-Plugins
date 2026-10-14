@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import ConfigPanel from './__federation_expose_Config-D2DxONUJ.js';
+import ConfigPanel from './__federation_expose_Config-CpyU8tD6.js';
 import { p as proxyImage, m as mediaPageUrl, c as resourceSearchUrl, _ as _export_sfc, f as formatTime, d as formatCooldown, r as resolveApi, e as fetchWorks, P as PLUGIN_ID, g as refreshWorks, s as subscribeWork, u as unsubscribeWork, h as subscribeWorksBatch, i as unsubscribeWorksBatch, a as fetchStatus, j as fetchConfig, b as runOnce, o as organizeNow, k as saveConfig, l as removeLedgerEntry, n as clearLedger, q as clearCooldown } from './_plugin-vue_export-helper-cVwX3IEQ.js';
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
@@ -57,6 +57,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
     function sourceLabel(source) {
       if (source === "tmdb") return "TMDB";
       if (source === "douban") return "豆瓣";
+      if (source === "duanjubaike") return "短剧百科";
       return "未知";
     }
     function actable(work) {
@@ -302,7 +303,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-318698b9"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-a5c997bb"]]);
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 

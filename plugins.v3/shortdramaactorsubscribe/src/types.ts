@@ -33,6 +33,8 @@ export interface PluginConfig {
    * 打开后会把快照里所有没下过的作品批量提交下载，慎用。
    */
   auto_download: boolean
+  /** 是否用「短剧百科」发现演员作品（跨插件调用 ShortDramaBaikeSource），默认 true */
+  use_baike: boolean
   /** 演员作品快照的整体刷新间隔（小时，默认 24）：期间轮询直接用缓存，省豆瓣额度 */
   snapshot_hours: number
   /** 解析失败后的重试间隔（分钟，默认 20）：登录态恢复后能很快自愈 */

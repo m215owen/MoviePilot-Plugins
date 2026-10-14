@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import Panel from './__federation_expose_Page-C25X0okM.js';
+import Panel from './__federation_expose_Page-CNN8AjiA.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 

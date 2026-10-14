@@ -21,7 +21,10 @@
 
 决策基线（本插件据此实现，改动前先看这里）
 ------------------------------------------
-1. 发现源 = TMDB + 豆瓣**并集**，任一可用即可工作，两源都失败才报错。
+1. 发现源 = TMDB + 豆瓣 + **短剧百科**并集（用户 2026-10-15 指定接入百科），任一可用即可
+   工作。百科走**跨插件模块方法**（ShortDramaBaikeSource 的 ``search_actors`` /
+   ``actor_works``，经宿主 ``run_module`` 分发），演员页与配额纪律都在百科插件侧；
+   百科作品卡片**没有年份**（站点就不给），因此年份缺失放行是常态而非例外。
 2. 候选范围 = **仅演员本人**（不含编剧/导演）。
 3. 轮询 = **只发现，不下载**（用户定稿 2026-10-14）：定时轮询只刷新演员作品快照，
    把新出现的作品摆到作品墙上；**下载一律由人触发** —— 在作品墙点「订阅」。
@@ -241,6 +244,9 @@ def _clean_text(value: Any) -> str:
 _DOUBAN_AUTH_MARKERS = ("Cookie 已失效", "要求登录", "need_login")
 _DOUBAN_RATE_MARKERS = ("限流", "稍后会自动重试")
 _DOUBAN_EMPTY_MARKERS = ("没有「影视」作品集", "没有可解析的影视条目", "人物详情为空")
+# 短剧百科：站上确实没有这位演员 / 演员页没有作品 = 稳定结果（重试也不会变）；
+# 其余百科失败（插件未装、查找异常）= 临时性，等下一轮自动重试
+_BAIKE_EMPTY_MARKERS = ("短剧百科：未收录", "短剧百科：演员页没有作品")
 
 
 def classify_error(message: str) -> str:
@@ -248,7 +254,8 @@ def classify_error(message: str) -> str:
 
     - ``douban_auth`` / ``douban_rate``：临时性失败 → 等下一轮自动重试，不必打扰用户
     - ``douban_empty``：豆瓣确实没有影视条目 → 稳定结果，重试无意义
-    - ``tmdb`` / ``other``：其余来源
+    - ``baike_empty``：短剧百科确实没有收录 → 稳定结果
+    - ``baike`` / ``tmdb`` / ``other``：其余来源（临时性）
     """
     text = _clean_text(message)
     if any(marker in text for marker in _DOUBAN_AUTH_MARKERS):
@@ -257,6 +264,10 @@ def classify_error(message: str) -> str:
         return "douban_rate"
     if any(marker in text for marker in _DOUBAN_EMPTY_MARKERS):
         return "douban_empty"
+    if any(marker in text for marker in _BAIKE_EMPTY_MARKERS):
+        return "baike_empty"
+    if text.startswith("短剧百科"):
+        return "baike"
     if text.startswith("TMDB"):
         return "tmdb"
     return "other"
@@ -268,7 +279,7 @@ def record_state(record: Dict[str, Any]) -> str:
     - ``""``：正常（拿到了作品）
     - ``waiting``：本轮没有作品且原因是临时的（登录态 / 限流 / 未知异常）
       → 面板只给一句「等待自动重试」
-    - ``empty``：本轮没有作品，原因是稳定的（豆瓣确无影视条目、TMDB 未配置）
+    - ``empty``：本轮没有作品，原因是稳定的（豆瓣确无影视条目、百科未收录、TMDB 未配置）
       → 中性说明，不是故障，重试也无意义
 
     临时性优先：只要有一条临时原因，就按「会自己好」处理。
@@ -276,9 +287,9 @@ def record_state(record: Dict[str, Any]) -> str:
     if record.get("works"):
         return ""
     kinds = {classify_error(item) for item in (record.get("errors") or [])}
-    if kinds & {"douban_auth", "douban_rate", "other"}:
+    if kinds & {"douban_auth", "douban_rate", "other", "baike"}:
         return "waiting"
-    if kinds & {"douban_empty", "tmdb"}:
+    if kinds & {"douban_empty", "baike_empty", "tmdb"}:
         return "empty"
     return "waiting"
 
@@ -1105,6 +1116,43 @@ class _TmdbClient:
         return results[:_TMDB_CREDITS_LIMIT]
 
 
+# ─────────────────────── 短剧百科发现源（跨插件） ───────────────────────
+#
+# 数据来自 ShortDramaBaikeSource（duanjubaike.org），经宿主 run_module 分发调用：
+#   search_actors(name)    → 候选 {actor_id, name, media_id, url}
+#   actor_works(actor_id)  → 作品卡 {title, poster, rating, media_id, …}（**无年份**）
+# 演员页抓取与站点纪律（/zh-Hans 前缀等）都在百科插件侧，本插件只消费结果。
+
+
+def _actor_name_key(name: Any) -> str:
+    """演员名的宽松比较键：去空白后比对（百科候选可能带多余空格）。"""
+    return re.sub(r"\s+", "", _clean_text(name))
+
+
+def baike_work_to_candidate(card: Any) -> Optional[Dict[str, Any]]:
+    """把百科作品卡转成统一候选结构（与豆瓣/TMDB 同形）。
+
+    ⚠️ 站点的作品卡**没有年份**（演员页只给标题/海报/评分/集数等），``year`` 恒为
+    空串 —— 下载匹配按「年份缺失放行」处理；去重键相应退化为 ``剧名|``。
+    """
+    if not isinstance(card, dict):
+        return None
+    title = _clean_text(card.get("title"))
+    if not title:
+        return None
+    return {
+        "title": title,
+        "year": "",
+        "alt_title": "",
+        "source": "duanjubaike",
+        "media_id": _clean_text(card.get("media_id")),
+        "type": "电视剧",
+        # 海报是站内 CDN 绝对地址，前端统一走 system/img 代理，不挑来源
+        "poster": _clean_text(card.get("poster")),
+        "vote": _to_float(card.get("rating")),
+    }
+
+
 # ─────────────────────────── 站点搜索 ───────────────────────────
 
 
@@ -1438,7 +1486,7 @@ class _Organizer:
                 lines.append(f"  <premiered>{year}-01-01</premiered>")
             if source and media_id:
                 lines.append(f'  <uniqueid type="{source}" default="true">{media_id}</uniqueid>')
-            lines.append(f"  <genre>短剧</genre>")
+            lines.append("  <genre>短剧</genre>")
             lines.append(f"  <studio>{PLUGIN_NAME}</studio>")
             lines.append("</tvshow>")
             (series_dir / "tvshow.nfo").write_text("\n".join(lines), encoding="utf-8")
@@ -1500,6 +1548,9 @@ class ShortDramaActorSubscribe(_PluginBase):
     # 作品墙点「订阅」。历史事故：轮询自动下载时，快照里所有没下过的作品会被挨个
     # 搜索下载（演员名单到几十上百位 ⇒ 上千个种子瞬间灌进下载器，不可逆）。
     _auto_download = False
+    # 短剧百科发现源（跨插件调用 ShortDramaBaikeSource）：默认开启。
+    # 百科是短剧覆盖最全的一等来源；关掉即回到「TMDB + 豆瓣」并集。
+    _use_baike = True
     _sidebar_nav = True
     # 同一进程内的重入保护：定时任务与手动触发可能撞在一起
     _lock = threading.Lock()
@@ -1549,6 +1600,8 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._max_works = min(10, max(1, _to_int(config.get("max_works")) or 10))
         # ⚠️ 缺省必须是 False（订阅制）：读成 True 会让轮询重新开始批量下载
         self._auto_download = _to_bool(config.get("auto_download"), False)
+        # 短剧百科发现源：缺省开启（payload 缺键时不能被悄悄关掉）
+        self._use_baike = _to_bool(config.get("use_baike"), True)
         self._sidebar_nav = bool(config.get("sidebar_nav", True))
 
         # 配置变更后让 CookieCloud 缓存立刻失效，避免刚填好的 Cookie 不生效
@@ -1615,6 +1668,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "proxy": self._proxy,
             "max_works": self._max_works,
             "auto_download": self._auto_download,
+            "use_baike": self._use_baike,
             "sidebar_nav": self._sidebar_nav,
         }
 
@@ -1641,6 +1695,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "proxy": False,
             "max_works": 10,
             "auto_download": False,
+            "use_baike": True,
             "sidebar_nav": True,
         }
 
@@ -1988,6 +2043,8 @@ class ShortDramaActorSubscribe(_PluginBase):
         # 这里必须兜成 **False**：兜成 True 等于用户随手保存一次就把自动下载打开，
         # 下一轮轮询立刻批量灌下载器。
         merged["auto_download"] = _to_bool(merged.get("auto_download"), False)
+        # 短剧百科开关：缺键兜回 True（默认开启），不能因旧前端保存一次就被关掉
+        merged["use_baike"] = _to_bool(merged.get("use_baike"), True)
         merged["douban_cookie"] = str(merged.get("douban_cookie") or "").strip()
 
         self.update_config(merged)
@@ -2965,16 +3022,17 @@ class ShortDramaActorSubscribe(_PluginBase):
         return cookie
 
     def _discover_actor(self, key: str) -> Dict[str, Any]:
-        """发现单个演员的作品列表（TMDB + 豆瓣 并集）。
+        """发现单个演员的作品列表（TMDB + 豆瓣 + 短剧百科 并集）。
 
-        返回 ``{"key", "name", "douban_id", "tmdb_id", "works": [...], "errors": [...]}``。
-        两个来源都失败时 ``works`` 为空、``errors`` 有可读原因。
+        返回 ``{"key", "name", "douban_id", "tmdb_id", "baike_id", "works": [...],
+        "errors": [...]}``。所有来源都失败时 ``works`` 为空、``errors`` 有可读原因。
         """
         record: Dict[str, Any] = {
             "key": key,
             "name": key,
             "douban_id": "",
             "tmdb_id": "",
+            "baike_id": "",
             "works": [],
             "errors": [],
         }
@@ -2985,6 +3043,9 @@ class ShortDramaActorSubscribe(_PluginBase):
         if isinstance(existing, dict):
             record["douban_id"] = str(existing.get("douban_id") or "")
             record["tmdb_id"] = str(existing.get("tmdb_id") or "")
+            # 百科演员 ID 缓存在快照里：解析一次后，后续轮次直接按 ID 取作品页，
+            # 不再走站外索引（搜索引擎一次 10 秒级，95 位演员逐个查一轮不可接受）
+            record["baike_id"] = str(existing.get("baike_id") or "")
             record["name"] = str(existing.get("name") or key)
 
         person_id = record["douban_id"] or self._extract_person_id(key)
@@ -3025,11 +3086,61 @@ class ShortDramaActorSubscribe(_PluginBase):
                 record["errors"].append(f"TMDB：{tmdb.last_error}")
             works.extend(credits)
 
+        # ── 短剧百科（跨插件模块方法；短剧覆盖最全的一等来源） ──
+        if self._use_baike:
+            self._baike_works(record, works)
+
         record["works"] = self._merge_works(works)
         # 展示状态：面板据此决定是「安静等待自动重试」还是「中性说明豆瓣确无影视条目」，
         # 而不是把 errors 逐条铺给用户（临时性失败插件每轮都会自己重试）。
         record["state"] = record_state(record)
         return record
+
+    def _baike_works(self, record: Dict[str, Any], works: List[Dict[str, Any]]) -> None:
+        """从短剧百科插件取一位演员的全部作品（就地追加进 ``works``）。
+
+        链路（全部经宿主 ``run_module`` 分发给 ShortDramaBaikeSource）：
+
+        1. 快照里已缓存 ``baike_id`` → 直接 ``actor_works(actor_id)``（库里已有 URL，零引擎请求）；
+        2. 没缓存 → ``search_actors(name)`` 按名字解析。站外索引召回**含模糊结果**
+           （实测搜「王石」会带出「王碩」），因此只收**归一化名字精确相等**的候选，
+           宁可漏也不错配；解析成功后把 ``actor_id`` 写回 ``record`` 供下轮复用。
+
+        任何异常都只记进 ``errors``，不影响豆瓣/TMDB 两路的结果。
+        """
+        key = _clean_text(record.get("key"))
+        if not key:
+            return
+        try:
+            baike_id = _clean_text(record.get("baike_id"))
+            if baike_id:
+                cards = self.run_module("actor_works", actor_id=baike_id) or []
+            else:
+                candidates = self.run_module("search_actors", name=key) or []
+                matched = [
+                    row
+                    for row in candidates
+                    if isinstance(row, dict)
+                    and _actor_name_key(row.get("name")) == _actor_name_key(key)
+                    and _clean_text(row.get("actor_id"))
+                ]
+                if not matched:
+                    # 稳定结果：站上没收录这位演员（或百科插件未安装/未启用，文案里一并说明）
+                    record["errors"].append(
+                        "短剧百科：未收录该演员（若百科插件未安装或已停用也会出现此提示）"
+                    )
+                    return
+                baike_id = _clean_text(matched[0].get("actor_id"))
+                record["baike_id"] = baike_id
+                cards = self.run_module("actor_works", actor_id=baike_id) or []
+            for card in cards or []:
+                candidate = baike_work_to_candidate(card)
+                if candidate:
+                    works.append(candidate)
+            if baike_id and not cards:
+                record["errors"].append("短剧百科：演员页没有作品")
+        except Exception as err:  # noqa: BLE001 - 百科不可用不拖垮其余来源
+            record["errors"].append(f"短剧百科：查找失败（{err}）")
 
     @staticmethod
     def _extract_person_id(value: str) -> str:
@@ -3117,11 +3228,18 @@ class ShortDramaActorSubscribe(_PluginBase):
 
     @staticmethod
     def _merge_works(works: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """合并多来源作品，按「归一化剧名 + 年份」去重，豆瓣优先补别名。
+        """合并多来源作品，按「归一化剧名 + 年份」去重，先到者补齐别名等字段。
 
         去重键与账本键一致，保证「发现 → 匹配 → 记账」用的是同一套身份口径。
+
+        ⚠️ 短剧百科的作品卡**没有年份**（站点不给），直接按 ``剧名|`` 入键会让
+        同一部剧出两张卡（TMDB/豆瓣一条带年份、百科一条不带）。因此补一条二级
+        归并：**只要有一侧缺年份**、且归一化剧名唯一命中已有条目，就并进去
+        （缺的年份顺带补上）；两侧都有年份仍然按精确键走，不同年份的同名剧
+        （翻拍）不会被错误合并。
         """
         merged: Dict[str, Dict[str, Any]] = {}
+        by_title: Dict[str, List[str]] = {}
         for item in works:
             if not isinstance(item, dict):
                 continue
@@ -3129,13 +3247,23 @@ class ShortDramaActorSubscribe(_PluginBase):
             if not title:
                 continue
             year = _clean_text(item.get("year"))
+            title_key = normalize_title(title)
             key = ledger_key(title, year)
             current = merged.get(key)
             if current is None:
+                same_title = by_title.get(title_key) or []
+                if len(same_title) == 1:
+                    other = merged.get(same_title[0])
+                    # 只在「一侧缺年份」时归并：都带年份的同名剧可能是翻拍，不能合
+                    if other is not None and (not year or not _clean_text(other.get("year"))):
+                        key = same_title[0]
+                        current = other
+            if current is None:
                 merged[key] = dict(item)
+                by_title.setdefault(title_key, []).append(key)
                 continue
             # 已经有一条时：补齐缺失字段，不覆盖已有值
-            for field in ("year", "alt_title", "media_id", "type", "poster"):
+            for field in ("year", "alt_title", "media_id", "type", "poster", "vote"):
                 if not current.get(field) and item.get(field):
                     current[field] = item[field]
         return list(merged.values())
@@ -3177,8 +3305,8 @@ class ShortDramaActorSubscribe(_PluginBase):
         """汇总候选作品；只重解析「到期」的演员，其余直接沿用缓存。
 
         用户定的口径：快照**整体一天刷新一次**（``snapshot_hours``），只有「上一轮解析
-        失败」的演员会在 ``retry_minutes``（默认 20 分钟）后单独重试。这样正常状态下一天
-        只去豆瓣拉一次（额度极紧），失败又能在 20 分钟内自愈。
+        失败」的演员会在 ``retry_minutes``（默认 20 分钟）后单独重试。这样正常状态下
+        一天只对豆瓣消耗一轮额度（额度极紧），失败又能在 20 分钟内自愈。
 
         - ``force=True``（手动「刷新作品」/「立即运行」）无视缓存全部重解析；
         - ``only=[…]`` 只重解析指定演员（失败重试任务用，避免顺手把整表刷一遍）。
@@ -3211,8 +3339,14 @@ class ShortDramaActorSubscribe(_PluginBase):
             record["state"] = record_state(record)
             record["time"] = datetime.now().strftime(_STAMP_FORMAT)
             snapshot[key] = record
+            # ⚠️ 逐演员**增量落盘**（与账本增量落盘同一课：114 部事故的教训）。
+            # 接入百科后首轮解析可能拉长到几十分钟（每位演员一次站外索引检索），
+            # 宿主 reconcile 随时会重载插件打断整轮 —— 整轮结束才写盘会把已解析的
+            # 演员全部丢回去重来。
+            self.save_data(_DATA_ACTORS, snapshot)
         # 只保留配置里现有的演员（用户删掉的演员其作品不该再出现在作品墙）
-        snapshot = {key: snapshot[key] for key in self._actors if key in snapshot}        # 失败提示只在日志里**汇总一条**：解析失败大多是临时的（豆瓣登录态失效 / 限流），
+        snapshot = {key: snapshot[key] for key in self._actors if key in snapshot}
+        # 失败提示只在日志里**汇总一条**：解析失败大多是临时的（豆瓣登录态失效 / 限流），
         # 到期会自动重试，逐条 warning 只会刷屏（用户明确要求「等待重试」即可）。
         self._log_actor_states(snapshot)
         self.save_data(_DATA_ACTORS, snapshot)

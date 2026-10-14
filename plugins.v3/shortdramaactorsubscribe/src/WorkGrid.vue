@@ -184,6 +184,7 @@ function onCardClick(work: WorkItem): void {
 function sourceLabel(source?: string): string {
   if (source === 'tmdb') return 'TMDB'
   if (source === 'douban') return '豆瓣'
+  if (source === 'duanjubaike') return '短剧百科'
   return '未知'
 }
 
