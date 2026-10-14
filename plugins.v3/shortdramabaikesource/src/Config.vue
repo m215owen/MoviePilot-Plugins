@@ -31,9 +31,6 @@
       <v-col cols="12" sm="6" md="3">
         <v-switch v-model="local.web_index_search" label="站外索引检索" color="primary" hide-details />
       </v-col>
-      <v-col cols="12" sm="6" md="3">
-        <v-switch v-model="local.detail_facts" label="详情页摘要行" color="primary" hide-details />
-      </v-col>
     </v-row>
 
     <v-divider class="my-3" />
@@ -189,7 +186,6 @@ const DEFAULTS: PluginConfig = {
   web_index_search: true,
   web_index_backend: 'auto',
   proxy: false,
-  detail_facts: false,
   follow_links: true,
 }
 

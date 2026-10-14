@@ -214,7 +214,7 @@ export interface StatusPayload {
   actor?: { enabled?: boolean; max_candidates?: number }
 }
 
-/** 配置模型（键与后端 `_default_config` 一致，共 10 项） */
+/** 配置模型（键与后端 `_default_config` 一致，共 9 项） */
 export interface PluginConfig {
   enabled: boolean
   domain: string
@@ -224,7 +224,6 @@ export interface PluginConfig {
   web_index_search: boolean
   web_index_backend: string
   proxy: boolean
-  detail_facts: boolean
   /** 解析页面时顺带把页面里的演员 / 作品链接写进 URL 库 */
   follow_links: boolean
 }

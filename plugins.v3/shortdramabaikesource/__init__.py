@@ -166,9 +166,6 @@ class ShortDramaBaikeSource(_PluginBase):
     _web_index_search: bool = True
     _web_index_backend: str = DEFAULT_WEB_INDEX_BACKEND
     _proxy: bool = False
-    # 宿主媒体详情页的「摘要行」（tagline：评分/集数/主演/时长拼一行）—— **默认关**：
-    # 那一行文案用户明确说不要（2026-10-15），要主演信息的再手动打开
-    _detail_facts: bool = False
     # 解析页面时顺带把页面里的演员 / 作品链接写进 URL 库
     _follow_links: bool = True
 
@@ -201,7 +198,6 @@ class ShortDramaBaikeSource(_PluginBase):
             config.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
         )
         self._proxy = bool(config.get("proxy"))
-        self._detail_facts = self._as_bool(config.get("detail_facts"), False)
         self._follow_links = self._as_bool(config.get("follow_links"), True)
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定（它们是类属性）。
@@ -911,7 +907,7 @@ class ShortDramaBaikeSource(_PluginBase):
             f"{PLUGIN_NAME} 识别命中：{record.get('media_id')}《{record.get('title')}》"
             f"（完整度 {self._richness(record)}）"
         )
-        return build_media_info(record, facts=self._detail_facts)
+        return build_media_info(record)
 
     async def async_recognize_media(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.to_thread(self.recognize_media, *args, **kwargs)
@@ -976,7 +972,7 @@ class ShortDramaBaikeSource(_PluginBase):
                     "url": str(row.get("url") or ""),
                     "native_id": native_id,
                 }
-            info = build_media_info(record, facts=self._detail_facts)
+            info = build_media_info(record)
             if info is not None:
                 pairs.append((score, self._richness(record), index, info))
         pairs.sort(key=lambda item: (-item[0], -item[1], item[2]))
@@ -1486,7 +1482,6 @@ class ShortDramaBaikeSource(_PluginBase):
                 merged.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
             ),
             "proxy": bool(merged.get("proxy")),
-            "detail_facts": self._as_bool(merged.get("detail_facts"), False),
             "follow_links": self._as_bool(merged.get("follow_links"), True),
         }
         self.update_config(normalized)
@@ -1565,7 +1560,6 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_search": True,
             "web_index_backend": DEFAULT_WEB_INDEX_BACKEND,
             "proxy": False,
-            "detail_facts": False,
             "follow_links": True,
         }
 
@@ -1580,7 +1574,6 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_search": bool(self._web_index_search),
             "web_index_backend": self._web_index_backend,
             "proxy": bool(self._proxy),
-            "detail_facts": bool(self._detail_facts),
             "follow_links": bool(self._follow_links),
         }
 

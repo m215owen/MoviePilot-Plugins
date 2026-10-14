@@ -15,7 +15,8 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "2.2.0"
+# 插件仍在测试期：版本号定为首版，不跟随迭代次数往上堆
+PLUGIN_VERSION = "1.0.0"
 
 # ── 数据源契约 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按

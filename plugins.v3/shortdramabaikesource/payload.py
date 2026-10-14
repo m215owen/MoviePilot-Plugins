@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .constants import MEDIA_SOURCE_KEY, PLUGIN_NAME
 from .parser import _clean, _has_value, _normalize_image
@@ -50,44 +50,7 @@ def media_source_value() -> Any:
         return MEDIA_SOURCE_KEY
 
 
-def build_detail_facts(item: Dict[str, Any]) -> str:
-    """把「评分 / 集数 / 主演」拼成一行摘要，供详情页的 ``tagline`` 位使用。
-
-    这是**有意的补偿**，不是照抄站点字段：宿主的媒体详情页里，「评分」区与
-    「演职员」区是前端按 **TMDB / 豆瓣 / Bangumi 三个来源硬编码**渲染的 —— 判定
-    条件就是媒体有没有 ``tmdb_id`` / ``douban_id`` / ``bangumi_id``，自定义来源
-    （本插件）无论如何都拿不到这两个位置。整页里唯一能承载这类信息的**自由文本
-    位**是 ``tagline``（它渲染在「简介」标题的正上方），所以把评分与主演收进
-    这一行，是让它们在详情页可见的唯一办法。``detail_facts`` 开关可以关掉它。
-    """
-    parts: List[str] = []
-    rating = _clean(item.get("rating"))
-    if rating:
-        parts.append(f"评分 {rating}")
-    episodes = item.get("episode_count")
-    if isinstance(episodes, int) and episodes > 0:
-        parts.append(f"全 {episodes} 集")
-    # ⚠️ 站点给的「时长」是**全集总时长**（《失控交易》77 集共 130 分钟），而宿主详情页
-    # 标题下方那行的 ``runtime`` 也会把这个数当「时长 N 分钟」印出来 —— 不点破的话
-    # 一律被当成单集时长。这里把两层都写出来，顺便给出折算的单集时长。
-    total = item.get("duration_minutes")
-    if isinstance(total, int) and total > 0:
-        each = item.get("episode_minutes")
-        parts.append(
-            f"全集 {total} 分钟"
-            + (f"（单集约 {each} 分钟）" if isinstance(each, int) and each > 0 else "")
-        )
-    names = [
-        _clean(actor.get("name"))
-        for actor in (item.get("actors") or [])
-        if isinstance(actor, dict) and _clean(actor.get("name"))
-    ]
-    if names:
-        parts.append("主演 " + "、".join(names[:3]) + (" 等" if len(names) > 3 else ""))
-    return " · ".join(parts)
-
-
-def build_media_info(item: Dict[str, Any], facts: bool = True) -> Any:
+def build_media_info(item: Dict[str, Any]) -> Any:
     """把解析结果映射成宿主 ``MediaInfo``。
 
     宿主对插件返回值的唯一硬要求是「能当 ``MediaInfo`` 用」，因此这里先按
@@ -96,9 +59,6 @@ def build_media_info(item: Dict[str, Any], facts: bool = True) -> Any:
     ``media_source`` / ``media_id`` —— ``MediaInfo.__post_init__`` 会调用
     ``resolve_media_identity``，自定义来源有被归一化掉的风险，而已装插件
     ``iqiyidiscover`` 正是用「构造后再赋值」这一姿势绕开它的。
-
-    ``facts`` 控制是否写入那行事实摘要（见 :func:`build_detail_facts`）——
-    ``tagline`` 只有媒体详情页会渲染，所以由调用方按配置决定。
     """
     media_id = str(item.get("media_id") or "")
     title = _clean(item.get("title"))
@@ -123,7 +83,6 @@ def build_media_info(item: Dict[str, Any], facts: bool = True) -> Any:
         "title": title,
         "year": item.get("year") or None,
         "overview": _clean(item.get("overview")) or None,
-        "tagline": (build_detail_facts(item) or None) if facts else None,
         "poster_path": _normalize_image(item.get("poster")) or None,
         "backdrop_path": _normalize_image(item.get("backdrop")) or None,
         "vote_average": vote_average,
