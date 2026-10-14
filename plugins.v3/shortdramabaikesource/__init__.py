@@ -102,7 +102,12 @@ TMDB / 豆瓣 / Bangumi 在宿主里同级，而不是另起一套私有链路�
 
 3. **智能体工具** ``short_drama_identify``（``get_agent_tools``），供 AI 智能体用。
 
-⚠️ 三种入口内部都走同一套代码（``_resolve_item`` / ``_search_by_title`` /
+4. **宿主「探索」页的来源**：监听宿主广播的 ``ChainEventType.DiscoverSource``，
+   把「短剧百科」登记成一个探索来源（``DiscoverMediaSource``，``api_path`` 指向本插件
+   的 ``/explore``）。⚠️ 探索页**只读本地**（榜单快照 + 目录索引），零网络请求 ——
+   用户怎么翻页都不会消耗站点配额。要看到更多榜单，在配置里勾「榜单快照范围」。
+
+⚠️ 前三种入口内部都走同一套代码（``_resolve_item`` / ``_search_by_title`` /
 ``_fetch_detail``），因此**共享同一个配额闸门**：不管谁来调，都不会绕过限流。
 """
 from __future__ import annotations
@@ -140,6 +145,25 @@ try:  # 宿主的浏览器仿真门面（cloakbrowser / FlareSolverr，见配置
 except Exception:  # pragma: no cover - 宿主版本差异兜底
     _launch_browser_context = None
 
+try:  # 宿主事件总线 —— 「探索」页的来源收集就靠它广播 DiscoverSource 事件
+    from app.sdk.events import Event as _HostEvent
+    from app.sdk.events import eventmanager as _eventmanager
+except Exception:  # pragma: no cover - 宿主版本差异兜底
+    _HostEvent = None  # type: ignore[assignment]
+    _eventmanager = None  # type: ignore[assignment]
+
+try:  # 探索页来源 schema（SDK 未导出；走 app.schemas，与已装插件同一路径）
+    from app.schemas import DiscoverMediaSource as _DiscoverMediaSource
+    from app.schemas import DiscoverSourceEventData as _DiscoverSourceEventData
+except Exception:  # pragma: no cover - 宿主版本差异兜底
+    _DiscoverMediaSource = None  # type: ignore[assignment]
+    _DiscoverSourceEventData = None  # type: ignore[assignment]
+
+try:  # 事件类型枚举（DiscoverSource 在此）
+    from app.schemas.types import ChainEventType as _ChainEventType
+except Exception:  # pragma: no cover - 宿主版本差异兜底
+    _ChainEventType = None  # type: ignore[assignment]
+
 try:  # 定时服务
     from apscheduler.triggers.interval import IntervalTrigger
 except Exception:  # pragma: no cover - 极端兜底
@@ -163,7 +187,7 @@ PLUGIN_ICON = (
     "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/"
     "ShortDramaBaikeSource.png"
 )
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.1.0"
 
 # ── 数据源常量 ────────────────────────────────────────────────────
 # 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
@@ -207,6 +231,23 @@ TOP_LISTS: Dict[str, str] = {
     "hot-country": "乡村榜",
 }
 DEFAULT_TOP_KEY = "hot"
+# 默认只刷两个最实用的榜单：**每个榜单要花一次站点请求配额**
+DEFAULT_TOP_KEYS: Tuple[str, ...] = ("hot", "new")
+
+# 统一媒体 ID 前缀（media_id 形如 ``org:40105``）。探索页的 ``mediaid_prefix``
+# 必须与它一致，前端才能把条目路由回本数据源。
+MEDIA_ID_PREFIX = "org"
+
+# ── 宿主「探索」页（/discover）────────────────────────────────────
+# 宿主 ``GET /api/v1/discover/source`` 会广播 ``ChainEventType.DiscoverSource``，
+# 插件把 ``DiscoverMediaSource`` 塞进 ``event_data.extra_sources`` 即成为一个来源；
+# 前端随后按该来源的 ``api_path`` 拉 ``List[MediaInfo]``。
+EXPLORE_PATH = "/explore"
+EXPLORE_DEFAULT_COUNT = 30
+MAX_EXPLORE_COUNT = 60
+# 「全部短剧」：用本地目录索引当伪榜单 —— 榜单只有十几条，索引会持续增长
+EXPLORE_INDEX_KEY = "index"
+EXPLORE_INDEX_LABEL = "全部短剧"
 
 # 需要登记进宿主图片白名单的域名（否则图片代理会拒收）
 IMAGE_DOMAINS: Tuple[str, ...] = (
@@ -979,6 +1020,54 @@ def _schema_media_info() -> Any:
         return None
 
 
+# ── 宿主「探索」页的支持件 ────────────────────────────────────────
+
+
+def _discover_source_listener(func: Any) -> Any:
+    """把方法注册成 ``ChainEventType.DiscoverSource`` 的处理器。
+
+    刻意用「函数包一层」而不是直接写 ``@eventmanager.register(...)``：宿主版本
+    差异下 ``app.sdk.events`` 或 ``ChainEventType.DiscoverSource`` 可能取不到，
+    那时插件仍必须能正常加载（只是探索页里不会出现它的来源）。
+    """
+    if _eventmanager is None or _ChainEventType is None:
+        return func
+    try:
+        return _eventmanager.register(_ChainEventType.DiscoverSource)(func)
+    except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+        logger.debug(f"{PLUGIN_NAME} 注册探索来源事件失败：{err}")
+        return func
+
+
+def _media_to_dict(mediainfo: Any) -> Dict[str, Any]:
+    """把 ``MediaInfo`` 转成探索页能吃的 dict（模型缺 ``to_dict`` 时手工兜底）。"""
+    if mediainfo is None:
+        return {}
+    dump = getattr(mediainfo, "to_dict", None)
+    if callable(dump):
+        try:
+            return dump()
+        except Exception as err:  # pragma: no cover - 个别模型只读
+            logger.debug(f"{PLUGIN_NAME} 序列化媒体信息失败：{err}")
+    if isinstance(mediainfo, dict):
+        return dict(mediainfo)
+    return {}
+
+
+def _explore_response(data: Any) -> Any:
+    """按探索页的合同包一层（``Response[List[MediaInfo]]``）。
+
+    宿主已装插件（``IMDbSource`` / ``IqiyiDiscover``）都用这个形状；拿不到
+    ``app.schemas.Response`` 时退化成同名字段的普通 dict。
+    """
+    try:
+        from app.schemas import Response as _Response
+
+        return _Response(success=True, data=data)
+    except Exception:  # pragma: no cover - 宿主版本差异兜底
+        return {"success": True, "message": "", "data": data}
+
+
 # ── 跨插件 / 外部消费的稳定载荷 ───────────────────────────────────
 # 只保留标量 + 精简演员表：消费方（其它插件、脚本、外部程序）不该被宿主
 # ``MediaInfo`` 的字段版本绑住，也不该在 JSON 里收到模型对象。
@@ -1089,6 +1178,8 @@ class ShortDramaBaikeSource(_PluginBase):
     # 榜单快照：榜单键 -> {"items": [...], "fetched_at": ts}
     _top_cache: Dict[str, Dict[str, Any]] = {}
     _stats: Dict[str, Any] = {}
+    # 榜单快照要刷哪些榜单（探索页的榜单来源就是它；每个榜单一次请求配额）
+    _top_keys: List[str] = list(DEFAULT_TOP_KEYS)
 
     # ── 生命周期 ──────────────────────────────────────────────────
 
@@ -1123,6 +1214,7 @@ class ShortDramaBaikeSource(_PluginBase):
         )
         self._use_browser_search = self._as_bool(config.get("use_browser_search"), False)
         self._proxy = bool(config.get("proxy"))
+        self._top_keys = self._as_top_keys(config.get("top_keys"))
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定。它们是类属性，若只原地 clear()
         # 或干脆不动，同一进程里被重建的插件实例（宿主 reconcile 会反复重建）会共用
@@ -1610,10 +1702,14 @@ class ShortDramaBaikeSource(_PluginBase):
     def refresh_top_lists(self, force: bool = False, keys: Optional[List[str]] = None) -> Dict[str, Any]:
         """刷新榜单快照（默认 6 小时一次；榜单数量固定、不分页，一页一个请求）。
 
-        ⚠️ 每个榜单要花一次请求配额，所以默认只刷 ``hot`` 与 ``new`` 两个最实用的；
-        需要更全的召回面时把 ``TOP_LISTS`` 的键写进配置即可。
+        ⚠️ 每个榜单要花一次请求配额，所以默认只刷「热播榜 + 新剧榜」；想多刷几个
+        在配置里勾（``top_keys``）—— 探索页能看到的榜单就是这些。
         """
-        wanted = [key for key in (keys or ["hot", "new"]) if key in TOP_LISTS]
+        wanted = [
+            key
+            for key in (keys or self._top_keys or list(DEFAULT_TOP_KEYS))
+            if key in TOP_LISTS
+        ]
         ttl = _TOP_TTL_HOURS * 3600
         now = time.time()
         refreshed: List[str] = []
@@ -1637,6 +1733,169 @@ class ShortDramaBaikeSource(_PluginBase):
         if refreshed:
             self._save_state()
         return {"success": bool(refreshed), "refreshed": refreshed}
+
+    # ── 宿主「探索」页的数据源 ────────────────────────────────────
+    #
+    # 宿主 ``GET /api/v1/discover/source`` 会广播 ``ChainEventType.DiscoverSource``，
+    # 插件把 ``DiscoverMediaSource`` 追加进 ``event_data.extra_sources`` 就成为一个
+    # 来源；前端随后按 ``api_path`` 拉 ``List[MediaInfo]``。已装插件 ``IMDbSource`` /
+    # ``IqiyiDiscover`` / ``ExploreServices`` 都是这个姿势。
+    #
+    # ⚠️ 探索页的数据**一律只读本地**（榜单快照 + 目录索引），零网络请求 ——
+    # 用户翻页不会消耗站点配额，也不会把 IP 打到 CF 冷却里。
+
+    def _top_snapshot_summary(self) -> str:
+        """榜单快照的一行摘要（``热播榜 19 部 / 新剧榜 20 部``），供面板展示。"""
+        if not self._top_cache:
+            return "无（等后台任务刷新；可在配置里勾要刷的榜单）"
+        parts: List[str] = []
+        for key, entry in self._top_cache.items():
+            label = str((entry or {}).get("label") or TOP_LISTS.get(key, key))
+            parts.append(f"{label} {len((entry or {}).get('items') or [])} 部")
+        return " / ".join(parts)
+
+    def _explore_top_keys(self) -> List[str]:
+        """探索页里可选的榜单键：配置里勾的在前，已缓存快照的补在后。"""
+        keys: List[str] = [key for key in self._top_keys if key in TOP_LISTS]
+        for key in self._top_cache:
+            if key in TOP_LISTS and key not in keys:
+                keys.append(key)
+        return keys
+
+    def _explore_default_key(self) -> str:
+        """默认选中的来源键：**优先挑已经有快照数据的那个**。
+
+        配置里勾了但还没刷到的榜单是空的，若把它当默认项，用户打开探索页会看到
+        一片空白 —— 所以按配置顺序找第一个「有数据」的，全都没有才退回配置首位。
+        """
+        keys = self._explore_top_keys()
+        for key in keys:
+            if key in self._top_cache:
+                return key
+        return keys[0] if keys else DEFAULT_TOP_KEY
+
+    def _explore_options(self) -> List[Tuple[str, str]]:
+        """探索页的来源选项 ``(键, 中文名)``：榜单 + 「全部短剧」（本地目录索引）。"""
+        options: List[Tuple[str, str]] = [
+            (key, TOP_LISTS[key]) for key in self._explore_top_keys()
+        ]
+        if self._index:
+            # 榜单只有十几条，索引会一直长 —— 给它也留一个来源，探索页才不至于太空
+            options.append((EXPLORE_INDEX_KEY, EXPLORE_INDEX_LABEL))
+        return options
+
+    def _explore_items(self, key: str) -> List[Dict[str, Any]]:
+        """取某个来源的条目（**只读本地**，不产生任何请求）。"""
+        if key == EXPLORE_INDEX_KEY:
+            rows: List[Dict[str, Any]] = []
+            for native_id, record in self._index.items():
+                rows.append(dict(record, media_id=f"{MEDIA_ID_PREFIX}:{native_id}", native_id=native_id))
+            # 站点 ID 越大越新 ⇒ 倒序就是「最新在前」
+            rows.sort(key=lambda row: int(str(row.get("native_id") or 0) or 0), reverse=True)
+            return rows
+        entry = self._top_cache.get(key) or {}
+        return [dict(item) for item in (entry.get("items") or [])]
+
+    def _explore_api_path(self) -> str:
+        """探索页要调的相对地址（``/api/v1/`` 之后的部分，含 apikey）。"""
+        path = f"plugin/{self.__class__.__name__}{EXPLORE_PATH}"
+        token = _clean(getattr(_settings, "API_TOKEN", None))
+        return f"{path}?apikey={token}" if token else path
+
+    def _explore_filter_ui(self) -> List[Dict[str, Any]]:
+        """探索页的筛选条：一行「榜单」chips，值原样回传成 ``top_key``。
+
+        结构照抄宿主已装插件（``VLabel`` + ``VChipGroup``，``model`` 对应查询参数名）。
+        """
+        chips = [
+            {
+                "component": "VChip",
+                "props": {"filter": True, "tile": True, "value": key},
+                "text": label,
+            }
+            for key, label in self._explore_options()
+        ]
+        if not chips:
+            return []
+        return [
+            {
+                "component": "div",
+                "props": {"class": "flex justify-start items-center"},
+                "content": [
+                    {
+                        "component": "div",
+                        "props": {"class": "mr-5"},
+                        "content": [{"component": "VLabel", "text": "榜单"}],
+                    },
+                    {
+                        "component": "VChipGroup",
+                        "props": {"model": "top_key"},
+                        "content": chips,
+                    },
+                ],
+            }
+        ]
+
+    @_discover_source_listener
+    def discover_source(self, event: Any) -> None:
+        """响应宿主探索页的来源广播，把「短剧百科」登记成一个探索来源。"""
+        if not self._enabled or _DiscoverMediaSource is None:
+            return
+        event_data = getattr(event, "event_data", None)
+        if event_data is None:
+            return
+        source = _DiscoverMediaSource(
+            name=PLUGIN_NAME,
+            # 枚举是开放的，与 get_media_source() 里注册的 key 保持一致
+            media_source=MediaSource(MEDIA_SOURCE_KEY),
+            mediaid_prefix=MEDIA_ID_PREFIX,
+            api_path=self._explore_api_path(),
+            filter_params={
+                "top_key": self._explore_default_key(),
+                "page": 1,
+                "count": EXPLORE_DEFAULT_COUNT,
+            },
+            filter_ui=self._explore_filter_ui(),
+        )
+        existing = getattr(event_data, "extra_sources", None)
+        if existing:
+            # 幂等：宿主 reload 会重新广播，同一个来源只登记一次
+            for item in existing:
+                if getattr(item, "mediaid_prefix", "") == MEDIA_ID_PREFIX:
+                    return
+            existing.append(source)
+        else:
+            event_data.extra_sources = [source]
+
+    def api_explore(
+        self,
+        top_key: str = "",
+        page: int = 1,
+        count: int = EXPLORE_DEFAULT_COUNT,
+    ) -> Any:
+        """探索页数据源：按榜单键分页返回短剧列表（``Response[List[MediaInfo]]``）。
+
+        数据全部来自本地（榜单快照 / 目录索引），因此**不消耗站点配额**；
+        快照为空的来源只是回空列表，后台任务会逐轮把它填起来。
+        """
+        medias: List[Any] = []
+        if self._enabled:
+            keys = [key for key, _ in self._explore_options()]
+            wanted = _clean(top_key)
+            if wanted not in keys:
+                wanted = self._explore_default_key()
+            rows = self._explore_items(wanted)
+            current = self._as_range(page, 1, 1, 10000)
+            size = self._as_range(count, EXPLORE_DEFAULT_COUNT, 1, MAX_EXPLORE_COUNT)
+            start = (current - 1) * size
+            for row in rows[start : start + size]:
+                mediainfo = build_media_info(row)
+                if mediainfo is None:
+                    continue
+                payload = _media_to_dict(mediainfo)
+                if payload:
+                    medias.append(payload)
+        return _explore_response(medias)
 
     # ── HTTP ＋ 配额闸门 ──────────────────────────────────────────
 
@@ -1879,6 +2138,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "cache_ttl": DEFAULT_CACHE_TTL,
             "use_browser_search": False,
             "proxy": False,
+            "top_keys": list(DEFAULT_TOP_KEYS),
         }
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -2027,6 +2287,32 @@ class ShortDramaBaikeSource(_PluginBase):
                                             "label": "索引页数上限",
                                             "type": "number",
                                             "hint": f"1 ~ {MAX_INDEX_MAX_PAGES}；站内自述共约 1879 页",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "top_keys",
+                                            "label": "榜单快照范围（= 探索页的来源）",
+                                            "multiple": True,
+                                            "chips": True,
+                                            "clearable": True,
+                                            "items": [
+                                                {"title": label, "value": key}
+                                                for key, label in TOP_LISTS.items()
+                                            ],
+                                            "hint": (
+                                                "每个榜单要花一次站点请求配额，"
+                                                "默认只刷「热播榜 + 新剧榜」；"
+                                                "勾上的榜单会出现在 MoviePilot 探索页"
+                                            ),
                                             "persistent-hint": True,
                                         },
                                     }
@@ -2272,7 +2558,7 @@ class ShortDramaBaikeSource(_PluginBase):
                                 "content": [
                                     {
                                         "component": "VCardText",
-                                        "text": f"榜单快照：{len(self._top_cache)} 个（{', '.join(sorted(self._top_cache)) or '无'}）",
+                                        "text": f"榜单快照：{len(self._top_cache)} 个（{self._top_snapshot_summary()}）",
                                     }
                                 ],
                             }
@@ -2315,6 +2601,10 @@ class ShortDramaBaikeSource(_PluginBase):
                                             "常常没有条目，本数据源补的正是这一段。"
                                             "片名检索依赖本地目录索引，索引由后台任务逐页建立，"
                                             "可在「配置」里调大每轮页数加快进度。"
+                                            "浏览入口在 MoviePilot 的「探索」菜单："
+                                            "那里会多出一个「短剧百科」来源，榜单可切换"
+                                            "（刷哪些榜单由「配置 → 榜单快照范围」决定，"
+                                            "多勾几个就有更多来源可选）。"
                                             "其它插件也能直接调它：self.run_module(\"recognize_media\", "
                                             "media_source=\"duanjubaike\", media_id=\"org:40105\")；"
                                             "不想依赖宿主模型时用 GET /plugin/ShortDramaBaikeSource/recognize "
@@ -2336,6 +2626,17 @@ class ShortDramaBaikeSource(_PluginBase):
         与宿主 ``MediaInfo`` 的字段版本解耦。
         """
         return [
+            {
+                "path": EXPLORE_PATH,
+                "endpoint": self.api_explore,
+                "methods": ["GET"],
+                "auth": "apikey",
+                "summary": "宿主探索页数据源",
+                "description": (
+                    "按榜单键（hot / new / … / index）分页返回短剧列表，"
+                    "供 MoviePilot 探索页消费；数据取自本地快照与索引，不消耗站点配额。"
+                ),
+            },
             {
                 "path": "/recognize",
                 "endpoint": self.api_recognize,
@@ -2606,6 +2907,26 @@ class ShortDramaBaikeSource(_PluginBase):
         except (TypeError, ValueError):
             return default
         return max(low, min(high, number))
+
+    @staticmethod
+    def _as_top_keys(value: Any) -> List[str]:
+        """清洗「要刷哪些榜单」配置：只留下 ``TOP_LISTS`` 里的键，去重保序。
+
+        配置可能来自多选控件（列表）、逗号串（老值）或空 —— 一律兜底到
+        ``DEFAULT_TOP_KEYS``，免得用户清空后连热播榜都不刷了。
+        """
+        if isinstance(value, str):
+            raw = [item for item in re.split(r"[,\s]+", value) if item]
+        elif isinstance(value, (list, tuple, set)):
+            raw = [str(item) for item in value]
+        else:
+            raw = []
+        keys: List[str] = []
+        for item in raw:
+            key = item.strip()
+            if key in TOP_LISTS and key not in keys:
+                keys.append(key)
+        return keys or list(DEFAULT_TOP_KEYS)
 
     @staticmethod
     def _as_domain(value: Any, default: str) -> str:

@@ -18,9 +18,25 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | 片名检索 | `search_medias` | 返回候选 `MediaInfo`（含海报），宿主搜索框、探索页、订阅都能用 |
 | 详情识别 | `recognize_media` | 按 `media_id`（`org:<id>`）或片名取完整记录 |
 | 补图 | `obtain_images` | 缺海报时按身份补抓，并把海报兜底填到背景图 |
+| **「探索」页来源** | `DiscoverSource` 事件 + `/explore` | 在 MoviePilot 的「探索」菜单里多出一个「短剧百科」来源，可切换榜单浏览 |
 | 跨插件调用 | 见下节 | 其它插件、脚本、AI 智能体都能直接复用同一套识别 |
 
 统一媒体身份：`media_source = "duanjubaike"`，`media_id = "org:<id>"`（裸数字 ID 等价）。
+
+## 在 MoviePilot 的「探索」页里浏览
+
+宿主 `GET /api/v1/discover/source` 会广播 `ChainEventType.DiscoverSource` 事件收集来源
+（宿主源码 `api/endpoints/discover.py`），插件把 `DiscoverMediaSource` 追加进
+`event_data.extra_sources` 就成为一个来源；前端随后按它的 `api_path` 拉 `List[MediaInfo]`。
+
+- **来源名**：短剧百科；**可见位置**：MoviePilot 侧栏「探索」菜单
+- **筛选条**：「榜单」chips —— `热播榜` / `新剧榜` / …（你勾了哪些就有哪些）+ `全部短剧`
+  （本地目录索引，按站点 ID 倒序，即最新在前）
+- **数据来源**：本地榜单快照 + 目录索引 ⇒ **翻页零网络请求**，怎么刷都不消耗站点配额
+- **端点**：`GET /api/v1/plugin/ShortDramaBaikeSource/explore?top_key=hot&page=1&count=30`
+
+要看到更多榜单，去「配置 → 榜单快照范围」把榜单勾上（每个榜单花一次站点请求配额，
+所以默认只刷热播榜 + 新剧榜）。
 
 ## 供其它插件调用（本插件同时是「短剧识别服务」）
 
@@ -118,6 +134,7 @@ Cloudflare 的 JS 挑战，但在 NAS 上尚未验证稳定，失败一律静默
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| GET | `/explore` | **探索页数据源**：`top_key`(+`page`/`count`) → `Response[List[MediaInfo]]`（只读本地，不耗配额） |
 | GET | `/recognize` | **跨插件出口**：`media_id` 或 `keyword`(+`year`) → 纯 JSON 作品记录 |
 | GET | `/search` | 按片名试搜，返回候选与匹配分（排障用） |
 | GET | `/probe` | 连通性自检：robots / 目录页 / 榜单 / 详情页各自的状态码与解析条数 |
@@ -144,4 +161,5 @@ Cloudflare 的 JS 挑战，但在 NAS 上尚未验证稳定，失败一律静默
 | `min_interval` | 3.0 | 相邻请求的最小间隔（秒） |
 | `cooldown_minutes` | 10 | 撞 403 后的冷却时长 |
 | `scan_pages` | 1 | 没有索引时的实时扫描页数 |
+| `top_keys` | 热播榜 + 新剧榜 | **要刷哪些榜单**（17 个任选）= 探索页里能看到的来源；每个榜单一次请求配额 |
 | `use_browser_search` | 关 | 实验：用宿主浏览器仿真打站内检索 |

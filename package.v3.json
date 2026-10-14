@@ -75,15 +75,16 @@
   },
   "ShortDramaBaikeSource": {
     "name": "短剧百科数据源",
-    "description": "把「短剧百科」(duanjubaike.org) 注册为 MoviePilot 的一等媒体数据源（与 TMDB/豆瓣同级）：为 TMDB、豆瓣上没有条目的短剧提供片名检索与详情识别。站点检索被 Cloudflare 挡着，改为按配额小步建立本地全量片名索引，再叠加榜单快照与实时扫描；其它插件可直接 self.run_module(\"recognize_media\", media_source=\"duanjubaike\", media_id=\"org:40105\") 复用其识别能力，也可走 /recognize 拿纯 JSON。",
+    "description": "把「短剧百科」(duanjubaike.org) 注册为 MoviePilot 的一等媒体数据源（与 TMDB/豆瓣同级）：为 TMDB、豆瓣上没有条目的短剧提供片名检索与详情识别，并在 MoviePilot 的「探索」页里提供一个可切换榜单的浏览来源（数据取自本地快照与索引，不消耗站点配额）。站点检索被 Cloudflare 挡着，改为按配额小步建立本地全量片名索引，再叠加榜单快照与实时扫描；其它插件可直接 self.run_module(\"recognize_media\", media_source=\"duanjubaike\", media_id=\"org:40105\") 复用其识别能力，也可走 /recognize 拿纯 JSON。",
     "labels": "数据源,短剧,识别",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/ShortDramaBaikeSource.png",
     "author": "m215owen",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
-      "v1.0.0": "首次发布：把短剧百科（duanjubaike.org）注册为宿主媒体数据源，提供片名检索（search_medias）与详情识别（recognize_media / obtain_images）。站点站内检索被 Cloudflare JS 挑战挡住（服务端直连恒 403），因此检索走「后台按配额小步建立本地全量片名索引 → 榜单快照 → 实时目录扫描」三级降级，并用滚动窗口配额闸门（默认 5 次/5 分钟）管住所有出站请求、给交互式识别留额度、撞 403 即冷却。同时作为「短剧识别服务」供其它插件调用：宿主模块分发（self.run_module）、/recognize 纯 JSON 接口、智能体工具 short_drama_identify 三条通道共用同一套限流。"
+      "v1.0.0": "首次发布：把短剧百科（duanjubaike.org）注册为宿主媒体数据源，提供片名检索（search_medias）与详情识别（recognize_media / obtain_images）。站点站内检索被 Cloudflare JS 挑战挡住（服务端直连恒 403），因此检索走「后台按配额小步建立本地全量片名索引 → 榜单快照 → 实时目录扫描」三级降级，并用滚动窗口配额闸门（默认 5 次/5 分钟）管住所有出站请求、给交互式识别留额度、撞 403 即冷却。同时作为「短剧识别服务」供其它插件调用：宿主模块分发（self.run_module）、/recognize 纯 JSON 接口、智能体工具 short_drama_identify 三条通道共用同一套限流。",
+      "v1.1.0": "接入 MoviePilot「探索」页：监听宿主 DiscoverSource 事件，把「短剧百科」登记为一个探索来源（api_path → 插件 /explore，带可切换的榜单筛选条），新增 GET /plugin/ShortDramaBaikeSource/explore 按榜单键分页返回 List[MediaInfo]；数据全部读本地榜单快照与目录索引，翻页零网络请求、不耗配额。新增「榜单快照范围」多选配置（17 个榜单任选，默认热播榜 + 新剧榜）—— 勾上的榜单既进探索页，也扩大片名检索的召回面；面板的榜单卡片改为显示每个榜单的条数。"
     }
   }
 }
