@@ -110,6 +110,32 @@
 
     <v-divider class="my-3" />
 
+    <!-- ── URL 库（插件自有数据库） ── -->
+    <div class="text-subtitle-2 mb-2">
+      <v-icon icon="mdi-database-outline" size="18" class="mr-1" />
+      URL 库（插件自有数据库）
+    </div>
+    <v-row dense>
+      <v-col cols="12" sm="6" md="3">
+        <v-switch
+          v-model="local.follow_links"
+          label="顺带沉淀页面里的链接"
+          color="primary"
+          hide-details
+        />
+      </v-col>
+    </v-row>
+    <div class="text-caption sdbs-dim mt-1">
+      库里只存「关键词 → 页面 URL」，<b>不存解析结果</b>：站点内容随时在变，页面永远实时解析。
+      取数优先查库（命中即零引擎请求），库里没有才检索一次并把作品与演员两类 URL 一起入库。
+      开启本项后，解析作品页时顺带把演员链接写进库、解析演员页时顺带把作品链接写进库 ——
+      所以搜过一部剧，之后再搜它里面的演员名也是零引擎请求。
+      PostgreSQL 实例下这些表落在宿主库的独立 schema，SQLite 实例下落在插件数据目录的
+      <code>plugin.db</code>，两种情况下都跟着宿主一起备份。
+    </div>
+
+    <v-divider class="my-3" />
+
     <div v-if="statusText" class="text-caption sdbs-dim mb-2">
       <v-icon icon="mdi-information-outline" size="14" class="mr-1" />{{ statusText }}
     </div>
@@ -153,7 +179,7 @@ const props = defineProps<{
 
 const emit = defineEmits(['save', 'close', 'switch'])
 
-/** 与后端 `_default_config()` 逐键一致（共 9 项） */
+/** 与后端 `_default_config()` 逐键一致（共 10 项） */
 const DEFAULTS: PluginConfig = {
   enabled: false,
   domain: 'https://duanjubaike.org',
@@ -164,6 +190,7 @@ const DEFAULTS: PluginConfig = {
   web_index_backend: 'auto',
   proxy: false,
   detail_facts: true,
+  follow_links: true,
 }
 
 const FALLBACK_BACKENDS = ['auto', 'duckduckgo', 'yandex', 'google', 'brave', 'mojeek']
@@ -219,9 +246,11 @@ async function loadStatus(): Promise<void> {
         ? `站外索引 开（后端 ${index.backend || 'auto'}）`
         : '站外索引 关'
       : '站外索引 不可用（依赖缺失）'
+    const store = report.store || {}
     statusText.value = [
       `运行状态：${report.enabled ? '已启用' : '未启用'}`,
       indexText,
+      `URL 库 ${store.total ?? 0} 条（作品 ${store.work ?? 0} / 演员 ${store.actor ?? 0}）`,
       `缓存 详情 ${report.cache?.detail ?? 0} 条 / 演员 ${report.cache?.actor ?? 0} 条`,
     ].join('　｜　')
   } catch (error) {

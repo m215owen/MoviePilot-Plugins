@@ -18,6 +18,8 @@ import type {
   PluginApi,
   PluginConfig,
   StatusPayload,
+  UrlsClearPayload,
+  UrlsPayload,
 } from './types'
 
 /** 插件 ID，必须与后端插件类名一致 */
@@ -151,6 +153,42 @@ export function recognizeTitle(api: PluginApi, options: { media_id?: string; key
 /** 取演员档案（含全部作品与合作演员） */
 export function fetchActor(api: PluginApi, options: { actor_id?: string; name?: string }) {
   return getJson<{ success?: boolean; message?: string; actor?: ActorProfile | null }>(api, '/actor', options)
+}
+
+/**
+ * 查 URL 库。
+ *
+ * 库里**只存 URL**（关键词 → 页面地址），不存解析结果 —— 站点内容随时在变，页面永远
+ * 实时解析。不给 `keyword` 时回最近入库的记录，给了就按关键词精确查询。
+ */
+export function fetchUrls(api: PluginApi, options: { keyword?: string; kind?: string; limit?: number } = {}) {
+  return getJson<UrlsPayload>(api, '/urls', {
+    keyword: options.keyword || undefined,
+    kind: options.kind || undefined,
+    limit: options.limit ?? 50,
+  })
+}
+
+/**
+ * 清空 URL 库（面板上的「清空库」按钮）。
+ *
+ * 不给 `kind` / `keyword` 就是**整库清空**；只给 `kind` 清该类全部；两个都给只清那个
+ * 关键词的记录。破坏性操作 —— 调用方必须先让用户确认一次。
+ */
+export async function clearUrls(
+  api: PluginApi,
+  options: { keyword?: string; kind?: string } = {},
+): Promise<UrlsClearPayload | null> {
+  try {
+    const response = await api.post(`${API_BASE}/urls/clear`, {
+      keyword: options.keyword || '',
+      kind: options.kind || '',
+    })
+    return unwrap<UrlsClearPayload>(response)
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 清空 URL 库失败`, error)
+    return null
+  }
 }
 
 /** 读配置（面板配置页回显） */

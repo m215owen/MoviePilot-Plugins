@@ -16,6 +16,15 @@
       >
         缓存 {{ cacheChip }}
       </v-chip>
+      <v-chip
+        v-if="storeChip"
+        size="small"
+        variant="tonal"
+        color="teal"
+        title="URL 库：插件自有数据库里存着的「关键词 → 页面 URL」条数"
+      >
+        URL 库 {{ storeChip }}
+      </v-chip>
       <v-spacer />
       <v-btn
         v-if="props.full"
@@ -60,7 +69,8 @@
     <v-alert type="info" variant="tonal" density="compact" class="mb-3">
       短剧在 TMDB / 豆瓣上大量没有条目，宿主识别器建不起媒体身份 —— 本插件补的就是这一段。
       搜索框<b>片名与演员名都收</b>：一次检索同时给出「作品」与「演员」两块结果，哪边命中就显示哪边
-      （两边都命中就并排显示）。卡片上的「原始数据」可以直接看到插件处理后的完整字段。
+      （两边都命中就并排显示）。搜到的页面 URL 会存进<b>插件自有数据库</b>（URL 库），下次同一个词
+      直接查库、零引擎请求；卡片上的「原始数据」可以看到插件解析出的完整字段。
     </v-alert>
 
     <!-- ── 唯一的搜索框：片名与演员名都收 ─────────────────────── -->
@@ -87,9 +97,141 @@
           搜索
         </v-btn>
         <v-btn size="small" variant="text" :disabled="!hasResult" @click="clearAll">清空</v-btn>
+        <v-btn
+          size="small"
+          variant="text"
+          prepend-icon="mdi-database-outline"
+          title="看看 URL 库里存了哪些关键词与地址"
+          @click="toggleLibrary"
+        >
+          URL 库
+        </v-btn>
         <v-spacer />
         <span v-if="hint" class="text-caption sdbs-dim">{{ hint }}</span>
       </div>
+    </v-card>
+
+    <!-- ── URL 库（插件自有数据库；库里只存 URL，不存解析结果） ── -->
+    <v-card v-if="libraryOpen" variant="outlined" class="pa-3 mt-3 sdbs-panel">
+      <div class="d-flex align-center mb-2 flex-wrap" style="gap: 8px">
+        <v-icon icon="mdi-database-outline" size="18" class="mr-1" />
+        <span class="text-subtitle-2">URL 库</span>
+        <v-chip v-if="libraryStats" size="x-small" variant="tonal" color="teal">{{ libraryStats }}</v-chip>
+        <v-spacer />
+        <v-btn
+          size="x-small"
+          variant="text"
+          :loading="libraryLoading"
+          prepend-icon="mdi-refresh"
+          @click="loadLibrary()"
+        >
+          刷新
+        </v-btn>
+        <v-btn
+          size="x-small"
+          variant="text"
+          color="error"
+          prepend-icon="mdi-delete-sweep-outline"
+          :disabled="libraryLoading || libraryClearing"
+          @click="libraryClearOpen = true"
+        >
+          清空库
+        </v-btn>
+      </div>
+      <div class="text-caption sdbs-dim mb-2">
+        库里只存「页面 URL」：命中就直接抓页面（<b>零引擎请求</b>），解析结果不落库 ——
+        站点内容随时在变，页面永远实时解析。<b>一个页面只占一条记录</b>（同一个 ID 走了两条
+        发现路径被写成多行时会自动合并），每条按<b>它自己的名字</b>建档；右边标出「命中词」，
+        告诉你它是搜哪个词时被带出来的。解析作品页时顺带把演员链接写进库，所以搜过一部剧，
+        之后再搜它里面的演员名也能命中。
+      </div>
+      <v-alert v-if="libraryNotice" type="success" variant="tonal" density="compact" class="mb-2">
+        {{ libraryNotice }}
+      </v-alert>
+      <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+        <v-text-field
+          v-model="libraryKeyword"
+          density="compact"
+          variant="outlined"
+          hide-details
+          clearable
+          prepend-inner-icon="mdi-magnify"
+          placeholder="按关键词精确查（留空＝最近入库）"
+          class="sdbs-lib-search"
+          @keyup.enter="loadLibrary()"
+        />
+        <v-btn size="small" variant="tonal" color="primary" :loading="libraryLoading" @click="loadLibrary()">
+          查询
+        </v-btn>
+        <v-btn-toggle v-model="libraryKind" density="compact" variant="outlined" divided mandatory>
+          <v-btn size="small" value="all">全部</v-btn>
+          <v-btn size="small" value="work">作品</v-btn>
+          <v-btn size="small" value="actor">演员</v-btn>
+        </v-btn-toggle>
+      </div>
+      <v-alert v-if="!libraryRecords.length" type="info" variant="tonal" density="compact">
+        {{ libraryEmptyText }}
+      </v-alert>
+      <div
+        v-for="row in libraryRecords"
+        :key="`${row.kind}:${row.url}`"
+        class="d-flex align-center py-1"
+      >
+        <v-chip
+          size="x-small"
+          variant="tonal"
+          :color="row.kind === 'actor' ? 'purple' : 'primary'"
+          class="mr-2"
+        >
+          {{ row.kind === 'actor' ? '演员' : '作品' }}
+        </v-chip>
+        <span class="text-body-2 flex-grow-1 sdbs-lib-text">
+          {{ row.label || row.keyword || row.display }}
+          <span class="text-caption sdbs-dim ml-1">{{ row.origin === 'page' ? '页面顺带' : '引擎' }}</span>
+        </span>
+        <span
+          v-if="rowKeyInfo(row)"
+          class="text-caption sdbs-dim mr-2"
+          title="「命中词」＝搜这个词时发现的它；键／标题／命中词任何一个都能把它查回来"
+        >
+          {{ rowKeyInfo(row) }}
+        </span>
+        <v-btn
+          v-if="row.url"
+          size="x-small"
+          variant="text"
+          :href="row.url"
+          target="_blank"
+          rel="noopener"
+        >
+          打开
+        </v-btn>
+      </div>
+
+      <v-dialog v-model="libraryClearOpen" max-width="440">
+        <v-card>
+          <v-card-title class="text-subtitle-2 pt-3">清空 URL 库</v-card-title>
+          <v-card-text class="text-body-2">
+            将要删除：<b>{{ libraryClearScope }}</b>。
+            <br />
+            库里只存「页面 URL」，清掉之后下次搜索会重新问一遍搜索引擎 ——
+            引擎有最小间隔、召回也不稳，认得出的词会更少。确认要清吗？
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer />
+            <v-btn size="small" variant="text" @click="libraryClearOpen = false">取消</v-btn>
+            <v-btn
+              size="small"
+              variant="tonal"
+              color="error"
+              :loading="libraryClearing"
+              @click="clearLibrary()"
+            >
+              确认清空
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
     </v-card>
 
     <v-row dense>
@@ -116,10 +258,42 @@
               <v-chip size="x-small" variant="tonal" class="mr-2" :title="`匹配分 ${candidate.score}`">
                 {{ candidate.score }}
               </v-chip>
+              <v-chip
+                v-if="candidate.from"
+                size="x-small"
+                variant="text"
+                :color="candidate.from === 'store' ? 'teal' : 'grey'"
+                class="mr-2"
+                :title="
+                  candidate.from === 'store'
+                    ? 'URL 库里已有这条，本次零引擎请求'
+                    : '本次刚从搜索引擎发现，已写进 URL 库'
+                "
+              >
+                {{ candidate.from === 'store' ? '库' : '引擎' }}
+              </v-chip>
               <span class="text-body-2 flex-grow-1">{{ candidate.title }}</span>
-              <span v-if="candidate.episode_count" class="text-caption sdbs-dim mr-2">
-                {{ candidate.episode_count }} 集
-              </span>
+              <v-chip
+                v-if="candidate.same_title && candidate.same_title > 1"
+                size="x-small"
+                variant="text"
+                color="orange-darken-2"
+                class="ml-1"
+                title="站点给这部剧建了多条记录（实测真人版 / AI 版标题一字不差），
+                  这条只是其中之一 —— 逐条点「识别」比一比，数据全的那条通常有演员与集数"
+              >
+                同名 {{ candidate.same_title }} 版
+              </v-chip>
+              <v-btn
+                v-if="candidate.url"
+                size="x-small"
+                variant="text"
+                icon="mdi-open-in-new"
+                :href="candidate.url"
+                target="_blank"
+                rel="noopener"
+                title="打开站点页面"
+              />
               <v-btn
                 size="x-small"
                 variant="tonal"
@@ -161,6 +335,22 @@
                   {{ titleRecord.overview }}
                 </div>
                 <div v-if="titleCast" class="text-caption sdbs-dim mt-2">主演：{{ titleCast }}</div>
+                <!-- 同页「推荐短剧」：站点自己给的关联作品，也一并解析出来了 -->
+                <div v-if="titleRecord.related?.length" class="mt-2">
+                  <span class="text-caption sdbs-dim mr-1">同页推荐：</span>
+                  <v-chip
+                    v-for="rel in titleRecord.related.slice(0, 8)"
+                    :key="rel.media_id || rel.title"
+                    size="x-small"
+                    variant="tonal"
+                    class="mr-1 mb-1"
+                    :href="rel.url"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    {{ rel.title }}
+                  </v-chip>
+                </div>
               </div>
             </div>
             <div class="d-flex align-center mt-2 flex-wrap" style="gap: 8px">
@@ -217,7 +407,31 @@
               <v-chip size="x-small" variant="tonal" class="mr-2" :title="`匹配分 ${candidate.score}`">
                 {{ candidate.score }}
               </v-chip>
+              <v-chip
+                v-if="candidate.from"
+                size="x-small"
+                variant="text"
+                :color="candidate.from === 'store' ? 'teal' : 'grey'"
+                class="mr-2"
+                :title="
+                  candidate.from === 'store'
+                    ? 'URL 库里已有这条，本次零引擎请求'
+                    : '本次刚从搜索引擎发现，已写进 URL 库'
+                "
+              >
+                {{ candidate.from === 'store' ? '库' : '引擎' }}
+              </v-chip>
               <span class="text-body-2 flex-grow-1">{{ candidate.name }}</span>
+              <v-btn
+                v-if="candidate.url"
+                size="x-small"
+                variant="text"
+                icon="mdi-open-in-new"
+                :href="candidate.url"
+                target="_blank"
+                rel="noopener"
+                title="打开演员页"
+              />
               <span class="text-caption sdbs-dim mr-2">actor:{{ candidate.actor_id }}</span>
               <v-btn
                 size="x-small"
@@ -379,12 +593,14 @@
  * 结果都以卡片呈现，并保留「原始数据」展开位 —— 卡片是给人看的，
  * 展开是给排障/核对用的，两者看的是同一份后端返回。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Config from './Config.vue'
 import {
+  clearUrls,
   fetchActor,
   fetchConfig,
   fetchStatus,
+  fetchUrls,
   proxyImage,
   lookupKeyword,
   recognizeTitle,
@@ -399,6 +615,8 @@ import type {
   PluginConfig,
   StatusPayload,
   TitleCandidate,
+  UrlRecord,
+  UrlsPayload,
   WorkItem,
 } from './types'
 
@@ -446,12 +664,41 @@ const actorLoadingId = ref('')
 /** 已展开原始数据的作品下标（作品可能几十部，逐个展开比一次全铺清爽） */
 const openWorks = ref(new Set<number>())
 
+// ── URL 库（插件自有数据库） ──
+const libraryOpen = ref(false)
+const libraryLoading = ref(false)
+const libraryKeyword = ref('')
+const libraryKind = ref<'all' | 'work' | 'actor'>('all')
+const libraryRecords = ref<UrlRecord[]>([])
+const libraryStats = ref('')
+/** 后端的统计原始值（清空库的范围提示要报得准，不能拿「当前这一页 50 条」当总数） */
+const libraryStatsRaw = ref<UrlsPayload['stats']>({})
+/** 清库结果的一句话提示 */
+const libraryNotice = ref('')
+const libraryClearOpen = ref(false)
+const libraryClearing = ref(false)
+const libraryEmptyText = ref('库里还没有记录 —— 先在上面的搜索框搜一次片名或演员名。')
+
 const pretty = (value: unknown) => JSON.stringify(value ?? null, null, 2)
+
+/** 把大数字还原成人看得懂的量级（后端给的已经是绝对值：354万 → 3540000） */
+function formatCount(value?: number): string {
+  if (!value) return ''
+  if (value >= 100000000) return `${(value / 100000000).toFixed(1)} 亿`
+  if (value >= 10000) return `${Math.round(value / 10000)} 万`
+  return String(value)
+}
 
 const cacheChip = computed(() => {
   const cache = status.value?.cache
   if (!cache) return ''
   return `详情 ${cache.detail ?? 0} ｜ 演员 ${cache.actor ?? 0}`
+})
+
+const storeChip = computed(() => {
+  const store = status.value?.store
+  if (!store?.total) return ''
+  return `${store.total} 条`
 })
 
 const titleMeta = computed(() => {
@@ -463,6 +710,9 @@ const titleMeta = computed(() => {
   if (record.duration_minutes) parts.push(`单集 ${record.duration_minutes} 分钟`)
   if (record.kind) parts.push(record.kind)
   if (record.rating) parts.push(`评分 ${record.rating}`)
+  if (record.heat) parts.push(`热度 ${formatCount(record.heat)}`)
+  if (record.play_count) parts.push(`播放 ${formatCount(record.play_count)}`)
+  if (record.favorite_count) parts.push(`收藏 ${formatCount(record.favorite_count)}`)
   parts.push(`来源 ${record.origin === 'detail' ? '详情页' : '检索结果'}`)
   return parts.join(' ｜ ')
 })
@@ -501,7 +751,8 @@ function workMeta(work: WorkItem): string {
   if (work.kind) parts.push(work.kind)
   if (work.episode_count) parts.push(`${work.episode_count} 集`)
   if (work.rating) parts.push(`评分 ${work.rating}`)
-  if (work.heat) parts.push(`热度 ${Math.round(work.heat / 10000)} 万`)
+  if (work.heat) parts.push(`热度 ${formatCount(work.heat)}`)
+  if (work.play_count) parts.push(`播放 ${formatCount(work.play_count)}`)
   return parts.join(' ｜ ') || '—'
 }
 
@@ -649,6 +900,102 @@ function toggleWorkRaw(index: number): void {
   openWorks.value = next
 }
 
+// ── URL 库操作 ──
+
+function toggleLibrary(): void {
+  libraryOpen.value = !libraryOpen.value
+  if (libraryOpen.value) void loadLibrary()
+}
+
+/**
+ * 读 URL 库。
+ *
+ * 不给关键词时回最近入库的记录（这就是「库现在长什么样」），给了就按关键词查
+ * （键 / 标题 / 命中词任一命中都算）；类型过滤走后端参数，前端不自己筛 ——
+ * 免得两边的归一化规则不一致。
+ */
+async function loadLibrary(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  libraryLoading.value = true
+  libraryNotice.value = ''
+  try {
+    const query = libraryKeyword.value.trim()
+    const report = await fetchUrls(api, {
+      keyword: query,
+      kind: libraryKind.value === 'all' ? '' : libraryKind.value,
+    })
+    if (!report?.success) {
+      libraryRecords.value = []
+      libraryStats.value = ''
+      libraryStatsRaw.value = {}
+      libraryEmptyText.value = report?.message || 'URL 库暂时读不出来（插件数据库未就绪？）'
+      return
+    }
+    libraryRecords.value = report.records || []
+    const stats = report.stats || {}
+    libraryStatsRaw.value = stats
+    libraryStats.value = `共 ${stats.total ?? 0} 条（作品 ${stats.work ?? 0} / 演员 ${stats.actor ?? 0}，关键词 ${stats.keywords ?? 0} 个）`
+    libraryEmptyText.value = query
+      ? `库里没有「${query}」——换个完整片名或演员全名，或先在上面的搜索框搜一次。`
+      : '库里还没有记录 —— 先在上面的搜索框搜一次片名或演员名。'
+  } finally {
+    libraryLoading.value = false
+  }
+}
+
+/**
+ * 一行记录右侧的补充信息。
+ *
+ * 正常情况下「键＝它自己的名字」，没什么好显示的；只有历史遗留行（键落在片名 / 搜索词上）
+ * 或「命中词与名字不同」时才标出来 —— 用户看这一列就知道这条是搜哪个词带出来的。
+ */
+function rowKeyInfo(row: UrlRecord): string {
+  const key = String(row.keyword || '')
+  const name = String(row.label || '')
+  const trigger = String(row.display || '')
+  const parts: string[] = []
+  if (key && key !== name) parts.push(`键 ${key}`)
+  if (trigger && trigger !== key && trigger !== name) parts.push(`命中词 ${trigger}`)
+  return parts.join('｜')
+}
+
+/** 清空范围：跟着当前的关键词 / 类型筛选走，面板上先说清楚要删什么 */
+const libraryClearScope = computed(() => {
+  const query = libraryKeyword.value.trim()
+  const stats = libraryStatsRaw.value || {}
+  if (query) return `「${query}」相关的记录`
+  if (libraryKind.value === 'actor') return `全部 ${stats.actor ?? 0} 条演员记录`
+  if (libraryKind.value === 'work') return `全部 ${stats.work ?? 0} 条作品记录`
+  return `整库 ${stats.total ?? 0} 条记录`
+})
+
+/** 清库（后端会把「最近问过引擎」的时间戳一起清掉，所以清完马上就能重搜） */
+async function clearLibrary(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  libraryClearing.value = true
+  try {
+    const report = await clearUrls(api, {
+      keyword: libraryKeyword.value.trim(),
+      kind: libraryKind.value === 'all' ? '' : libraryKind.value,
+    })
+    libraryClearOpen.value = false
+    if (!report?.success) {
+      libraryEmptyText.value = report?.message || '清库失败（后端没有响应）'
+      return
+    }
+    await loadLibrary()
+    libraryNotice.value = `${report.message || '已清空'}；再搜一次就会重新发现。`
+  } finally {
+    libraryClearing.value = false
+  }
+}
+
+watch(libraryKind, () => {
+  if (libraryOpen.value) void loadLibrary()
+})
+
 /** 先取配置再挂载弹窗：Config 只在 onMounted 读一次 initialConfig，先挂载会拿到空快照 */
 async function openSettings(): Promise<void> {
   const api = resolveApi(props)
@@ -705,6 +1052,17 @@ load()
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+/* URL 库：关键词输入框限宽，记录行的标题可省略号截断（地址可能很长） */
+.sdbs-lib-search {
+  max-width: 320px;
+  min-width: 200px;
+}
+.sdbs-lib-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* 原始数据块：等宽、可横向滚动、限高避免长 JSON 顶掉整页 */
 .sdbs-pre {

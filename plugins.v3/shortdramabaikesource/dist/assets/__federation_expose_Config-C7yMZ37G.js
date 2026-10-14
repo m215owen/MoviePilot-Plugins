@@ -73,6 +73,25 @@ function recognizeTitle(api, options) {
 function fetchActor(api, options) {
   return getJson(api, "/actor", options);
 }
+function fetchUrls(api, options = {}) {
+  return getJson(api, "/urls", {
+    keyword: options.keyword || void 0,
+    kind: options.kind || void 0,
+    limit: options.limit ?? 50
+  });
+}
+async function clearUrls(api, options = {}) {
+  try {
+    const response = await api.post(`${API_BASE}/urls/clear`, {
+      keyword: options.keyword || "",
+      kind: options.kind || ""
+    });
+    return unwrap(response);
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 清空 URL 库失败`, error);
+    return null;
+  }
+}
 function fetchConfig(api) {
   return getJson(api, "/config");
 }
@@ -93,15 +112,16 @@ const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElement
 const _hoisted_1 = { class: "d-flex align-center mb-3" };
 const _hoisted_2 = { class: "text-subtitle-2 mb-2" };
 const _hoisted_3 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_4 = {
+const _hoisted_4 = { class: "text-subtitle-2 mb-2" };
+const _hoisted_5 = {
   key: 1,
   class: "text-caption sdbs-dim mb-2"
 };
-const _hoisted_5 = {
+const _hoisted_6 = {
   class: "d-flex align-center flex-wrap",
   style: { "gap": "8px" }
 };
-const _hoisted_6 = { class: "text-caption sdbs-dim" };
+const _hoisted_7 = { class: "text-caption sdbs-dim" };
 const {onMounted,ref} = await importShared('vue');
 const _sfc_main = /* @__PURE__ */ _defineComponent({
   __name: "Config",
@@ -122,7 +142,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       web_index_search: true,
       web_index_backend: "auto",
       proxy: false,
-      detail_facts: true
+      detail_facts: true,
+      follow_links: true
     };
     const FALLBACK_BACKENDS = ["auto", "duckduckgo", "yandex", "google", "brave", "mojeek"];
     const local = ref({ ...DEFAULTS, ...props.initialConfig || {} });
@@ -166,9 +187,11 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         }
         const index = report.web_index || {};
         const indexText = index.available ? index.enabled ? `站外索引 开（后端 ${index.backend || "auto"}）` : "站外索引 关" : "站外索引 不可用（依赖缺失）";
+        const store = report.store || {};
         statusText.value = [
           `运行状态：${report.enabled ? "已启用" : "未启用"}`,
           indexText,
+          `URL 库 ${store.total ?? 0} 条（作品 ${store.work ?? 0} / 演员 ${store.actor ?? 0}）`,
           `缓存 详情 ${report.cache?.detail ?? 0} 条 / 演员 ${report.cache?.actor ?? 0} 条`
         ].join("　｜　");
       } catch (error) {
@@ -235,7 +258,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               icon: "mdi-television-classic",
               class: "mr-2"
             }),
-            _cache[10] || (_cache[10] = _createElementVNode("h3", { class: "ma-0" }, "短剧百科数据源 · 设置", -1)),
+            _cache[11] || (_cache[11] = _createElementVNode("h3", { class: "ma-0" }, "短剧百科数据源 · 设置", -1)),
             _createVNode(_component_v_spacer),
             _createVNode(_component_v_btn, {
               icon: "mdi-close",
@@ -251,7 +274,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             density: "compact",
             class: "mb-3"
           }, {
-            default: _withCtx(() => [..._cache[11] || (_cache[11] = [
+            default: _withCtx(() => [..._cache[12] || (_cache[12] = [
               _createTextVNode(" 本插件把 ", -1),
               _createElementVNode("b", null, "duanjubaike.org", -1),
               _createTextVNode(" 注册成 MoviePilot 的一等媒体数据源（与 TMDB / 豆瓣同级）， 补齐 TMDB、豆瓣上没有条目的短剧。站内检索被 Cloudflare 挡住、目录页已弃用， 片名与演员名 → ID 都走", -1),
@@ -344,7 +367,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               size: "18",
               class: "mr-1"
             }),
-            _cache[12] || (_cache[12] = _createTextVNode(" 站点与请求 ", -1))
+            _cache[13] || (_cache[13] = _createTextVNode(" 站点与请求 ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -408,7 +431,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }),
-          _cache[16] || (_cache[16] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[18] || (_cache[18] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createTextVNode(" 详情页内容基本不变，缓存默认 7 天。插件"),
             _createElementVNode("b", null, "没有后台任务"),
             _createTextVNode("：缓存只在被查询时按需重建。 ")
@@ -420,7 +443,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               size: "18",
               class: "mr-1"
             }),
-            _cache[13] || (_cache[13] = _createTextVNode(" 站外索引（片名 / 演员名 → 站点 ID 的唯一通道） ", -1))
+            _cache[14] || (_cache[14] = _createTextVNode(" 站外索引（片名 / 演员名 → 站点 ID 的唯一通道） ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -461,7 +484,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }),
-          _cache[17] || (_cache[17] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createTextVNode(" 实测 "),
             _createElementVNode("code", null, "auto"),
             _createTextVNode(" 与 "),
@@ -469,7 +492,44 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createTextVNode(" 有结果；单次检索约 10 秒，相邻两次至少隔 3 秒。 关掉它之后面板搜索框会直接不可用（没有第二条发现通道），按姓名找演员也一样。 ")
           ], -1)),
           _createVNode(_component_v_divider, { class: "my-3" }),
-          statusText.value ? (_openBlock(), _createElementBlock("div", _hoisted_4, [
+          _createElementVNode("div", _hoisted_4, [
+            _createVNode(_component_v_icon, {
+              icon: "mdi-database-outline",
+              size: "18",
+              class: "mr-1"
+            }),
+            _cache[15] || (_cache[15] = _createTextVNode(" URL 库（插件自有数据库） ", -1))
+          ]),
+          _createVNode(_component_v_row, { dense: "" }, {
+            default: _withCtx(() => [
+              _createVNode(_component_v_col, {
+                cols: "12",
+                sm: "6",
+                md: "3"
+              }, {
+                default: _withCtx(() => [
+                  _createVNode(_component_v_switch, {
+                    modelValue: local.value.follow_links,
+                    "onUpdate:modelValue": _cache[10] || (_cache[10] = ($event) => local.value.follow_links = $event),
+                    label: "顺带沉淀页面里的链接",
+                    color: "primary",
+                    "hide-details": ""
+                  }, null, 8, ["modelValue"])
+                ]),
+                _: 1
+              })
+            ]),
+            _: 1
+          }),
+          _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+            _createTextVNode(" 库里只存「关键词 → 页面 URL」，"),
+            _createElementVNode("b", null, "不存解析结果"),
+            _createTextVNode("：站点内容随时在变，页面永远实时解析。 取数优先查库（命中即零引擎请求），库里没有才检索一次并把作品与演员两类 URL 一起入库。 开启本项后，解析作品页时顺带把演员链接写进库、解析演员页时顺带把作品链接写进库 —— 所以搜过一部剧，之后再搜它里面的演员名也是零引擎请求。 PostgreSQL 实例下这些表落在宿主库的独立 schema，SQLite 实例下落在插件数据目录的 "),
+            _createElementVNode("code", null, "plugin.db"),
+            _createTextVNode("，两种情况下都跟着宿主一起备份。 ")
+          ], -1)),
+          _createVNode(_component_v_divider, { class: "my-3" }),
+          statusText.value ? (_openBlock(), _createElementBlock("div", _hoisted_5, [
             _createVNode(_component_v_icon, {
               icon: "mdi-information-outline",
               size: "14",
@@ -477,7 +537,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             }),
             _createTextVNode(_toDisplayString(statusText.value), 1)
           ])) : _createCommentVNode("", true),
-          _createElementVNode("div", _hoisted_5, [
+          _createElementVNode("div", _hoisted_6, [
             _createVNode(_component_v_btn, {
               color: "primary",
               variant: "tonal",
@@ -485,7 +545,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               "prepend-icon": "mdi-content-save-outline",
               onClick: doSave
             }, {
-              default: _withCtx(() => [..._cache[14] || (_cache[14] = [
+              default: _withCtx(() => [..._cache[16] || (_cache[16] = [
                 _createTextVNode(" 保存 ", -1)
               ])]),
               _: 1
@@ -495,13 +555,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               disabled: saving.value,
               onClick: resetToLoaded
             }, {
-              default: _withCtx(() => [..._cache[15] || (_cache[15] = [
+              default: _withCtx(() => [..._cache[17] || (_cache[17] = [
                 _createTextVNode("还原", -1)
               ])]),
               _: 1
             }, 8, ["disabled"]),
             _createVNode(_component_v_spacer),
-            _createElementVNode("span", _hoisted_6, _toDisplayString(hint.value), 1)
+            _createElementVNode("span", _hoisted_7, _toDisplayString(hint.value), 1)
           ])
         ]),
         _: 1
@@ -518,6 +578,6 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-79385f2e"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-72375673"]]);
 
-export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, Config as default, fetchStatus as f, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };
+export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };
