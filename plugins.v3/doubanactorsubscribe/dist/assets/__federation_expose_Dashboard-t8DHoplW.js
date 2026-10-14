@@ -20,12 +20,17 @@ const _hoisted_6 = { class: "text-caption" };
 const _hoisted_7 = { class: "das-new" };
 const _hoisted_8 = {
   key: 0,
+  class: "text-caption",
+  title: "已在媒体库中的作品数（判定与媒体详情页一致）：自动订阅会跳过它们"
+};
+const _hoisted_9 = {
+  key: 0,
   class: "text-caption text-medium-emphasis"
 };
-const _hoisted_9 = ["title"];
-const _hoisted_10 = { class: "text-caption das-dim ml-2" };
-const _hoisted_11 = { class: "text-caption das-dim mt-2" };
-const _hoisted_12 = { class: "das-drag-hint" };
+const _hoisted_10 = ["title"];
+const _hoisted_11 = { class: "text-caption das-dim ml-2" };
+const _hoisted_12 = { class: "text-caption das-dim mt-2" };
+const _hoisted_13 = { class: "das-drag-hint" };
 const {computed,inject,onMounted,ref} = await importShared('vue');
 const LIMIT = 4;
 const _sfc_main = /* @__PURE__ */ _defineComponent({
@@ -55,7 +60,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       new_count: payload.value?.new_count ?? 0,
       new_actor_count: payload.value?.new_actor_count ?? 0,
       updated_at: payload.value?.updated_at || "",
-      new_label: newWindowLabel.value
+      new_label: newWindowLabel.value,
+      // 未查库（旧快照 / 查库失败）时为 0，行内也不显示「已入库」标记
+      library_count: payload.value?.library_count ?? 0
     }));
     const flattened = computed(() => {
       const works = mergeWorks(payload.value?.actors || []);
@@ -163,6 +170,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       const _component_v_spacer = _resolveComponent("v-spacer");
       const _component_v_btn = _resolveComponent("v-btn");
       const _component_v_card_title = _resolveComponent("v-card-title");
+      const _component_v_chip = _resolveComponent("v-chip");
       const _component_v_card_text = _resolveComponent("v-card-text");
       const _component_v_card = _resolveComponent("v-card");
       const _component_v_hover = _resolveComponent("v-hover");
@@ -209,9 +217,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         _createElementVNode("span", _hoisted_6, [
                           _createTextVNode(_toDisplayString(stats.value.new_label) + " ", 1),
                           _createElementVNode("b", _hoisted_7, "演员 " + _toDisplayString(stats.value.new_actor_count) + " / 作品 " + _toDisplayString(stats.value.new_count), 1)
-                        ])
+                        ]),
+                        stats.value.library_count ? (_openBlock(), _createElementBlock("span", _hoisted_8, [
+                          _cache[3] || (_cache[3] = _createTextVNode(" 已入库 ", -1)),
+                          _createElementVNode("b", null, _toDisplayString(stats.value.library_count), 1)
+                        ])) : _createCommentVNode("", true)
                       ]),
-                      !latest.value.length ? (_openBlock(), _createElementBlock("div", _hoisted_8, " 暂无作品数据，点击右上角刷新。 ")) : _createCommentVNode("", true),
+                      !latest.value.length ? (_openBlock(), _createElementBlock("div", _hoisted_9, " 暂无作品数据，点击右上角刷新。 ")) : _createCommentVNode("", true),
                       (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(latest.value, (item) => {
                         return _openBlock(), _createElementBlock("div", {
                           key: _unref(workKey)(item.work),
@@ -223,8 +235,21 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                           _createElementVNode("span", {
                             class: "das-name",
                             title: item.work.title
-                          }, _toDisplayString(item.work.title), 9, _hoisted_9),
-                          _createElementVNode("span", _hoisted_10, _toDisplayString(item.work.year || "—"), 1),
+                          }, _toDisplayString(item.work.title), 9, _hoisted_10),
+                          _createElementVNode("span", _hoisted_11, _toDisplayString(item.work.year || "—"), 1),
+                          item.work.in_library ? (_openBlock(), _createBlock(_component_v_chip, {
+                            key: 0,
+                            size: "x-small",
+                            variant: "tonal",
+                            color: "blue-grey-darken-1",
+                            class: "ml-2",
+                            title: "已在 MoviePilot 媒体库中，自动订阅会跳过它"
+                          }, {
+                            default: _withCtx(() => [..._cache[4] || (_cache[4] = [
+                              _createTextVNode(" 已入库 ", -1)
+                            ])]),
+                            _: 1
+                          })) : _createCommentVNode("", true),
                           _createVNode(_component_v_spacer),
                           _createVNode(_component_v_btn, {
                             size: "x-small",
@@ -244,12 +269,12 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                           }, null, 8, ["onClick"])
                         ]);
                       }), 128)),
-                      _createElementVNode("div", _hoisted_11, _toDisplayString(item0.value.actor) + " 等 " + _toDisplayString(stats.value.actor_count) + " 位演员｜" + _toDisplayString(_unref(formatTime)(stats.value.updated_at)), 1)
+                      _createElementVNode("div", _hoisted_12, _toDisplayString(item0.value.actor) + " 等 " + _toDisplayString(stats.value.actor_count) + " 位演员｜" + _toDisplayString(_unref(formatTime)(stats.value.updated_at)), 1)
                     ], 64))
                   ]),
                   _: 1
                 }),
-                _withDirectives(_createElementVNode("div", _hoisted_12, [
+                _withDirectives(_createElementVNode("div", _hoisted_13, [
                   _createVNode(_component_v_icon, {
                     icon: "mdi-drag",
                     size: "18"
@@ -268,6 +293,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-1e6f912d"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-63cdaf22"]]);
 
 export { Dashboard as default };

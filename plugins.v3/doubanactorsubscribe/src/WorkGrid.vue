@@ -35,15 +35,28 @@
           >
             新
           </v-chip>
-          <v-chip
-            v-if="isSubscribed(work)"
-            size="x-small"
-            color="success"
-            variant="flat"
-            class="das-badge das-badge-right"
-          >
-            已订阅
-          </v-chip>
+          <!-- 右上角：入库 / 订阅状态。多个标记叠放，避免各自绝对定位后互相压住 -->
+          <div class="das-badge das-badge-right">
+            <!-- 已在媒体库：判定与宿主媒体详情页同源；未知（字段缺失）时不显示 -->
+            <v-chip
+              v-if="work.in_library"
+              size="x-small"
+              color="blue-grey-darken-1"
+              variant="flat"
+              title="这部作品已在 MoviePilot 媒体库中（与媒体详情页的判定一致）：自动订阅会跳过它"
+            >
+              已入库
+            </v-chip>
+            <v-chip
+              v-if="isSubscribed(work)"
+              size="x-small"
+              color="success"
+              variant="flat"
+              title="已在 MoviePilot 订阅系统中"
+            >
+              已订阅
+            </v-chip>
+          </div>
         </div>
 
         <v-card-text class="pa-2 pb-1 das-body">
@@ -205,6 +218,11 @@ function detailTitle(work: ActorWork): string {
 
 .das-badge-right {
   right: 6px;
+  /* 右上角可能有「已入库」+「已订阅」两枚标记：用 flex 让它们并排而不是叠在一起 */
+  display: flex;
+  gap: 4px;
+  max-width: calc(100% - 12px);
+  overflow: hidden;
 }
 
 .das-body {

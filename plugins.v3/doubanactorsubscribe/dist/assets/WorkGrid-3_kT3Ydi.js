@@ -211,19 +211,20 @@ const _hoisted_2 = {
 const _hoisted_3 = { class: "das-poster" };
 const _hoisted_4 = { class: "das-poster-ph" };
 const _hoisted_5 = { class: "das-poster-ph" };
-const _hoisted_6 = ["title"];
-const _hoisted_7 = { class: "das-meta" };
-const _hoisted_8 = {
+const _hoisted_6 = { class: "das-badge das-badge-right" };
+const _hoisted_7 = ["title"];
+const _hoisted_8 = { class: "das-meta" };
+const _hoisted_9 = {
   key: 0,
   class: "das-dim"
 };
-const _hoisted_9 = {
+const _hoisted_10 = {
   key: 1,
   class: "das-dim das-vote"
 };
-const _hoisted_10 = ["title"];
-const _hoisted_11 = { class: "das-actors-text" };
-const _hoisted_12 = {
+const _hoisted_11 = ["title"];
+const _hoisted_12 = { class: "das-actors-text" };
+const _hoisted_13 = {
   key: 1,
   class: "das-dim das-roles"
 };
@@ -306,26 +307,40 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     ])]),
                     _: 1
                   })) : _createCommentVNode("", true),
-                  isSubscribed(work) ? (_openBlock(), _createBlock(_component_v_chip, {
-                    key: 1,
-                    size: "x-small",
-                    color: "success",
-                    variant: "flat",
-                    class: "das-badge das-badge-right"
-                  }, {
-                    default: _withCtx(() => [..._cache[1] || (_cache[1] = [
-                      _createTextVNode(" 已订阅 ", -1)
-                    ])]),
-                    _: 1
-                  })) : _createCommentVNode("", true)
+                  _createElementVNode("div", _hoisted_6, [
+                    work.in_library ? (_openBlock(), _createBlock(_component_v_chip, {
+                      key: 0,
+                      size: "x-small",
+                      color: "blue-grey-darken-1",
+                      variant: "flat",
+                      title: "这部作品已在 MoviePilot 媒体库中（与媒体详情页的判定一致）：自动订阅会跳过它"
+                    }, {
+                      default: _withCtx(() => [..._cache[1] || (_cache[1] = [
+                        _createTextVNode(" 已入库 ", -1)
+                      ])]),
+                      _: 1
+                    })) : _createCommentVNode("", true),
+                    isSubscribed(work) ? (_openBlock(), _createBlock(_component_v_chip, {
+                      key: 1,
+                      size: "x-small",
+                      color: "success",
+                      variant: "flat",
+                      title: "已在 MoviePilot 订阅系统中"
+                    }, {
+                      default: _withCtx(() => [..._cache[2] || (_cache[2] = [
+                        _createTextVNode(" 已订阅 ", -1)
+                      ])]),
+                      _: 1
+                    })) : _createCommentVNode("", true)
+                  ])
                 ]),
                 _createVNode(_component_v_card_text, { class: "pa-2 pb-1 das-body" }, {
                   default: _withCtx(() => [
                     _createElementVNode("div", {
                       class: "das-title",
                       title: work.title
-                    }, _toDisplayString(work.title), 9, _hoisted_6),
-                    _createElementVNode("div", _hoisted_7, [
+                    }, _toDisplayString(work.title), 9, _hoisted_7),
+                    _createElementVNode("div", _hoisted_8, [
                       _createVNode(_component_v_chip, {
                         size: "x-small",
                         variant: "tonal",
@@ -336,8 +351,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         ]),
                         _: 2
                       }, 1024),
-                      work.year ? (_openBlock(), _createElementBlock("span", _hoisted_8, _toDisplayString(work.year), 1)) : _createCommentVNode("", true),
-                      work.vote ? (_openBlock(), _createElementBlock("span", _hoisted_9, [
+                      work.year ? (_openBlock(), _createElementBlock("span", _hoisted_9, _toDisplayString(work.year), 1)) : _createCommentVNode("", true),
+                      work.vote ? (_openBlock(), _createElementBlock("span", _hoisted_10, [
                         _createVNode(_component_v_icon, {
                           icon: "mdi-star",
                           size: "11",
@@ -355,9 +370,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         icon: "mdi-account-outline",
                         size: "11"
                       }),
-                      _createElementVNode("span", _hoisted_11, _toDisplayString(work.actorNames.join(" / ")), 1)
-                    ], 8, _hoisted_10)) : _createCommentVNode("", true),
-                    work.roles && work.roles.length ? (_openBlock(), _createElementBlock("div", _hoisted_12, _toDisplayString(work.roles.join(" / ")), 1)) : _createCommentVNode("", true)
+                      _createElementVNode("span", _hoisted_12, _toDisplayString(work.actorNames.join(" / ")), 1)
+                    ], 8, _hoisted_11)) : _createCommentVNode("", true),
+                    work.roles && work.roles.length ? (_openBlock(), _createElementBlock("div", _hoisted_13, _toDisplayString(work.roles.join(" / ")), 1)) : _createCommentVNode("", true)
                   ]),
                   _: 2
                 }, 1024),
@@ -409,6 +424,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-05da72b1"]]);
+const WorkGrid = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-65ddf1ef"]]);
 
 export { IgnoredManager as I, WorkGrid as W };

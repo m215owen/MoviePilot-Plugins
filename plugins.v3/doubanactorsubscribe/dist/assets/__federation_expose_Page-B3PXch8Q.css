@@ -1,27 +1,28 @@
 
-/* 仅使用 scoped 样式 */
-.das-root[data-v-918f82a4] {
-  max-width: 1600px;
+/* 仅使用 scoped 样式；不要编写会全局生效的选择器（组件库类名、html、body、:root） */
+.das-page[data-v-0de662f1] {
+  max-width: 100%;
 }
-.das-titlebar[data-v-918f82a4] {
-  gap: 12px;
+.das-titlebar[data-v-0de662f1] {
+  flex-wrap: wrap;
+  gap: 8px;
   row-gap: 4px;
 }
 
 /* 演员 chip 区：flex 换行 + 纵向滚动。
    不能用 v-chip-group——它是横向滑动容器，会带左右箭头且展开看不出效果。 */
-.das-chips[data-v-918f82a4] {
+.das-chips[data-v-0de662f1] {
   max-height: 96px;
   overflow-y: auto;
 }
-.das-actor-chips[data-v-918f82a4] {
+.das-actor-chips[data-v-0de662f1] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 /* 演员 chip 上的「新」：作品墙不再逐张标新，最近加入的演员靠这里才一眼可辨 */
-.das-chip-new[data-v-918f82a4] {
+.das-chip-new[data-v-0de662f1] {
   display: inline-flex;
   align-items: center;
   height: 14px;
@@ -36,22 +37,22 @@
 }
 
 /* 展开后放开限高：一次能看到更多演员（仍留上限，上百位时不至于拉爆页面） */
-.das-chips-expanded[data-v-918f82a4] {
+.das-chips-expanded[data-v-0de662f1] {
   max-height: 60vh;
 }
-.das-toolbar[data-v-918f82a4] {
+.das-toolbar[data-v-0de662f1] {
   gap: 12px;
 }
-.das-dim[data-v-918f82a4] {
+.das-dim[data-v-0de662f1] {
   opacity: 0.75;
 }
-.das-search[data-v-918f82a4] {
-  max-width: 240px;
+.das-search[data-v-0de662f1] {
+  max-width: 220px;
 }
-.das-checkbox[data-v-918f82a4] {
+.das-checkbox[data-v-0de662f1] {
   max-width: 130px;
 }
-.das-page-info[data-v-918f82a4] {
+.das-page-info[data-v-0de662f1] {
   font-size: 0.82rem;
   opacity: 0.85;
   white-space: nowrap;

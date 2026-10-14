@@ -78,15 +78,21 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       () => newWindowDays.value > 0 ? `近 ${newWindowDays.value} 天新增` : "近期新增"
     );
     const newActorCount = computed(() => payload.value?.new_actor_count ?? 0);
-    const statCards = computed(() => [
-      { label: "演员", value: payload.value?.actor_count ?? 0 },
-      { label: "作品", value: payload.value?.work_count ?? 0 },
-      {
-        label: `${newWindowLabel.value}（演员 / 作品）`,
-        value: `${newActorCount.value} / ${payload.value?.new_count ?? 0}`
-      },
-      { label: "上次刷新", value: formatTime(payload.value?.updated_at) }
-    ]);
+    const statCards = computed(() => {
+      const rows = [
+        { label: "演员", value: payload.value?.actor_count ?? 0 },
+        { label: "作品", value: payload.value?.work_count ?? 0 },
+        {
+          label: `${newWindowLabel.value}（演员 / 作品）`,
+          value: `${newActorCount.value} / ${payload.value?.new_count ?? 0}`
+        }
+      ];
+      if (payload.value?.library_known) {
+        rows.push({ label: "已在媒体库", value: payload.value?.library_count ?? 0 });
+      }
+      rows.push({ label: "上次刷新", value: formatTime(payload.value?.updated_at) });
+      return rows;
+    });
     function notify(type, message) {
       const handler = toast && toast[type];
       if (typeof handler === "function") {
@@ -534,6 +540,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-9a81e222"]]);
+const AppPageSettings = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-8bbb59a4"]]);
 
 export { AppPageSettings as default };

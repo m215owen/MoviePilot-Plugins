@@ -29,6 +29,9 @@
                   {{ stats.new_label }}
                   <b class="das-new">演员 {{ stats.new_actor_count }} / 作品 {{ stats.new_count }}</b>
                 </span>
+                <span v-if="stats.library_count" class="text-caption" title="已在媒体库中的作品数（判定与媒体详情页一致）：自动订阅会跳过它们">
+                  已入库 <b>{{ stats.library_count }}</b>
+                </span>
               </div>
 
               <div v-if="!latest.length" class="text-caption text-medium-emphasis">
@@ -42,6 +45,16 @@
                 <span class="das-dot" :class="item.work.is_new ? 'das-dot-new' : ''" />
                 <span class="das-name" :title="item.work.title">{{ item.work.title }}</span>
                 <span class="text-caption das-dim ml-2">{{ item.work.year || '—' }}</span>
+                <v-chip
+                  v-if="item.work.in_library"
+                  size="x-small"
+                  variant="tonal"
+                  color="blue-grey-darken-1"
+                  class="ml-2"
+                  title="已在 MoviePilot 媒体库中，自动订阅会跳过它"
+                >
+                  已入库
+                </v-chip>
                 <v-spacer />
                 <v-btn
                   size="x-small"
@@ -145,6 +158,8 @@ const stats = computed(() => ({
   new_actor_count: payload.value?.new_actor_count ?? 0,
   updated_at: payload.value?.updated_at || '',
   new_label: newWindowLabel.value,
+  // 未查库（旧快照 / 查库失败）时为 0，行内也不显示「已入库」标记
+  library_count: payload.value?.library_count ?? 0,
 }))
 
 /** 展平后的作品：按作品去重（同一部作品可能挂在多位演员名下），新作品优先 */

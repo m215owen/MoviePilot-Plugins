@@ -202,6 +202,16 @@
             hide-details
             class="das-checkbox"
           />
+          <!-- 只在真的查过库（library_known）时才给这个开关，避免旧快照下点了没反应 -->
+          <v-checkbox
+            v-if="libraryKnown"
+            v-model="onlyNotInLibrary"
+            label="只看未入库"
+            density="compact"
+            hide-details
+            class="das-checkbox"
+            title="只显示还没进媒体库的作品（判定与媒体详情页一致）。已在库的作品卡片角上会标「已入库」，自动订阅也会跳过它们"
+          />
           <v-btn-toggle v-model="sortMode" density="compact" variant="outlined" divided>
             <v-btn size="small" value="year">最新优先</v-btn>
             <v-btn size="small" value="new">新作品优先</v-btn>
@@ -392,12 +402,13 @@ const actorFilter = ref(ALL_ACTORS)
 const typeFilter = ref('')
 const onlyNew = ref(false)
 const onlyUnsubscribed = ref(false)
+const onlyNotInLibrary = ref(false)
 const sortMode = ref('year')
 const keyword = ref('')
 
 /** 任何筛选条件变化都回到第一页，避免停留在越界/过时页 */
 watch(
-  [actorFilter, typeFilter, onlyNew, onlyUnsubscribed, sortMode, keyword],
+  [actorFilter, typeFilter, onlyNew, onlyUnsubscribed, onlyNotInLibrary, sortMode, keyword],
   resetPage
 )
 
@@ -445,6 +456,14 @@ const newActorCount = computed(
   () => payload.value?.new_actor_count ?? actors.value.filter((actor) => actor.is_new).length
 )
 
+/**
+ * 是否真的查过媒体库。
+ *
+ * 后端只有在刷新时才查库，且查库失败会保持「未知」。为假时面板既不显示
+ * 「已在媒体库」统计，也不给「只看未入库」开关 —— 免得用户把「没查成」当成「都不在库」。
+ */
+const libraryKnown = computed(() => Boolean(payload.value?.library_known))
+
 const statCards = computed(() => {
   const rows = [
     // 每张卡都带 title 字段（可为空串），保证数组元素类型一致、模板里可安全取 item.title
@@ -465,6 +484,15 @@ const statCards = computed(() => {
     rows.push({ label: '未解析演员', value: unresolvedCount.value, title: '' })
   } else {
     rows.push({ label: '累计刷新', value: payload.value?.run_count ?? 0, title: '' })
+  }
+  if (libraryKnown.value) {
+    rows.push({
+      label: '已在媒体库',
+      value: payload.value?.library_count ?? 0,
+      title:
+        '已在媒体库中的作品数（判定与媒体详情页的「是否在媒体库」一致：先按豆瓣/TMDB 身份匹配，' +
+        '未命中时按片名 + 类型 + 年份回退匹配）。卡片角上标「已入库」；自动订阅会跳过这些作品。',
+    })
   }
   return rows
 })
@@ -561,6 +589,9 @@ const visibleWorks = computed<ActorWork[]>(() => {
   if (typeFilter.value) works = works.filter((work) => work.type === typeFilter.value)
   if (onlyNew.value) works = works.filter((work) => work.is_new)
   if (onlyUnsubscribed.value) works = works.filter((work) => !isSubscribed(work))
+  // 「只看未入库」：只排除**明确已在库**的；未知（字段缺失）的保留，
+  // 否则查库失败时一勾这个开关就会看到空白。
+  if (onlyNotInLibrary.value) works = works.filter((work) => work.in_library !== true)
   const kw = keyword.value.trim().toLowerCase()
   if (kw) {
     works = works.filter(

@@ -257,15 +257,22 @@ const newWindowLabel = computed(() =>
 )
 const newActorCount = computed(() => payload.value?.new_actor_count ?? 0)
 
-const statCards = computed(() => [
-  { label: '演员', value: payload.value?.actor_count ?? 0 },
-  { label: '作品', value: payload.value?.work_count ?? 0 },
-  {
-    label: `${newWindowLabel.value}（演员 / 作品）`,
-    value: `${newActorCount.value} / ${payload.value?.new_count ?? 0}`,
-  },
-  { label: '上次刷新', value: formatTime(payload.value?.updated_at) },
-])
+const statCards = computed(() => {
+  const rows = [
+    { label: '演员', value: payload.value?.actor_count ?? 0 },
+    { label: '作品', value: payload.value?.work_count ?? 0 },
+    {
+      label: `${newWindowLabel.value}（演员 / 作品）`,
+      value: `${newActorCount.value} / ${payload.value?.new_count ?? 0}`,
+    },
+  ]
+  // 只有真的查过库才显示这个数（旧快照 / 查库失败时后端不下发）
+  if (payload.value?.library_known) {
+    rows.push({ label: '已在媒体库', value: payload.value?.library_count ?? 0 })
+  }
+  rows.push({ label: '上次刷新', value: formatTime(payload.value?.updated_at) })
+  return rows
+})
 
 function notify(type: 'success' | 'error', message: string): void {
   const handler = toast && (toast as unknown as Record<string, unknown>)[type]

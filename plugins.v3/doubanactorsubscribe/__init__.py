@@ -210,6 +210,103 @@ def _search_cooldown_hint(remain_seconds: float) -> str:
 _PERSON_URL_PATTERN = re.compile(r"(?:personage|celebrity)/(\d+)")
 
 
+def _media_server_oper() -> Any:
+    """惰性构造宿主的媒体库查询对象（``MediaServerOper``）。
+
+    单独成函数有两个原因：① 宿主模块只在真正要查库时才导入，插件在别的宿主版本上
+    仍能正常加载；② 单测可以整块替换它，不必去造 ``app.db`` 那一串依赖。
+    """
+    from app.db.oper.mediaserver import MediaServerOper
+
+    return MediaServerOper()
+
+
+class _LibraryProbe:
+    """「这部作品是否已在媒体库」的探针 —— 与宿主媒体详情页**同一套判定**。
+
+    宿主媒体详情页打开时会请求 ``GET /mediaserver/exists?media_source=&media_id=&title=&year=&season=&mtype=``，
+    该端点只是把参数转给 ``MediaServerOper().get_item_id()``，由后者按下述顺序在本地库表
+    ``mediaserveritem`` 里找条目（见宿主 ``db/oper/mediaserver.py`` 的 ``exists``）：
+
+    1. ``media_source`` + ``media_id`` 同时给出时，先按「规范媒体身份 + 类型」精确匹配；
+    2. 上一步未命中且有片名时，**回退**按「片名（+ 类型 + 年份）」匹配 ——
+       媒体库里一部作品只保存一个主来源，跨来源的卡片靠这一手才对得上；
+    3. 只给片名时直接走第 2 步。
+
+    这里刻意复用宿主自己的 ``MediaServerOper``，而不是自己写 SQL：判定口径（尤其是
+    回退规则与类型过滤）随宿主版本演进的细节都由宿主保证，插件只负责调用与展示。
+    调用失败（宿主版本差异、事务执行器未就绪等）一律返回 ``None``（未知），
+    绝不当成「不在库」——否则一次异常就会让整轮作品看起来都没入库。
+    """
+
+    def __init__(self) -> None:
+        self._oper: Any = None
+        self._disabled = False
+        self._cache: Dict[Tuple[str, str, str, str, str], Optional[bool]] = {}
+        self.last_error = ""
+
+    def _ensure_oper(self) -> Any:
+        """惰性导入宿主的库操作对象；不可用时只记录一次并停用后续尝试。"""
+        if self._oper is not None or self._disabled:
+            return self._oper
+        try:
+            self._oper = _media_server_oper()
+        except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+            self._disabled = True
+            self.last_error = str(err)
+            logger.warning(f"媒体库存在性检查不可用，本轮不标注入库状态：{err}")
+        return self._oper
+
+    @staticmethod
+    def _cache_key(work: Dict[str, Any]) -> Tuple[str, str, str, str, str]:
+        return (
+            str(work.get("media_source") or ""),
+            str(work.get("media_id") or ""),
+            str(work.get("type") or ""),
+            str(work.get("title") or ""),
+            str(work.get("year") or ""),
+        )
+
+    def lookup(self, work: Dict[str, Any]) -> Optional[bool]:
+        """查询单个作品：``True`` 在库 / ``False`` 不在库 / ``None`` 未知（查不了）。
+
+        结果按「媒体身份 + 片名 + 年份」在实例内缓存 —— 同一部作品可能出现在多位演员
+        名下，一轮刷新里只查一次。
+        """
+        key = self._cache_key(work)
+        if key in self._cache:
+            return self._cache[key]
+        flag = self._lookup_uncached(work)
+        self._cache[key] = flag
+        return flag
+
+    def _lookup_uncached(self, work: Dict[str, Any]) -> Optional[bool]:
+        media_source = str(work.get("media_source") or "").strip()
+        media_id = str(work.get("media_id") or "").strip()
+        title = str(work.get("title") or "").strip()
+        if not (media_source and media_id) and not title:
+            return None
+        oper = self._ensure_oper()
+        if oper is None:
+            return None
+        try:
+            item_id = oper.get_item_id(
+                media_source=media_source or None,
+                media_id=media_id or None,
+                title=title or None,
+                year=str(work.get("year") or "").strip() or None,
+                mtype=str(work.get("type") or "").strip() or None,
+            )
+        except Exception as err:  # pragma: no cover - 宿主机内差异兜底
+            self._disabled = True
+            self.last_error = str(err)
+            logger.warning(f"媒体库存在性检查失败，后续作品不再查询：{err}")
+            return None
+        # 宿主返回的是媒体服务器的 item_id 字符串；空值即「本地没有这条」
+        return bool(str(item_id or "").strip())
+
+
+
 class _CookieCloudClient:
     """从 CookieCloud 取指定域名的 Cookie。
 
@@ -547,7 +644,7 @@ class DoubanActorSubscribe(_PluginBase):
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/DoubanActorSubscribe.png"
     )
-    plugin_version = "1.13.0"
+    plugin_version = "1.14.0"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_label = "订阅"
@@ -779,11 +876,15 @@ class DoubanActorSubscribe(_PluginBase):
             if (new_count or new_actor_count)
             else ""
         )
+        library_count = self._library_count()
+        library_hint = f"｜已在媒体库 {library_count}" if library_count else ""
         return (
             {"cols": 12, "sm": 6, "md": 4},
             {
                 "title": f"{self.plugin_name} · 最新作品",
-                "subtitle": f"{len(self._actor_entries)} 位演员｜{total} 部作品" + fresh_hint,
+                "subtitle": f"{len(self._actor_entries)} 位演员｜{total} 部作品"
+                + fresh_hint
+                + library_hint,
                 "refresh": 300,
                 "border": True,
             },
@@ -1134,11 +1235,17 @@ class DoubanActorSubscribe(_PluginBase):
             self.save_data(self._DATA_ACTORS, cache)
         if search_log_dirty:
             self.save_data(self._DATA_SEARCH_LOG, search_log)
+        # 标注「是否已在媒体库」（与宿主媒体详情页同一套判定），面板据此打标、
+        # 自动订阅据此跳过库里已有的作品。放在落盘前，标记随之持久化。
+        library_count = self._annotate_library(snapshot)
         self.save_data(self._DATA_WORKS, snapshot)
 
         subscribed: List[Dict[str, Any]] = []
+        skipped_in_library = 0
         if self._auto_subscribe:
-            subscribed = self._auto_subscribe_works(snapshot, previous, errors)
+            subscribed, skipped_in_library = self._auto_subscribe_works(
+                snapshot, previous, errors
+            )
 
         elapsed_ms = int((time.time() - started) * 1000)
         self._run_count += 1
@@ -1167,6 +1274,10 @@ class DoubanActorSubscribe(_PluginBase):
         )
         if new_count:
             detail += f"，本次新收录 {new_count} 部（首次建立基线的作品不计入新作品）"
+        if library_count:
+            detail += f"，已在媒体库 {library_count} 部"
+        if skipped_in_library:
+            detail += f"（其中 {skipped_in_library} 部因已在库跳过订阅）"
         if errors:
             detail += f"，{len(errors)} 项异常"
         if skipped:
@@ -1197,6 +1308,9 @@ class DoubanActorSubscribe(_PluginBase):
         actors: List[Dict[str, Any]] = []
         new_count = 0
         new_actor_count = 0
+        library_count = 0
+        library_known = False
+        library_counted: set = set()
         now = time.time()
         for group in snapshot.values():
             if not isinstance(group, dict):
@@ -1211,6 +1325,18 @@ class DoubanActorSubscribe(_PluginBase):
             # 「新」全部现算：作品看「演员加入之后才出现 + 未过期」，演员看「加入未过期」。
             # 读旧快照也不会显示过期标记，口径与刷新落盘时完全一致。
             new_count += self._apply_new_flags(visible, _parse_ts(actor.get("baseline_at")))
+            # 「已在媒体库」直接读刷新时标注的结果（那一步才查库）。旧快照没有该字段
+            # 时保持「未知」：面板不显示标记、也不计入统计，等下次刷新补齐。
+            # 计数去重：同一部作品挂在多位演员名下时只算一部（与作品墙的合并视图一致）。
+            for work in visible:
+                if "in_library" not in work:
+                    continue
+                library_known = True
+                unique = self._work_unique(work)
+                if not work.get("in_library") or unique in library_counted:
+                    continue
+                library_counted.add(unique)
+                library_count += 1
             actor["is_new"] = self._is_fresh_actor(actor, now)
             new_actor_count += 1 if actor["is_new"] else 0
             # 同理：张冠李戴的判定也现算，旧缓存里的记录才会被标出来
@@ -1238,6 +1364,11 @@ class DoubanActorSubscribe(_PluginBase):
             "actor_count": len(self._actor_entries),
             "work_count": total,
             "new_count": new_count,
+            # 已在媒体库的作品数（判定与宿主媒体详情页同源，见 _LibraryProbe）。
+            # 「未知」与「不在库」必须分开：library_known 为假时面板既不显示标记，
+            # 也不显示这个数，免得把「没查成」说成「都不在库」。
+            "library_count": library_count,
+            "library_known": library_known,
             # 近窗口内加入的演员数：作品不再逐张标新，新演员的规模改成这个数来体现，
             # 面板统计卡会把「近 N 天新增 演员 x / 作品 y」一起写出来。
             "new_actor_count": new_actor_count,
@@ -1666,13 +1797,17 @@ class DoubanActorSubscribe(_PluginBase):
         snapshot: Dict[str, Any],
         previous: Dict[str, Any],
         errors: List[str],
-    ) -> List[Dict[str, Any]]:
-        """对新出现且满足筛选条件的作品调用订阅链落库。"""
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """对新出现且满足筛选条件的作品调用订阅链落库。
+
+        :return: ``(成功订阅的记录, 因已在媒体库而跳过的作品数)``
+        """
         seen = set(self.get_data(self._DATA_SEEN) or [])
         # 被用户忽略的作品不自动订阅：忽略的语义就是「别再管它」
         ignored = self._load_ignored()
         history = self._load_sub_history()
         subscribed: List[Dict[str, Any]] = []
+        skipped_in_library = 0
         budget = self._auto_max_per_run
 
         for group_key, group in snapshot.items():
@@ -1693,6 +1828,13 @@ class DoubanActorSubscribe(_PluginBase):
                     seen.add(unique)
                     continue
                 if not work.get("subscribable"):
+                    continue
+                # 已在媒体库的直接跳过：订阅只为「拿到没有的片子」，
+                # 库里已有的再订阅一遍没有意义，还会白占一次下载搜索。
+                # 注意只认明确的 True；「未知」（旧快照 / 查库失败）照常订阅，
+                # 否则一次异常就会让整轮作品都被静默跳过。
+                if work.get("in_library") is True:
+                    skipped_in_library += 1
                     continue
                 if self._auto_types and work.get("type") not in self._auto_types:
                     continue
@@ -1725,7 +1867,7 @@ class DoubanActorSubscribe(_PluginBase):
 
         self.save_data(self._DATA_SEEN, sorted(seen)[-2000:])
         self.save_data(self._DATA_SUBS, history[:200])
-        return subscribed
+        return subscribed, skipped_in_library
 
     def _add_subscribe(self, work: Dict[str, Any]) -> Tuple[bool, str]:
         """把单个作品提交给 MoviePilot 订阅链；返回 ``(是否成功, 说明)``。
@@ -2054,6 +2196,49 @@ class DoubanActorSubscribe(_PluginBase):
             new_count += self._apply_new_flags(works, _parse_ts(actor.get("baseline_at")))
             new_actor_count += 1 if self._is_fresh_actor(actor, now) else 0
         return total, new_count, new_actor_count
+
+    def _annotate_library(self, snapshot: Dict[str, Any]) -> int:
+        """给快照里的作品标注 ``in_library``，返回其中**去重后**「已在媒体库」的作品数。
+
+        判定与宿主媒体详情页完全同源（见 :class:`_LibraryProbe`）：同一部作品只查一次，
+        查不了的作品**不写字段**（面板视为未知），而不是写成 ``False``。
+        计数与面板口径一致：同一部作品挂在多位演员名下时只算一部。
+        """
+        probe = _LibraryProbe()
+        counted: set = set()
+        count = 0
+        for group in snapshot.values():
+            if not isinstance(group, dict):
+                continue
+            for work in group.get("works") or []:
+                if not isinstance(work, dict):
+                    continue
+                flag = probe.lookup(work)
+                if flag is None:
+                    work.pop("in_library", None)
+                    continue
+                work["in_library"] = flag
+                unique = self._work_unique(work)
+                if not flag or unique in counted:
+                    continue
+                counted.add(unique)
+                count += 1
+        if probe.last_error:
+            logger.warning(f"媒体库存在性检查已停用：{probe.last_error}")
+        return count
+
+    def _library_count(self) -> int:
+        """快照里「已在媒体库」的作品数（去重，供仪表板副标题使用，口径同面板）。"""
+        snapshot = self._load_works()
+        counted: set = set()
+        for group in snapshot.values():
+            if not isinstance(group, dict):
+                continue
+            for work in group.get("works") or []:
+                if not isinstance(work, dict) or work.get("in_library") is not True:
+                    continue
+                counted.add(self._work_unique(work))
+        return len(counted)
 
     def _send_notify(
         self, detail: str, subscribed: List[Dict[str, Any]], errors: List[str]

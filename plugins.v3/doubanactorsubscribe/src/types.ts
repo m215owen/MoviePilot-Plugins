@@ -99,6 +99,14 @@ export interface ActorWork {
    * 只有之后某轮刷新才冒出来的作品才会带这个标记。
    */
   is_new?: boolean
+  /**
+   * 是否已在媒体库（判定与宿主媒体详情页同源，见后端 `_LibraryProbe`）。
+   *
+   * - `true` / `false`：刷新时查过库，结论明确；
+   * - 字段缺失：**未知**（旧快照未标注，或查库失败）—— 此时不显示标记，
+   *   也不参与筛选与统计，避免把「没查成」显示成「都不在库」。
+   */
+  in_library?: boolean
 }
 
 /** 演员基本信息 */
@@ -172,6 +180,10 @@ export interface WorksPayload {
   new_actor_count?: number
   /** 「新」的口径：演员自加入、作品自在演员加入之后出现起，不超过这个天数 */
   new_window_days?: number
+  /** 已在媒体库的作品数（去重后） */
+  library_count?: number
+  /** 是否真的查过库：为假时表示还没标注（旧快照 / 查库失败），面板不显示相关统计与筛选 */
+  library_known?: boolean
   auto_subscribe: boolean
   auto_only_new: boolean
   auto_min_vote: number

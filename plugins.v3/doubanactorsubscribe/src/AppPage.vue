@@ -185,6 +185,16 @@
             hide-details
             class="das-checkbox"
           />
+          <!-- 只在真的查过库（library_known）时才给这个开关，避免旧快照下点了没反应 -->
+          <v-checkbox
+            v-if="libraryKnown"
+            v-model="onlyNotInLibrary"
+            label="只看未入库"
+            density="compact"
+            hide-details
+            class="das-checkbox"
+            title="只显示还没进媒体库的作品（判定与媒体详情页一致）。已在库的作品卡片角上会标「已入库」，自动订阅也会跳过它们"
+          />
           <v-btn-toggle v-model="sortMode" density="compact" variant="outlined" divided>
             <v-btn size="small" value="year">最新优先</v-btn>
             <v-btn size="small" value="new">新作品优先</v-btn>
@@ -368,12 +378,13 @@ const actorFilter = ref(ALL_ACTORS)
 const typeFilter = ref('')
 const onlyNew = ref(false)
 const onlyUnsubscribed = ref(false)
+const onlyNotInLibrary = ref(false)
 const sortMode = ref('year')
 const keyword = ref('')
 
 /** 任何筛选条件变化都回到第一页，避免停留在越界/过时页 */
 watch(
-  [actorFilter, typeFilter, onlyNew, onlyUnsubscribed, sortMode, keyword],
+  [actorFilter, typeFilter, onlyNew, onlyUnsubscribed, onlyNotInLibrary, sortMode, keyword],
   resetPage
 )
 
@@ -415,21 +426,42 @@ const newActorCount = computed(
   () => payload.value?.new_actor_count ?? actors.value.filter((actor) => actor.is_new).length
 )
 
-const statCards = computed(() => [
+/**
+ * 是否真的查过媒体库。
+ *
+ * 后端只在刷新时查库，查库失败保持「未知」。为假时面板不显示「已在媒体库」统计、
+ * 也不给「只看未入库」开关 —— 免得用户把「没查成」当成「都不在库」。
+ */
+const libraryKnown = computed(() => Boolean(payload.value?.library_known))
+
+const statCards = computed(() => {
   // 每张卡都带 title 字段（可为空串），保证数组元素类型一致、模板里可安全取 item.title
-  { label: '演员', value: payload.value?.actor_count ?? actors.value.length, title: '' },
-  { label: '作品', value: payload.value?.work_count ?? 0, title: '' },
-  {
-    label: `${newWindowLabel.value}（演员 / 作品）`,
-    value: `${newActorCount.value} / ${payload.value?.new_count ?? 0}`,
-    title:
-      `新演员 = 最近 ${newWindowDays.value} 天加入订阅列表的演员（chip 上标「新」）；` +
-      '新作品 = 首次出现在该演员加入之后的作品。' +
-      '刚加入的演员过去的老作品属于基线，不会逐张标「新」，' +
-      '只有之后刷新才冒出来的作品才带「新」。',
-  },
-  { label: '累计刷新', value: payload.value?.run_count ?? 0, title: '' },
-])
+  const rows = [
+    { label: '演员', value: payload.value?.actor_count ?? actors.value.length, title: '' },
+    { label: '作品', value: payload.value?.work_count ?? 0, title: '' },
+    {
+      label: `${newWindowLabel.value}（演员 / 作品）`,
+      value: `${newActorCount.value} / ${payload.value?.new_count ?? 0}`,
+      title:
+        `新演员 = 最近 ${newWindowDays.value} 天加入订阅列表的演员（chip 上标「新」）；` +
+        '新作品 = 首次出现在该演员加入之后的作品。' +
+        '刚加入的演员过去的老作品属于基线，不会逐张标「新」，' +
+        '只有之后刷新才冒出来的作品才带「新」。',
+    },
+  ]
+  // 查过库才给这个数：它回答「还有多少是库里没有的」
+  if (libraryKnown.value) {
+    rows.push({
+      label: '已在媒体库',
+      value: payload.value?.library_count ?? 0,
+      title:
+        '已在媒体库中的作品数（判定与媒体详情页的「是否在媒体库」一致：先按豆瓣/TMDB 身份匹配，' +
+        '未命中时按片名 + 类型 + 年份回退匹配）。卡片角上标「已入库」；自动订阅会跳过这些作品。',
+    })
+  }
+  rows.push({ label: '累计刷新', value: payload.value?.run_count ?? 0, title: '' })
+  return rows
+})
 
 /**
  * 豆瓣 Cookie 状态徽标。
@@ -524,6 +556,9 @@ const visibleWorks = computed<ActorWork[]>(() => {
   if (typeFilter.value) works = works.filter((work) => work.type === typeFilter.value)
   if (onlyNew.value) works = works.filter((work) => work.is_new)
   if (onlyUnsubscribed.value) works = works.filter((work) => !isSubscribed(work))
+  // 「只看未入库」：只排除**明确已在库**的；未知（字段缺失）的保留，
+  // 否则查库失败时一勾这个开关就会看到空白。
+  if (onlyNotInLibrary.value) works = works.filter((work) => work.in_library !== true)
   const kw = keyword.value.trim().toLowerCase()
   if (kw) {
     works = works.filter(
