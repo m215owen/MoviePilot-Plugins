@@ -38,10 +38,10 @@
 
     <v-divider class="my-3" />
 
-    <!-- ── 站点与节奏 ── -->
+    <!-- ── 站点与请求 ── -->
     <div class="text-subtitle-2 mb-2">
       <v-icon icon="mdi-earth" size="18" class="mr-1" />
-      站点与节奏
+      站点与请求
     </div>
     <v-row dense>
       <v-col cols="12" md="6">
@@ -54,18 +54,7 @@
           placeholder="https://duanjubaike.org"
         />
       </v-col>
-      <v-col cols="12" sm="4" md="2">
-        <v-text-field
-          v-model.number="local.interval_minutes"
-          label="榜单刷新间隔"
-          suffix="分钟"
-          type="number"
-          density="compact"
-          variant="outlined"
-          hide-details
-        />
-      </v-col>
-      <v-col cols="12" sm="4" md="2">
+      <v-col cols="12" sm="6" md="3">
         <v-text-field
           v-model.number="local.timeout"
           label="请求超时"
@@ -76,7 +65,7 @@
           hide-details
         />
       </v-col>
-      <v-col cols="12" sm="4" md="2">
+      <v-col cols="12" sm="6" md="3">
         <v-text-field
           v-model.number="local.cache_ttl"
           label="详情缓存"
@@ -89,7 +78,7 @@
       </v-col>
     </v-row>
     <div class="text-caption sdbs-dim mt-1">
-      详情页内容基本不变，缓存默认 7 天；榜单快照 6 小时过期，后台每 {{ local.interval_minutes }} 分钟检查一次。
+      详情页内容基本不变，缓存默认 7 天。插件<b>没有后台任务</b>：缓存只在被查询时按需重建。
     </div>
 
     <v-divider class="my-3" />
@@ -116,59 +105,14 @@
     </v-row>
     <div class="text-caption sdbs-dim mt-1">
       实测 <code>auto</code> 与 <code>yandex</code> 有结果；单次检索约 10 秒，相邻两次至少隔 3 秒。
-      关掉它之后按姓名找演员会直接不可用（没有第二条发现通道）。
+      关掉它之后面板搜索框会直接不可用（没有第二条发现通道），按姓名找演员也一样。
     </div>
 
     <v-divider class="my-3" />
 
-    <!-- ── 探索页 ── -->
-    <div class="text-subtitle-2 mb-2">
-      <v-icon icon="mdi-compass-outline" size="18" class="mr-1" />
-      宿主「探索」页
+    <div v-if="statusText" class="text-caption sdbs-dim mb-2">
+      <v-icon icon="mdi-information-outline" size="14" class="mr-1" />{{ statusText }}
     </div>
-    <v-select
-      v-model="local.top_keys"
-      :items="topKeyOptions"
-      item-title="label"
-      item-value="value"
-      label="榜单快照范围（= 探索页里的来源）"
-      multiple
-      chips
-      closable-chips
-      density="compact"
-      variant="outlined"
-      hide-details
-      class="mb-2"
-    />
-    <v-row dense>
-      <v-col cols="12" sm="6" md="3">
-        <v-text-field
-          v-model.number="local.explore_detail_fetch"
-          label="探索页详情回填"
-          suffix="部/次"
-          type="number"
-          density="compact"
-          variant="outlined"
-          hide-details
-        />
-      </v-col>
-    </v-row>
-    <!-- 快照实况：勾了但没刷到的榜单在探索页里是空列表，这里点名，省得去探索页猜 -->
-    <div v-if="snapshotText" class="text-caption sdbs-dim mt-1">
-      当前快照：{{ snapshotText }}
-    </div>
-    <div v-if="missingKeys.length" class="text-caption sdbs-dim">
-      <v-icon icon="mdi-alert-outline" size="14" class="mr-1" />
-      已勾选但快照里还没有：{{ missingKeys.join('、') }}（等下次刷新，或把
-      <code>interval_minutes</code> 调小）
-    </div>
-    <div class="text-caption sdbs-dim mt-1">
-      榜单页只有「标题 + 海报 + 集数」，回填会把当前页少量作品的
-      「简介 / 年份 / 类型 / 主演」也带上；填 <code>0</code> 表示完全不额外请求。
-      榜单页不受站点限流，多勾几个不吃亏。
-    </div>
-
-    <v-divider class="my-3" />
 
     <div class="d-flex align-center flex-wrap" style="gap: 8px">
       <v-btn
@@ -196,7 +140,7 @@
  * 为了少踩这个坑，这里挂载后自己再拉一次 `GET /config`（真实生效值），
  * `initialConfig` 只作为拉取失败时的兜底。
  */
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { fetchConfig, fetchStatus, resolveApi, saveConfig } from './api'
 import type { PluginApi, PluginConfig } from './types'
 
@@ -209,67 +153,30 @@ const props = defineProps<{
 
 const emit = defineEmits(['save', 'close', 'switch'])
 
-/** 与后端 `_default_config()` 逐键一致 */
+/** 与后端 `_default_config()` 逐键一致（共 9 项） */
 const DEFAULTS: PluginConfig = {
   enabled: false,
   domain: 'https://duanjubaike.org',
   search_in_global: true,
-  interval_minutes: 5,
   timeout: 15,
   cache_ttl: 604800,
   web_index_search: true,
   web_index_backend: 'auto',
   proxy: false,
-  top_keys: ['hot', 'new'],
-  explore_detail_fetch: 8,
   detail_facts: true,
 }
-
-/** 后端没有可选项时的兜底（榜单键取自插件的 TOP_LISTS） */
-const FALLBACK_TOP_KEYS = [
-  { value: 'hot', label: '热播榜' },
-  { value: 'new', label: '新剧榜' },
-  { value: 'celebrity', label: '明星榜' },
-  { value: 'comic-hot', label: '漫剧热榜' },
-  { value: 'search', label: '搜索榜' },
-  { value: 'hot-urban', label: '都市榜' },
-  { value: 'hot-rebirth', label: '重生榜' },
-  { value: 'hot-through', label: '穿越榜' },
-  { value: 'hot-system', label: '系统榜' },
-  { value: 'hot-male', label: '男频榜' },
-  { value: 'hot-female', label: '女频榜' },
-  { value: 'hot-female-grouth', label: '女性成长榜' },
-  { value: 'hot-strong-female', label: '大女主榜' },
-  { value: 'hot-vest', label: '战神马甲榜' },
-  { value: 'hot-face-slapping', label: '打脸榜' },
-  { value: 'hot-counter-attack', label: '逆袭榜' },
-  { value: 'hot-country', label: '乡村榜' },
-]
 
 const FALLBACK_BACKENDS = ['auto', 'duckduckgo', 'yandex', 'google', 'brave', 'mojeek']
 
 const local = ref<PluginConfig>({ ...DEFAULTS, ...(props.initialConfig || {}) })
 /** 服务端最近一次的真实配置，供「还原」使用 */
 const loaded = ref<PluginConfig>({ ...local.value })
-const topKeyOptions = ref(FALLBACK_TOP_KEYS)
 const backendOptions = ref(FALLBACK_BACKENDS)
 const loading = ref(false)
 const saving = ref(false)
 const hint = ref('')
-/** 快照实况文案（来自 /status），让「勾了范围」与「探索页实际有什么」对得上 */
-const snapshotText = ref('')
-/** 已勾选但快照里还没有的榜单键 —— 这些在探索页里是空列表 */
-const missingKeys = ref<string[]>([])
-
-/** 按快照键中文名回显；键不在选项里时原样显示 */
-function labelOfKey(key: string): string {
-  return topKeyOptions.value.find((item) => item.value === key)?.label || key
-}
-
-const topKeyLabelOf = computed(() => {
-  const map = new Map(topKeyOptions.value.map((item) => [item.value, item.label]))
-  return (key: string) => map.get(key) || key
-})
+/** 运行实况文案（来自 /status） */
+const statusText = ref('')
 
 onMounted(() => {
   void loadConfig()
@@ -286,12 +193,8 @@ async function loadConfig(): Promise<void> {
       loaded.value = { ...local.value }
     }
     const options = report?.options
-    if (options?.top_keys?.length) topKeyOptions.value = options.top_keys
     if (options?.web_index_backends?.length) backendOptions.value = options.web_index_backends
-    hint.value = local.value.top_keys.length
-      ? `已勾选：${local.value.top_keys.map(topKeyLabelOf.value).join('、')}`
-      : ''
-    await loadSnapshot()
+    await loadStatus()
   } catch (error) {
     hint.value = '读取配置失败，当前显示的是默认值'
     console.warn('[ShortDramaBaikeSource] 读取配置失败', error)
@@ -300,21 +203,30 @@ async function loadConfig(): Promise<void> {
   }
 }
 
-/** 拉一次 /status，把快照实况与「勾了但还没刷到」的榜单显示出来 */
-async function loadSnapshot(): Promise<void> {
+/** 拉一次 `/status`，把运行实况显示在保存栏上方 */
+async function loadStatus(): Promise<void> {
   const api = resolveApi(props)
   if (!api) return
   try {
     const report = await fetchStatus(api)
-    const cached = report?.top_lists || []
-    snapshotText.value = report?.top_snapshot || ''
-    missingKeys.value = (local.value.top_keys || [])
-      .filter((key) => !cached.includes(key))
-      .map(labelOfKey)
+    if (!report) {
+      statusText.value = ''
+      return
+    }
+    const index = report.web_index || {}
+    const indexText = index.available
+      ? index.enabled
+        ? `站外索引 开（后端 ${index.backend || 'auto'}）`
+        : '站外索引 关'
+      : '站外索引 不可用（依赖缺失）'
+    statusText.value = [
+      `运行状态：${report.enabled ? '已启用' : '未启用'}`,
+      indexText,
+      `缓存 详情 ${report.cache?.detail ?? 0} 条 / 演员 ${report.cache?.actor ?? 0} 条`,
+    ].join('　｜　')
   } catch (error) {
-    snapshotText.value = ''
-    missingKeys.value = []
-    console.warn('[ShortDramaBaikeSource] 读取快照状态失败', error)
+    statusText.value = ''
+    console.warn('[ShortDramaBaikeSource] 读取运行状态失败', error)
   }
 }
 
@@ -335,8 +247,6 @@ async function doSave(): Promise<void> {
     const payload: Partial<PluginConfig> = {
       ...local.value,
       domain: String(local.value.domain || '').trim(),
-      // 清空多选时别把榜单范围弄成空的（后端也会兜底，这里先给个可读的默认）
-      top_keys: local.value.top_keys?.length ? local.value.top_keys : DEFAULTS.top_keys,
     }
     const report = await saveConfig(api, payload)
     if (report?.success) {
@@ -345,7 +255,7 @@ async function doSave(): Promise<void> {
         loaded.value = { ...local.value }
       }
       hint.value = report.message || '配置已保存'
-      await loadSnapshot()
+      await loadStatus()
       emit('save', local.value)
     } else {
       hint.value = report?.message || '保存失败'

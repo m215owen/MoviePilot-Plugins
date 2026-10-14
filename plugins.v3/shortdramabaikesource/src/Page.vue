@@ -7,9 +7,6 @@
       <v-chip size="small" variant="tonal" :color="enabled ? 'primary' : 'warning'">
         {{ enabled ? '已启用' : '未启用' }}
       </v-chip>
-      <v-chip v-if="snapshotChip" size="small" variant="tonal" color="info" :title="snapshotChip">
-        榜单快照 {{ snapshotChip }}
-      </v-chip>
       <v-chip
         v-if="cacheChip"
         size="small"
@@ -34,7 +31,7 @@
         color="primary"
         prepend-icon="mdi-cog-outline"
         :loading="configLoading"
-        title="打开配置：站点域名 / 榜单范围 / 站外索引 / 探索页回填"
+        title="打开配置：站点域名 / 站外索引 / 缓存 / 详情页摘要"
         @click="openSettings"
       >
         设置
@@ -62,47 +59,48 @@
 
     <v-alert type="info" variant="tonal" density="compact" class="mb-3">
       短剧在 TMDB / 豆瓣上大量没有条目，宿主识别器建不起媒体身份 —— 本插件补的就是这一段。
-      两个搜索框各管一路：<b>左边按片名</b>找作品（先查榜单快照，没有再走站外索引），
-      <b>右边按演员名</b>找演员及其全部作品。卡片右下角的「原始数据」可以直接看到插件处理后的完整字段。
+      搜索框<b>片名与演员名都收</b>：一次检索同时给出「作品」与「演员」两块结果，哪边命中就显示哪边
+      （两边都命中就并排显示）。卡片上的「原始数据」可以直接看到插件处理后的完整字段。
     </v-alert>
 
+    <!-- ── 唯一的搜索框：片名与演员名都收 ─────────────────────── -->
+    <v-card variant="outlined" class="pa-3 sdbs-panel">
+      <v-text-field
+        v-model="keyword"
+        density="compact"
+        variant="outlined"
+        hide-details
+        clearable
+        prepend-inner-icon="mdi-magnify"
+        placeholder="输入短剧片名或演员姓名，例如：女足替补的滚烫夏天 / 魏依珂"
+        @keyup.enter="doLookup"
+      />
+      <div class="d-flex align-center mt-2 flex-wrap" style="gap: 8px">
+        <v-btn
+          size="small"
+          color="primary"
+          variant="tonal"
+          :loading="searching"
+          :disabled="!keyword.trim()"
+          @click="doLookup"
+        >
+          搜索
+        </v-btn>
+        <v-btn size="small" variant="text" :disabled="!hasResult" @click="clearAll">清空</v-btn>
+        <v-spacer />
+        <span v-if="hint" class="text-caption sdbs-dim">{{ hint }}</span>
+      </div>
+    </v-card>
+
     <v-row dense>
-      <!-- ── 片名搜索 ─────────────────────────────────────────── -->
-      <v-col cols="12" md="6">
+      <!-- ── 作品结果 ─────────────────────────────────────────── -->
+      <v-col v-if="hasTitlePanel" cols="12" md="6">
         <v-card variant="outlined" class="pa-3 sdbs-panel">
           <div class="d-flex align-center mb-2">
             <v-icon icon="mdi-movie-search-outline" size="18" class="mr-1" />
-            <span class="text-subtitle-2">按片名搜作品</span>
+            <span class="text-subtitle-2">作品</span>
             <v-spacer />
-            <v-progress-circular v-if="titleSearching" size="16" width="2" indeterminate />
-          </div>
-
-          <v-text-field
-            v-model="titleKeyword"
-            density="compact"
-            variant="outlined"
-            hide-details
-            clearable
-            prepend-inner-icon="mdi-magnify"
-            placeholder="输入短剧片名，例如：女足替补的滚烫夏天"
-            @keyup.enter="doSearchTitle"
-          />
-          <div class="d-flex align-center mt-2 flex-wrap" style="gap: 8px">
-            <v-btn
-              size="small"
-              color="primary"
-              variant="tonal"
-              :loading="titleSearching"
-              :disabled="!titleKeyword.trim()"
-              @click="doSearchTitle"
-            >
-              搜索
-            </v-btn>
-            <v-btn size="small" variant="text" :disabled="!hasTitleResult" @click="clearTitle">
-              清空
-            </v-btn>
-            <v-spacer />
-            <span v-if="titleHint" class="text-caption sdbs-dim">{{ titleHint }}</span>
+            <v-progress-circular v-if="titleLoadingId" size="16" width="2" indeterminate />
           </div>
 
           <!-- 候选列表 -->
@@ -196,42 +194,14 @@
         </v-card>
       </v-col>
 
-      <!-- ── 演员搜索 ─────────────────────────────────────────── -->
-      <v-col cols="12" md="6">
+      <!-- ── 演员结果 ─────────────────────────────────────────── -->
+      <v-col v-if="hasActorPanel" cols="12" md="6">
         <v-card variant="outlined" class="pa-3 sdbs-panel">
           <div class="d-flex align-center mb-2">
             <v-icon icon="mdi-account-search-outline" size="18" class="mr-1" />
-            <span class="text-subtitle-2">按演员名搜作品</span>
+            <span class="text-subtitle-2">演员</span>
             <v-spacer />
-            <v-progress-circular v-if="actorSearching" size="16" width="2" indeterminate />
-          </div>
-
-          <v-text-field
-            v-model="actorKeyword"
-            density="compact"
-            variant="outlined"
-            hide-details
-            clearable
-            prepend-inner-icon="mdi-magnify"
-            placeholder="输入演员姓名，例如：魏依珂"
-            @keyup.enter="doSearchActor"
-          />
-          <div class="d-flex align-center mt-2 flex-wrap" style="gap: 8px">
-            <v-btn
-              size="small"
-              color="primary"
-              variant="tonal"
-              :loading="actorSearching"
-              :disabled="!actorKeyword.trim()"
-              @click="doSearchActor"
-            >
-              搜索
-            </v-btn>
-            <v-btn size="small" variant="text" :disabled="!hasActorResult" @click="clearActor">
-              清空
-            </v-btn>
-            <v-spacer />
-            <span v-if="actorHint" class="text-caption sdbs-dim">{{ actorHint }}</span>
+            <v-progress-circular v-if="actorLoadingId" size="16" width="2" indeterminate />
           </div>
 
           <!-- 候选演员 -->
@@ -404,7 +374,8 @@
  * 为什么这个插件要从 Vuetify（JSON）改成联邦组件：面板上要放**会回传输入的搜索框**，
  * 而宿主的 JSON 页面只支持静态组件树与「点击 → 调接口」这类无参交互，承载不了输入框。
  *
- * 两个搜索框各走一条后端链路（`/search` → `/recognize`；`/actor_search` → `/actor`），
+ * 只有一个搜索框，片名与演员名都收：`/lookup` 用**一次**站外检索同时给出作品候选与
+ * 演员候选，再分别喂 `/recognize` 与 `/actor` 拿详情。
  * 结果都以卡片呈现，并保留「原始数据」展开位 —— 卡片是给人看的，
  * 展开是给排障/核对用的，两者看的是同一份后端返回。
  */
@@ -415,11 +386,10 @@ import {
   fetchConfig,
   fetchStatus,
   proxyImage,
+  lookupKeyword,
   recognizeTitle,
   resolveApi,
   saveConfig,
-  searchActors,
-  searchTitles,
 } from './api'
 import type {
   ActorCandidate,
@@ -455,18 +425,19 @@ const settingsOpen = ref(false)
 const remoteConfig = ref<Partial<PluginConfig>>({})
 const status = ref<StatusPayload | null>(null)
 
-// ── 片名搜索 ──
-const titleKeyword = ref('')
-const titleSearching = ref(false)
+// ── 搜索框（片名 / 演员名共用一个） ──
+const keyword = ref('')
+const searching = ref(false)
+const hint = ref('')
+
+// ── 作品结果 ──
 const titleCandidates = ref<TitleCandidate[]>([])
 const titleRecord = ref<MediaRecord | null>(null)
 const titleMessage = ref('')
 const titleRawOpen = ref(false)
 const titleLoadingId = ref('')
 
-// ── 演员搜索 ──
-const actorKeyword = ref('')
-const actorSearching = ref(false)
+// ── 演员结果 ──
 const actorCandidates = ref<ActorCandidate[]>([])
 const actorProfile = ref<ActorProfile | null>(null)
 const actorMessage = ref('')
@@ -476,12 +447,6 @@ const actorLoadingId = ref('')
 const openWorks = ref(new Set<number>())
 
 const pretty = (value: unknown) => JSON.stringify(value ?? null, null, 2)
-
-const snapshotChip = computed(() => {
-  const lists = status.value?.top_lists || []
-  if (!lists.length) return ''
-  return `${lists.length} 个榜单`
-})
 
 const cacheChip = computed(() => {
   const cache = status.value?.cache
@@ -511,13 +476,6 @@ const titleCast = computed(() => {
     .join('、')
 })
 
-const titleHint = computed(() => {
-  if (titleSearching.value) return '检索中，需要 10 秒左右'
-  if (titleCandidates.value.length) return `${titleCandidates.value.length} 条候选`
-  if (titleRecord.value) return '已取到详情'
-  return ''
-})
-
 const actorMeta = computed(() => {
   const actor = actorProfile.value
   if (!actor) return ''
@@ -529,19 +487,14 @@ const actorMeta = computed(() => {
   return parts.join(' ｜ ')
 })
 
-const actorHint = computed(() => {
-  if (actorSearching.value) return '检索中，需要 10 秒左右'
-  if (actorCandidates.value.length) return `命中 ${actorCandidates.value.length} 位`
-  if (actorProfile.value) return `作品 ${actorProfile.value.works_count ?? 0} 部`
-  return ''
-})
-
-const hasTitleResult = computed(
+/** 两块结果各自只有「有内容」时才占位；两边都没命中就靠顶部那行 hint 说话 */
+const hasTitlePanel = computed(
   () => Boolean(titleCandidates.value.length || titleRecord.value || titleMessage.value),
 )
-const hasActorResult = computed(
+const hasActorPanel = computed(
   () => Boolean(actorCandidates.value.length || actorProfile.value || actorMessage.value),
 )
+const hasResult = computed(() => hasTitlePanel.value || hasActorPanel.value)
 
 function workMeta(work: WorkItem): string {
   const parts: string[] = []
@@ -590,32 +543,38 @@ async function toggleEnabled(value: unknown): Promise<void> {
   }
 }
 
-async function doSearchTitle(): Promise<void> {
+/**
+ * 唯一的搜索动作：一个词同时试「片名」与「演员名」。
+ *
+ * 后端 `/lookup` 只打一次引擎（两次会被最小间隔挡掉一次），回来的两块结果各自渲染；
+ * 每块只有一条候选时直接取详情 —— 一条候选没什么可选的。
+ */
+async function doLookup(): Promise<void> {
   const api = resolveApi(props)
-  const keyword = titleKeyword.value.trim()
-  if (!api || !keyword) return
-  titleSearching.value = true
-  titleMessage.value = ''
-  titleRecord.value = null
-  titleCandidates.value = []
-  titleRawOpen.value = false
+  const query = keyword.value.trim()
+  if (!api || !query) return
+  searching.value = true
+  hint.value = ''
+  resetTitle()
+  resetActor()
   try {
-    const report = await searchTitles(api, keyword)
-    const candidates = report?.candidates || []
-    titleCandidates.value = candidates
-    if (!candidates.length) {
-      titleMessage.value =
-        report?.message ||
-        `没搜到「${keyword}」：榜单快照（最新/热门作品）里没有，站外索引也没收录。` +
-          '注意片名这一路走的是「搜索引擎的 site: 收录」——站点自己的检索被 Cloudflare 挡着用不了，' +
-          '而搜索引擎的召回不稳定、也基本只认完整片名。换成完整片名再搜一次通常就能命中，' +
-          '例如用「女足替补的滚烫夏天」，而不是「女足替补」。'
+    const report = await lookupKeyword(api, query)
+    const titles = report?.titles || []
+    const actors = report?.actors || []
+    titleCandidates.value = titles
+    actorCandidates.value = actors
+    if (!titles.length && !actors.length) {
+      hint.value = report?.message || `没搜到「${query}」。`
       return
     }
-    // 只有一条候选说明没什么可选，直接识别出来给用户看
-    if (candidates.length === 1) await pickTitle(candidates[0])
+    const parts: string[] = []
+    if (titles.length) parts.push(`作品 ${titles.length} 条候选`)
+    if (actors.length) parts.push(`演员 ${actors.length} 位候选`)
+    hint.value = parts.join(' ｜ ')
+    if (titles.length === 1) await pickTitle(titles[0])
+    if (actors.length === 1) await pickActor(actors[0])
   } finally {
-    titleSearching.value = false
+    searching.value = false
   }
 }
 
@@ -637,37 +596,23 @@ async function pickTitle(candidate: TitleCandidate): Promise<void> {
   }
 }
 
-function clearTitle(): void {
-  titleKeyword.value = ''
+/** 只清「作品」那一块的状态（搜新词时复用） */
+function resetTitle(): void {
   titleCandidates.value = []
   titleRecord.value = null
   titleMessage.value = ''
   titleRawOpen.value = false
+  titleLoadingId.value = ''
 }
 
-async function doSearchActor(): Promise<void> {
-  const api = resolveApi(props)
-  const keyword = actorKeyword.value.trim()
-  if (!api || !keyword) return
-  actorSearching.value = true
-  actorMessage.value = ''
-  actorProfile.value = null
+/** 只清「演员」那一块的状态（搜新词时复用） */
+function resetActor(): void {
   actorCandidates.value = []
+  actorProfile.value = null
+  actorMessage.value = ''
   actorRawOpen.value = false
+  actorLoadingId.value = ''
   openWorks.value = new Set<number>()
-  try {
-    const report = await searchActors(api, keyword)
-    const candidates = report?.candidates || []
-    actorCandidates.value = candidates
-    if (!candidates.length) {
-      actorMessage.value =
-        report?.message || `没找到演员「${keyword}」：站外索引未收录，或姓名对不上。`
-      return
-    }
-    if (candidates.length === 1) await pickActor(candidates[0])
-  } finally {
-    actorSearching.value = false
-  }
 }
 
 async function pickActor(candidate: ActorCandidate): Promise<void> {
@@ -689,13 +634,12 @@ async function pickActor(candidate: ActorCandidate): Promise<void> {
   }
 }
 
-function clearActor(): void {
-  actorKeyword.value = ''
-  actorCandidates.value = []
-  actorProfile.value = null
-  actorMessage.value = ''
-  actorRawOpen.value = false
-  openWorks.value = new Set<number>()
+/** 清空按钮：搜索词与两块结果一起清掉 */
+function clearAll(): void {
+  keyword.value = ''
+  hint.value = ''
+  resetTitle()
+  resetActor()
 }
 
 function toggleWorkRaw(index: number): void {

@@ -2,8 +2,8 @@
  * 短剧百科数据源 —— 联邦前端用到的数据形状。
  *
  * 全部对齐后端真实返回值（``build_public_record`` / ``build_public_actor`` /
- * ``api_search`` / ``api_actor_search`` / ``api_status``），字段名逐字一致 ——
- * 后端那边改字段名，这边必须同步，否则界面上只是「某块是空的」，不会报错。
+ * ``api_lookup`` / ``api_status``），字段名逐字一致 —— 后端那边改字段名，
+ * 这边必须同步，否则界面上只是「某块是空的」，不会报错。
  */
 
 /** 宿主注入的 axios 实例（baseURL 已是 `api/v1/`） */
@@ -80,7 +80,7 @@ export interface ActorProfile {
   coactors?: Array<{ id?: string; name?: string; profile_path?: string }>
 }
 
-/** 片名搜索的候选（`/search`） */
+/** 作品候选（`/lookup` 的 `titles`，按片名打分） */
 export interface TitleCandidate {
   media_id?: string
   title?: string
@@ -89,7 +89,7 @@ export interface TitleCandidate {
   episode_count?: number
 }
 
-/** 演员搜索的候选（`/actor_search`） */
+/** 演员候选（`/lookup` 的 `actors`，按姓名打分） */
 export interface ActorCandidate {
   actor_id?: string
   media_id?: string
@@ -97,34 +97,38 @@ export interface ActorCandidate {
   score?: number
 }
 
+/** `/lookup` —— 面板唯一那个搜索框的后端返回值 */
+export interface LookupPayload {
+  success?: boolean
+  message?: string
+  keyword?: string
+  titles?: TitleCandidate[]
+  actors?: ActorCandidate[]
+}
+
 /** `/status` */
 export interface StatusPayload {
   enabled?: boolean
-  top_lists?: string[]
-  top_snapshot?: string
+  domain?: string
   cache?: { detail?: number; actor?: number }
   web_index?: { available?: boolean; enabled?: boolean; backend?: string }
   actor?: { enabled?: boolean; max_candidates?: number }
 }
 
-/** 配置模型（键与后端 `_default_config` 一致） */
+/** 配置模型（键与后端 `_default_config` 一致，共 9 项） */
 export interface PluginConfig {
   enabled: boolean
   domain: string
   search_in_global: boolean
-  interval_minutes: number
   timeout: number
   cache_ttl: number
   web_index_search: boolean
   web_index_backend: string
   proxy: boolean
-  top_keys: string[]
-  explore_detail_fetch: number
   detail_facts: boolean
 }
 
 /** `/config` GET 的可选项 */
 export interface ConfigOptions {
-  top_keys?: Array<{ value: string; label: string }>
   web_index_backends?: string[]
 }

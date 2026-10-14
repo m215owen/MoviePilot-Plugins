@@ -5,25 +5,31 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 它自身**只提供数据与识别能力**：片名检索、详情识别、**演员档案与作品**；
 发现之后要做什么（订阅、下载、整理）交给宿主或别的插件。
 
-> **v1.6.0**：删除全部索引功能与请求闸门，检索改为「榜单快照 → 站外索引」两级。
-> **v1.7.0**：面板改成 **Vue 联邦前端**，带**两个搜索框**（片名 / 演员名），
-> 结果以卡片呈现并可展开看处理后的完整字段；**删除两个智能体工具**。
-> **v1.7.1**：修「设置与探索页对不上」——榜单范围下拉的选项键名（`item-title`）、
-> 以及榜单快照只刷不删导致探索页多出没勾的来源；设置页补上快照实况。
+> **v1.6.0**：删除全部索引功能与请求闸门，检索改为按需走站外索引。
+> **v1.7.0**：面板改成 **Vue 联邦前端**（有搜索框才能收输入），**删除两个智能体工具**。
+> **v1.7.1**：修「设置与探索页对不上」。
+> **v1.8.0**：删掉「榜单快照」与「宿主探索页」两条线，插件不再注册任何后台任务；
+> 面板从两个搜索框合并成**一个**（片名与演员名都收，`GET /lookup` 一次检索两边出结果）。
 
-## 面板：两个搜索框
+## 面板：一个搜索框
 
-插件详情弹窗（Vue 联邦组件 `./Page`）里是两路独立搜索，各走一条后端链路：
+插件详情弹窗（Vue 联邦组件 `./Page`）里只有一个输入框，
+**片名与演员名都收** —— 一次检索同时给出两块结果，哪边命中就显示哪边（两边都命中就并排）：
 
-| 搜索框 | 链路 | 结果 |
+| 结果块 | 链路 | 展示 |
 | --- | --- | --- |
-| **按片名搜作品** | `GET /search?keyword=` 拿候选（带匹配分）→ 点「识别」→ `GET /recognize?media_id=` | 作品卡片：海报 / 年份 / 集数 / 单集时长 / 标签 / 评分 / 简介 / 主演；顶部有候选列表 |
-| **按演员名搜作品** | `GET /actor_search?name=` 拿候选 → 点「看作品」→ `GET /actor?actor_id=` | 演员卡片（头像 / 职务 / 性别 / 国籍 / 简介 / 常合作演员）+ **全部作品墙**，每部作品一张卡 |
+| **作品** | `GET /lookup?keyword=` 拿到作品候选（带匹配分）→ 点「识别」→ `GET /recognize?media_id=` | 作品卡片：海报 / 年份 / 集数 / 单集时长 / 标签 / 评分 / 简介 / 主演；上方是候选列表 |
+| **演员** | 同一次 `/lookup` 返回的演员候选 → 点「看作品」→ `GET /actor?actor_id=` | 演员卡片（头像 / 职务 / 性别 / 国籍 / 简介 / 常合作演员）+ **全部作品墙**，每部作品一张卡 |
 
 - 每张卡片（作品 / 演员档案 / 作品墙里的单部作品）都有 **「原始数据」** 按钮，
   展开就是该条目**插件处理后的完整 JSON** —— 卡片是给人看的，展开是给你核对字段的。
-- 候选只有 1 条时自动取详情，不用多点一次。
+- 每块只有 1 条候选时自动取详情，不用多点一次。
 - 搜索结果里的 `media_id`（`org:<作品ID>`）可以直接喂给 `/recognize`，也就是别的插件能直接复用。
+
+> ⚠️ **`/lookup` 必须只打一次引擎。** 片名与演员名共用同一条站外索引，而引擎侧有
+> 3 秒的最小间隔 —— 分头查两次，第二次会被直接跳过，结果就是两块里**恒有一块是空的**。
+> 所以后端一次检索把同一批原始结果分别喂给「作品解析」与「演员解析」
+> （`_search_via_web_index(query, rows)` / `_search_actors_via_web_index(query, rows)`）。
 
 > ⚠️ **为什么必须用联邦前端**：宿主的 Vuetify（JSON）插件页面只支持静态组件树与
 > 「点击 → 调接口」这类**无参**交互，承载不了会回传输入的搜索框 —— 实测宿主自带的
@@ -36,13 +42,12 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | 能力 | 宿主接口 | 说明 |
 | --- | --- | --- |
 | 声明数据源 | `get_media_source()` | 在识别 / 刮削 / 搜索界面的「媒体来源」里出现「短剧百科」 |
-| 片名检索 | `search_medias` | 返回候选 `MediaInfo`（含海报），宿主搜索框、探索页、订阅都能用 |
+| 片名检索 | `search_medias` | 返回候选 `MediaInfo`，宿主搜索框、订阅都能用 |
 | 详情识别 | `recognize_media` | 按 `media_id`（`org:<id>`）或片名取完整记录 |
 | 补图 | `obtain_images` | 缺海报时按身份补抓，并把海报兜底填到背景图 |
 | **演员档案** | `search_actors` / `actor_works` | 演员名 → 候选演员；演员 → **全部作品**（实测 59 部一次全渲染、不分页） |
-| **插件面板** | `./Page` 联邦组件 | 两个搜索框 + 卡片 + 可展开原始数据 |
-| **「探索」页来源** | `DiscoverSource` 事件 + `/explore` | 「探索」菜单里多出一个「短剧百科」来源，可切换榜单浏览 |
-| 配置页 | `./Config` 联邦组件 | 站点域名 / 榜单范围 / 站外索引 / 探索页回填等 12 项 |
+| **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + 可展开原始数据 |
+| 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / 缓存等 9 项 |
 
 统一媒体身份：
 
@@ -58,15 +63,26 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 短剧在 TMDB / 豆瓣上大量没有条目，宿主识别器因此建不起媒体身份（本机实例实证：
 站点能搜到剧名，但宿主 `media_info` 全为 null）。本插件补的正是这一段空白。
 
-## 检索：两级按需降级（不打目录页）
+## 检索：只有一条路（站外索引）
 
-1. **榜单快照**（`_top_cache`）：最近的榜单数据，**零额外请求**。覆盖热播 / 最新，
-   对绝大多数「查当下在播短剧」的场景已经够用。
-2. **站外索引**（`web_index_search`，默认开）：把 `site:<域名> <片名>` 交给搜索引擎
-   （`web_index_backend`，默认 `auto`），从**已收录的详情页 URL** 里取出数字 ID，
-   随后详情页走普通 HTTP 抓（无挑战、约 2 秒、不吃站点限流）。
-   只在快照里没有「精确命中」时才触发；相邻两次检索至少隔 3 秒；
-   结果按片名缓存；演员页 / 图集页 / 榜单页与外域结果一律剔除。
+`web_index_search`（默认开）：把 `site:<域名> <关键词>` 交给搜索引擎
+（`web_index_backend`，默认 `auto`），从**已收录的 URL** 里取出数字 ID ——
+`/drama/<数字>` 是作品、`/actor/<数字>` 是演员，两条解析路吃同一批原始结果。
+随后详情页 / 演员页走普通 HTTP 抓（无挑战、约 2 秒、不吃站点限流）。
+相邻两次检索至少隔 3 秒；结果按关键词缓存；演员页 / 图集页 / 榜单页与外域结果一律剔除。
+
+> `site:<域名> <关键词>` 与宿主 Agent 工具 `search_web` 的 `site_url` 参数是**同一件事**：
+> `search_web` 内部也是 `_build_search_query()` 拼出 `site:<domain>` 再交给
+> `ddgs.text(query, …)`。插件代码里只有 `ddgs` 这一层可用（`text()` 只收一个 query 字符串、
+> 没有 `site_url` 形参），所以域名限定就写成 `site:` —— 这不是替代语法，就是它落地的那套。
+> 拼接顺序不影响语义（宿主追加在末尾，本插件放在开头）。
+
+> ⚠️ **搜索引擎的召回不稳定，且基本只认完整名字。** 实测 `女足替补的滚烫夏天` 命中 1 条、
+> `女足替补` 恒 0 条，同一句话连测两次结果还会变。所以「搜不到」先怀疑关键词不完整，
+> 而不是插件坏了 —— 面板会把这句话直接写进提示。
+
+> v1.8.0 之前还有一级「榜单快照」（本地缓存，零请求）。它随宿主探索页一起删除了：
+> 榜单页只有「标题 + 海报 + 集数」，为它维持一份持久化快照与一个定时任务不划算。
 
 ### 为什么不用站内检索
 
@@ -130,26 +146,10 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
 
 搜索引擎结果里会混入模糊匹配（搜「王石」会带出「王碩」），所以候选一律按名字打分排序后返回。
 
-## 在 MoviePilot 的「探索」页里浏览
-
-宿主 `GET /api/v1/discover/source` 会广播 `ChainEventType.DiscoverSource` 事件收集来源
-（宿主源码 `api/endpoints/discover.py`），插件把 `DiscoverMediaSource` 追加进
-`event_data.extra_sources` 就成为一个来源；前端随后按它的 `api_path` 拉 `List[MediaInfo]`。
-
-- **来源名**：短剧百科；**可见位置**：MoviePilot 侧栏「探索」菜单
-- **筛选条**：「榜单」chips —— `热播榜` / `新剧榜` / …（**你勾了哪些就有哪些**）
-- **数据来源**：本地榜单快照。榜单页 HTML 里只有「标题 + 海报 + 集数」，所以插件会对
-  **当前这一页**按需回填作品详情，让条目带上 TMDB 级的「简介 / 年份 / 类型 / 演员 / 评分」
-- **卡片评分**：卡片右上角的评分徽章读的是 `vote_average`
-- **回填节奏**：每次请求最多 `explore_detail_fetch` 部（默认 8，0 = 完全不请求）；
-  详情页不受站点限流，某一次抓失败只影响那一部，不会中断整页
-- **端点**：`GET /api/v1/plugin/ShortDramaBaikeSource/explore?top_key=hot&page=1&count=30`
-
-要看到更多榜单，去面板的「设置」里把榜单勾上（共 17 个，榜单页不受限流，多勾不吃亏）。
-
 ## 「点开作品」后的详情页能显示什么（重要）
 
-在探索页点一张卡片，前端会跳到 `/media?media_source=duanjubaike&media_id=org:<id>`，
+从宿主的搜索框 / 媒体页点开一部作品，前端会跳到
+`/media?media_source=duanjubaike&media_id=org:<id>`，
 再由宿主调 `GET /api/v1/media/{media_id}?media_source=…&type_name=…` →
 `recognize_media` 取数。**宿主前端对自定义来源是有结构性限制的**（v3.1.5 实测）：
 
@@ -171,7 +171,6 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
 - **详情页摘要行**（配置 `detail_facts`，默认开）：把「评分 · 全 N 集 · 主演 X、Y」
   写进 `tagline` —— 这是整页里唯一能给自定义来源承载这类信息的自由文本位
   （渲染在「简介」标题正上方）。关掉它即可让详情页完全回到宿主默认样貌。
-- **评分**另外会出现在探索页**卡片右上角**的徽章上。
 - 完整的「评分 / 演员 / 剧照」字段一直都在 `recognize_media()` / `/actor` 的返回值里，
   面板的「原始数据」与其它插件都可以照常取用。
 
@@ -211,6 +210,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?media_id=org:40105
 GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?keyword=万妖图录传&year=2026
 GET  /api/v1/plugin/ShortDramaBaikeSource/actor?actor_id=371
 GET  /api/v1/plugin/ShortDramaBaikeSource/actor?name=魏依珂
+GET  /api/v1/plugin/ShortDramaBaikeSource/lookup?keyword=魏依珂
 ```
 
 > ⚠️ 全部接口声明 `auth: "bear"`，宿主把它映射成 `verify_token` —— 那个依赖
@@ -238,13 +238,26 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/actor?name=魏依珂
 
 `origin` 说明数据来自 `detail`（详情页，字段全）还是 `search`（仅检索结果，字段少）。
 
+`/lookup` 是面板搜索框的后端，回的是**两块候选**（都不是完整记录，取第一条再喂
+`/recognize` 或 `/actor`）：
+
+```json
+{
+  "success": true, "message": "", "keyword": "魏依珂",
+  "titles": [{"media_id": "org:45982", "title": "女足替补的滚烫夏天", "score": 100, "poster": null, "episode_count": null}],
+  "actors": [{"actor_id": "371", "media_id": "actor:371", "name": "魏依珂", "score": 100}]
+}
+```
+
+搜「完全不存在的东西」时 `success=false`，`message` 是一句可照着做的提示（换成完整片名 / 演员全名再试）。
+
 ## 站点能力边界（实测）
 
 | 路径 | 能力 |
 | --- | --- |
 | `/zh-Hans/drama/{id}` | 详情页：JSON-LD（`TVSeries` + `PerformanceRole` 演员）+ HTML（演员阵容、剧照、播放/收藏、集数/时长/首播时间/出品方）。**最可靠的一条路** |
 | `/zh-Hans/actor/{id}` | 演员页：JSON-LD `Person`（姓名/简介/头像/性别/国籍/职务）+ 作品网格（实测 59 部一次全渲染、不分页）+ 合作演员区。⚠️ 必须带 `/zh-Hans` 前缀 |
-| `/zh-Hans/top/{key}` | 17 个榜单：**数量固定、不分页** |
+| `/zh-Hans/top/{key}` | 17 个榜单页：**本插件不再使用**（只为曾经的探索页来源而抓）；实测 `search` 榜恒 403、`celebrity` 榜里没有作品链接 |
 | `/zh-Hans/drama/search` | 站内检索：Cloudflare **托管挑战**，服务端恒 403 ⇒ **已弃用** |
 | `/zh-Hans/drama/list` | 全量目录页（约 1879 页 / 5.6 万部）：**本插件不再使用** |
 | `robots.txt` | `Disallow` 全部 `/search`（drama/actor/director/writer/producer）与 `/auth` |
@@ -271,15 +284,16 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/actor?name=魏依珂
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/explore` | **探索页数据源**：`top_key`(+`page`/`count`) → `Response[List[MediaInfo]]` |
 | GET | `/recognize` | **作品出口**：`media_id` 或 `keyword`(+`year`) → 纯 JSON 作品记录 |
 | GET | `/actor` | **演员出口**：`actor_id` 或 `name` → 纯 JSON 演员档案（含全部作品与合作演员） |
-| GET | `/search` | 按片名搜，返回候选与匹配分（面板片名框用它） |
-| GET | `/actor_search` | 按姓名搜演员，返回候选与匹配分（面板演员框用它） |
-| GET | `/status` | 榜单快照、站外索引配置与缓存情况（面板顶部 chip 读它） |
+| GET | `/lookup` | 一个 `keyword` 同时找作品与演员（面板唯一那个搜索框用它） |
+| GET | `/status` | 运行情况：域名 / 站外索引配置 / 缓存条数（面板顶部 chip 与配置页读它） |
 | GET | `/config` | 读当前配置 + 候选值（面板配置页回显） |
 | PUT | `/config` | 存配置（逐键合并 + 归一化后落盘，并重建运行状态） |
-| GET | `/probe` | 连通性自检：robots / 榜单 / 详情页 / 演员页各自的状态码与解析条数 |
+| GET | `/probe` | 连通性自检：robots / 站外索引 / 详情页 / 演员页各自的状态码与解析条数 |
+
+> 接口一共 7 条。旧的 `/search`、`/actor_search` 已并入 `/lookup`，
+> `/explore` 随宿主探索页一起删除 —— 都是 v1.8.0 的事。
 
 ## 数据来源与合规
 
@@ -296,32 +310,19 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/actor?name=魏依珂
 | `enabled` | 关 | 启用插件 |
 | `search_in_global` | 开 | 参与宿主的全局检索（未限定来源时） |
 | `domain` | `duanjubaike.org` | 站点域名 |
-| `top_keys` | 热播榜 + 新剧榜 | **要刷哪些榜单**（17 个任选）= 探索页里能看到的来源；榜单页不受限。改小范围会连旧快照一起丢（见下） |
-| `interval_minutes` | 5 | 后台榜单快照刷新间隔（分钟） |
 | `timeout` | 15 | 单次请求超时（秒） |
 | `cache_ttl` | 604800 | 详情页缓存（秒，默认 7 天） |
-| `explore_detail_fetch` | 8 | 探索页每次请求最多回填几部作品的详情；`0` = 不额外请求 |
 | `detail_facts` | 开 | 详情页「简介」上方显示一行「评分 · 全 N 集 · 主演 X、Y」 |
 | `web_index_search` | 开 | **站外索引检索**：`site:` 限定检索片名 / 演员名，从收录的 URL 取 ID |
 | `web_index_backend` | `auto` | 检索后端（`auto` / `duckduckgo` / `yandex` / `google` / `brave` / `mojeek`） |
 | `proxy` | 关 | 出站请求是否走系统代理 |
 
+共 9 项（v1.8.0 删掉了榜单范围、榜单刷新间隔、探索页详情回填三项）。
 保存是**逐键合并**的：payload 里缺的键沿用当前生效值，只翻一个开关不会把其它配置冲回默认。
 
-配置页的「宿主「探索」页」一节会直接显示**当前快照实况**（每个榜单多少部）与
-**「已勾选但快照里还没有」**的榜单名 —— 勾了范围却还没刷到的话，那一项在探索页里是空列表，
-这里会点名，不用去探索页猜。
-
-### 榜单范围与快照必须同步收口（v1.7.1）
-
-`top_keys` 同时决定「后台刷哪些榜单」和「探索页能切到哪些来源」，但榜单快照是**持久化**的，
-而 `refresh_top_lists` **只刷不删**。于是把范围改小之后，旧榜单仍留在 `_top_cache` 里，
-探索页的来源列表（`_explore_top_keys` 会把「快照里还有」的键补进去）就照样把它们列出来 ——
-设置里只勾了 3 个，探索页却出现 5~6 个。
-
-现在 `_prune_top_cache()` 在**每次实例初始化**（配置保存会重跑 `init_plugin`、容器重启同理）
-按当前配置收口，并把越界的键从持久化里一并丢掉。改了范围请留意日志里的
-`榜单快照已移出配置范围，丢弃：[...]`。
+> **没有后台任务。** `get_service()` 恒返回空列表 —— 没有榜单要刷、没有索引要建，
+> 缓存只在被查询时按需重建。配置页底部会显示一行运行实况（启用状态 / 站外索引开关与后端 /
+> 缓存条数），直接读 `GET /status`。
 
 ## 前端工程（维护用）
 
@@ -337,9 +338,12 @@ node node_modules/vite/bin/vite.js build
 暴露的组件只有两个：`./Page`（详情弹窗）与 `./Config`（配置页）。
 新增组件要同时改 `vite.config.ts` 的 `exposes` 与本地文件。
 
-⚠️ **`v-select` 传对象数组时必须显式写 `item-title` / `item-value`。** 宿主的 Vuetify
-默认按 `title` 取显示文本，而本插件的选项（`_config_options()` 下发的 `top_keys`）是
-`{value, label}` —— 只写 `:items` 会让下拉把整个对象当标题渲染出来。仓库里的
-`doubanactorsubscribe` 与宿主已装插件无一例外都写了（`title` / `label` / `name`），
-测试 `test_config_select_declares_item_title` 会守住这一点。传**字符串数组**
-（如 `web_index_backends`）时不受影响。
+⚠️ **前端引用了后端已经删掉的配置键 / 接口时不会报错**，只会静默留一块空面板 ——
+所以测试里按字符串兜了一道：`test_frontend_no_longer_mentions_removed_features`
+会扫 `src/` 下四个文件，出现 `top_keys` / `explore_detail_fetch` / `top_lists` /
+`top_snapshot` / `actor_search` 之类已删符号就直接失败。
+
+> 另外一个容易踩的坑（v1.7.1 修过）：**`v-select` 传对象数组时必须显式写 `item-title` /
+> `item-value`**。宿主的 Vuetify 默认按 `title` 取显示文本，后端若下发 `{value, label}`
+> 就会把整个对象当标题渲染出来。现在配置页的 `web_index_backends` 是**字符串数组**，
+> 不受影响 —— 但以后再加对象型下拉时要记得写。

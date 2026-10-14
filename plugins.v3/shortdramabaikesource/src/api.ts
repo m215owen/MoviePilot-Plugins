@@ -11,14 +11,13 @@
  *    因此统一用 `unwrap()` 归一化。
  */
 import type {
-  ActorCandidate,
   ActorProfile,
   ConfigOptions,
+  LookupPayload,
   MediaRecord,
   PluginApi,
   PluginConfig,
   StatusPayload,
-  TitleCandidate,
 } from './types'
 
 /** 插件 ID，必须与后端插件类名一致 */
@@ -124,18 +123,20 @@ async function getJson<T>(api: PluginApi, path: string, params?: Record<string, 
   }
 }
 
-/** 拉运行状态（榜单快照 / 缓存 / 站外索引） */
+/** 拉运行状态（域名 / 缓存条数 / 站外索引可用性） */
 export function fetchStatus(api: PluginApi): Promise<StatusPayload | null> {
   return getJson<StatusPayload>(api, '/status')
 }
 
-/** 按片名搜候选（榜单快照 → 站外索引） */
-export function searchTitles(api: PluginApi, keyword: string, year?: string) {
-  return getJson<{ success?: boolean; message?: string; candidates?: TitleCandidate[] }>(
-    api,
-    '/search',
-    { keyword, year: year || undefined },
-  )
+/**
+ * 关键词检索 —— 面板**唯一那个搜索框**的后端。
+ *
+ * 一个词片名与演员名都收：后端只打一次站外索引，再把同一批原始结果分别喂给
+ * 「作品解析」与「演员解析」，返回 `{ titles, actors }` 两块。
+ * 前端哪边有结果就展示哪边，不预判用户输入的是片名还是人名。
+ */
+export function lookupKeyword(api: PluginApi, keyword: string, year?: string) {
+  return getJson<LookupPayload>(api, '/lookup', { keyword, year: year || undefined })
 }
 
 /** 按 media_id 或片名取一条完整作品记录 */
@@ -144,15 +145,6 @@ export function recognizeTitle(api: PluginApi, options: { media_id?: string; key
     api,
     '/recognize',
     options,
-  )
-}
-
-/** 按姓名搜演员候选 */
-export function searchActors(api: PluginApi, name: string) {
-  return getJson<{ success?: boolean; message?: string; name?: string; candidates?: ActorCandidate[] }>(
-    api,
-    '/actor_search',
-    { name },
   )
 }
 
