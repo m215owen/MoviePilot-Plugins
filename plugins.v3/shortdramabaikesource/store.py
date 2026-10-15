@@ -404,23 +404,6 @@ class UrlStore:
         finally:
             session.close()
 
-    def by_keywords(self, kind: str, keywords: Sequence[str]) -> List[SiteUrl]:
-        """一次取回多个关键词的记录（面板/自检里的批量查询）。"""
-        keys = [key for key in keywords if key]
-        if not keys:
-            return []
-        session = self._session()
-        try:
-            return list(
-                session.execute(
-                    select(SiteUrl)
-                    .where(SiteUrl.kind == kind, SiteUrl.keyword.in_(keys))
-                    .order_by(SiteUrl.hits.desc(), SiteUrl.first_seen_at.asc())
-                ).scalars().all()
-            )
-        finally:
-            session.close()
-
     def count(self) -> Dict[str, Any]:
         """库容量统计：按类型计数 + 关键词数 + 最近写入时间。"""
         session = self._session()

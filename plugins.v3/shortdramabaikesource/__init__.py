@@ -672,8 +672,8 @@ class ShortDramaBaikeSource(_PluginBase):
             if _match_title(title, keyword) < EXACT_TITLE_SCORE:
                 continue
             stored += 1
-            # 作品按**自己的片名**建档（引擎标题已剥过后缀、繁体的也补抓成了简体），
-            # 触发这次发现的搜索词记在 display 里 —— 同一个词下一次照样查得回来。
+            # 作品按**自己的片名**建档（引擎标题已剥过后缀），触发这次发现的搜索词记在
+            # display 里 —— 同一个词下一次照样查得回来。
             entries.append(self._as_entry(
                 "work", title, row["native_id"], title, row["url"],
                 "search", self._web_index_backend, display=keyword,
@@ -942,17 +942,6 @@ class ShortDramaBaikeSource(_PluginBase):
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return scored
 
-    @classmethod
-    def _pick_best(
-        cls,
-        candidates: List[Dict[str, Any]],
-        query: str,
-        target_year: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """按片名接近程度挑最像的一条（年份命中加权，年份不符扣分）。"""
-        ranked = cls._rank(candidates, query, target_year)
-        return ranked[0][1] if ranked else None
-
     @staticmethod
     def _richness(record: Optional[Dict[str, Any]]) -> int:
         """给一条详情记录打「完整度」分（同名多版本时用它择优）。
@@ -1158,7 +1147,7 @@ class ShortDramaBaikeSource(_PluginBase):
     #
     # 触发面：宿主**所有**走完原生识别仍无身份的请求（自动整理 / 扫描 / 订阅…）都会
     # 广播一次。检索口径自带一道闸：URL 库命中零引擎请求；未命中才走站外索引
-    # （2026-10-16 用户拍板：不再做关键词级 300s/60s 冷却，引擎自身 3 秒最小间隔仍在）。
+    # （唯一剩下的间隔是引擎自身的 3 秒最小间隔，与关键词无关）。
 
     @staticmethod
     def _event_get(data: Any, key: str, default: Any = None) -> Any:

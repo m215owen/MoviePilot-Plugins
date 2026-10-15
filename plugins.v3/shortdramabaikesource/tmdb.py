@@ -271,7 +271,3 @@ class TmdbIdentity:
         if len(undated) == 1:
             return undated[0][2]
         return None
-
-    def credentials(self) -> Tuple[str, str]:
-        """返回 (TMDB 域名, key)；任一为空表示宿主没配 TMDB。"""
-        return _tmdb_setting("TMDB_API_DOMAIN"), _tmdb_setting("TMDB_API_KEY")
