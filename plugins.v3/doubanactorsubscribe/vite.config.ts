@@ -1,4 +1,7 @@
-// 豆瓣演员订阅 —— Vite 模块联邦（remote）配置
+// TMDB 演员订阅 —— Vite 模块联邦（remote）配置
+//
+// 目录名 / 联邦名 / 插件 ID 仍沿用 doubanactorsubscribe / DoubanActorSubscribe：
+// ID 一改，用户已保存的配置与订阅归属就会全部丢失，因此只改显示名与数据源。
 //
 // 遵循 MoviePilot-Frontend 官方《模块联邦开发指南》与 V3 插件文档的联邦约束：
 //   1. 不要显式指定 rollupOptions.input —— 交给 federation 插件生成

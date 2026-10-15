@@ -1,187 +1,162 @@
 """短剧演员订阅（MoviePilot V3 插件后端）。
 
-一句话：跟着演员追短剧 —— 用「演员 → 作品列表 → 剧名 → 站点搜索 → 下载 → 整理」
-这条**不依赖宿主识别器**的链路，把喜欢的演员参演的短剧自动下回来。
+一句话：把喜欢的**短剧演员**填进来，插件从**短剧百科**抓回他们的全部作品，摆成一面
+和宿主「探索」页同形的海报墙；想追哪部点「订阅」，走的就是**宿主自己的订阅系统**。
 
-为什么不用宿主订阅系统
-----------------------
-宿主的订阅链路必须先建立「媒体身份」（``media_source`` + ``media_id``，通常是 TMDB id），
-而短剧恰好死在这一步。对目标实例的实测结果：
+这个插件**不做什么**
+--------------------
+2026-10-15 整体重写，删掉了一整条自建链路（站点搜索 / 择优下载 / 账本去重 / 自建订阅表
+/ 自建整理入库 / 自写 NFO）。原因只有一条：这些宿主都已经有了 ——
 
-* 头部/出圈的短剧 TMDB 有收录（古相思曲、东栏雪、虚颜、夜色将明…），能识别，但一律被
-  归成「电视剧」（宿主没有「短剧」这个媒体类型）。
-* 长尾短剧 TMDB 与豆瓣都没有条目，识别器建不起身份。
-* 更关键的是：**资源其实就在站点上**。实测 ``/search/title?keyword=闪婚老公是豪门``
-  在 AGSVPT 命中 2 条（全 90 集 / 全 100 集），但同一批结果的 ``media_info`` 全部为
-  ``null``、``candidate_recognized`` 全部为 0 —— 剧名精确匹配、资源就在眼前，宿主依然
-  建立不起媒体身份，订阅因此永远不触发。
+* **订阅**：宿主订阅系统吃显式媒体身份（``media_source`` + ``media_id``），而短剧百科
+  已经作为一等媒体数据源接入了宿主框架（能出卡片、能开媒体详情页），所以订阅直接交还给
+  系统：插件面板上的「订阅」按钮调宿主注入的 ``nativeSubscribe``，弹出来的就是系统自己的
+  订阅对话框，建出来的就是系统订阅，搜索 / 下载 / 整理全由宿主负责。
+* **识别与刮削**：同理交给百科数据源与宿主刮削链，插件不再自己写 NFO。
 
-所以本插件绕开识别器：用**剧名**直接在站点搜索，用**账本**记录「哪个种子对应哪部剧」，
-整理时直接查账本而不是猜文件名。
+插件现在只负责**发现**：演员 → 百科作品 → 作品墙 → 交给系统。
 
-决策基线（本插件据此实现，改动前先看这里）
-------------------------------------------
-1. 发现源两档（``use_baike`` 开关）：**开（默认）= 只看短剧百科**——用户定稿
-   （2026-10-15）：「短剧百科的数据在 TMDB 不一定有，展示的作品要全在短剧百科」，
-   因此百科模式下豆瓣/TMDB 整条跳过，作品墙只出百科收录的剧；**关 = TMDB + 豆瓣并集**。
-   百科走**跨插件模块方法**（ShortDramaBaikeSource 的 ``search_actors`` /
-   ``actor_works``，经 ``self.chain.run_module`` 分发——⚠️ V3 SDK 的 ``_PluginBase``
-   **不继承** ChainBase，``self.run_module`` 不存在，必须走成员 ``self.chain``；
-   生产实证过的坑），演员页与配额纪律都在百科插件侧；
-   百科作品卡片**没有年份**（站点就不给），因此年份缺失放行是常态而非例外。
-2. 候选范围 = **仅演员本人**（不含编剧/导演）。
-3. 轮询 = **只发现，不下载**（用户定稿 2026-10-14）：定时轮询只刷新演员作品快照，
-   把新出现的作品摆到作品墙上；**下载一律由人触发** —— 在作品墙点「订阅」。
-   原因见下「下载闸门」一节。已自动下载过的剧由账本（ledger）去重。
-3.1 下载闸门（**订阅制**）：默认 ``auto_download=False``。历史教训 —— 一旦轮询自己
-   下载，插件会把「快照里所有不在账本里的作品」挨个搜索下载；演员名单到几十上百位时
-   快照上千部，一轮就是上千个种子，会把下载器灌爆，而且这类**批量提交不可逆**
-   （种子里已经进了下载器）。因此下载权收回给用户，轮询只负责发现。
-   需要恢复「自动下全部」的老行为时，在配置页打开「自动下载」开关即可（代码保留）。
-4. 匹配主键 = 剧名（**含序号**，如「云渺3：镇魔世家」的 3）归一化后**精确相等**。
-5. 年份 = 可选校验；**任一侧缺失即放行**（宽进）。
-6. 去重键 = 剧名 + 年份(可空)，**不含集数**。同一部剧的 90 集版与 100 集整合版是
-   同一部剧，键里带集数会把它们判成两部而重复下载、重复入库。
-7. 集数 = 仅**信息字段**（通知里展示「全 90 集」），不参与匹配与去重。
-8. 同一部剧多个资源包 → **择优一条**：做种数 → 体积(码率代理) → 分辨率。
-9. 多剧合集包 → **忽略**（剧名匹配天然匹配不到它）。
-10. 整理入库**自建**：用账本中「种子 → 剧名/年份」的已知映射定位文件。
+发现源 = 只有短剧百科
+---------------------
+作品 100% 来自 ``ShortDramaBaikeSource``（duanjubaike.org）。走**跨插件模块方法**
+（``search_actors`` / ``actor_works`` / ``actor_profile``，经 ``self.chain.run_module``
+分发；注意 ``get_module()`` 白名单没登记的名字是**静默拿空**，不会报错）。
 
-已知的召回缺口（实测到、但按基线选择接受）
-------------------------------------------
-站点上传者写的剧名可能与豆瓣/TMDB 不完全一致，例如站点的
-``我的闪婚老公是豪门`` 对豆瓣的 ``闪婚老公是豪门``（多了「我的」前缀）。严格精确匹配
-会漏掉这类。当前按基线 4 保持严格匹配，宁可漏也不错配；如需提高召回，应新增一条
-显式的「前缀容忍」规则，而不是放宽精确相等。
+⚠️ V3 SDK 的 ``_PluginBase`` **不继承** ChainBase，``self.run_module`` 不存在，
+必须走成员 ``self.chain``（生产实证过的坑）。
+
+演员解析纪律：站外索引的候选**含模糊结果**（搜「王石」会带出「王碩」），因此只收**归一化
+名字精确相等**的候选；解析出的百科 ID 缓存进快照，后续轮次零引擎请求。
+
+「新作品」口径
+-------------
+``first_seen``（作品首次出现）晚于该演员的 ``baseline_at``（加入时的基线）、且距今在
+3 天窗口内 ⇒ 标「新」。刻意不用「相对上一轮快照新增」—— 那个口径只活到下次刷新。
+基线那一轮的作品天然不算新，否则一次导入十几位演员会整片标新。
 
 V3 契约要点
 -----------
-1. **依赖入口**：宿主依赖一律走 ``app.sdk.*`` 稳定入口；站点搜索走公开的
-   ``app.chain.torrents.TorrentsChain``。不使用 ``app.core`` / ``app.helper`` / ``app.utils``。
+1. **依赖入口**：宿主依赖一律走 ``app.sdk.*``。
 2. **渲染模式**：``vue``（Vue 模块联邦）。配置页 / 详情页 / 仪表板 / 侧栏全页由
-   ``dist/assets`` 里的联邦组件渲染（暴露 ``Page`` / ``Config`` / ``Dashboard`` /
-   ``AppPage`` / ``AppPageSettings``），后端只提供 ``get_api()`` 接口，
-   **不再下发 Vuetify 组件 JSON**（``get_form`` / ``get_page`` 返回空壳）。
-3. **站内组件白名单**：只使用在目标宿主（v3.1.3）上被在产插件实际验证过的组件 ——
-   ``VForm`` / ``VRow`` / ``VCol`` / ``VSwitch`` / ``VTextField`` / ``VTextarea`` /
-   ``VSelect`` / ``VAlert`` / ``VTable``（含原生 ``thead`` / ``tbody`` / ``tr`` / ``th`` / ``td``）。
-   宿主按需自动注册 Vuetify 组件，未注册的组件会被渲染成空元素且不报错。
-4. **配置与数据**：一律走基类方法（``get_data`` / ``save_data`` / ``update_config``），
-   且以 ``self.__class__.__name__`` 推导 ID，兼容插件虚拟分身。
-5. **不在模块导入期**做网络、数据库或任务启动。
+   ``dist/assets`` 里的联邦组件渲染，后端只提供 ``get_api()`` 接口。
+3. **不在模块导入期**做网络、数据库或任务启动。
+4. **插件类的运行时容器必须在 ``init_plugin`` 里重新赋值**（宿主 reconcile 会反复重建
+   实例，类属性字典会跨实例串味）。
 """
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import re
-import shutil
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
-from random import choice
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib import parse
+from typing import Any, Dict, List, Optional, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.schemas.types import EventType, MediaType
-from app.sdk.config import settings
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
-from app.sdk.network import RequestUtils
+from app.sdk.media import MetaInfo
 from app.sdk.plugin import _PluginBase
+from app.schemas.types import EventType
 
 # 消息类型枚举在宿主版本间存在改名：V3.1+ 使用 MessageType，更早的实现使用 NotificationType。
-# 这里做一次兼容性导入，避免因宿主版本差异导致插件整体加载失败。
 try:  # pragma: no cover - 取决于宿主版本
     from app.schemas.types import MessageType as _MessageType
 except ImportError:  # pragma: no cover
     from app.schemas.types import NotificationType as _MessageType  # type: ignore
 
-# 插件展示名，同时作为下载器标签与通知标题
+# 插件展示名，同时作为通知标题
 PLUGIN_NAME = "短剧演员订阅"
-
-# 框架模块：站点搜索与下载器属于可选能力，缺失时插件仍应能加载（只是不能下载）
-try:
-    from app.sdk.network import SitesHelper
-    from app.sdk.services import DownloaderHelper
-    from app.chain.torrents import TorrentsChain
-
-    HAS_FRAMEWORK = True
-except ImportError as _err:  # pragma: no cover - 取决于宿主版本
-    HAS_FRAMEWORK = False
-    logger.warning(f"{PLUGIN_NAME} 部分框架模块不可用：{_err}")
-
 
 # ─────────────────────────── 常量 ───────────────────────────
 
-# 插件数据键（写入插件数据目录，不写回源码目录）
+# 演员作品快照（插件数据，不是配置）
 _DATA_ACTORS = "actors_state"
-_DATA_LEDGER = "ledger"
-# 订阅表：用户在作品墙上点「订阅」但**还没下到**的作品（值含剧名/年份/演员/时间戳等）。
-# 订阅是**持久**的：插件每轮都会重试，直到成功下载进账本；用户点「取消订阅」才移除。
-_DATA_SUBS = "subscriptions"
-_DATA_STATS = "stats"
-_DATA_MISS = "misses"
 
-# 未命中冷却：站点上暂时没有资源的剧，不必每轮都全站重搜（一位演员最多 40+10 部候选，
-# 不加冷却会每 6 小时对站点发起几十次注定空手而归的搜索）。搜过但没下到的剧记录时间戳，
-# 冷却期内直接跳过；已下载的剧由账本负责去重，冷却表只覆盖「搜过但没下到」的情形。
-_MISS_COOLDOWN_HOURS = 24
-
-# 演员作品快照的刷新节奏（用户 2026-10-14 定稿：快照一天刷一次、失败 20 分钟后重试）。
-#
-# · 快照**整体一天刷一次**：豆瓣匿名额度极紧（约 5 次搜索即 403），轮询每 6 小时把
-#   全部演员重解析一遍纯属浪费，还极易撞限流；同一份快照反复使用不影响订阅语义 ——
-#   新作品最多晚一天被发现，而站点的未命中冷却本来就是 24 小时。
-# · 「上一轮解析失败」的演员**20 分钟后单独重试**：登录态失效 / 限流是可自愈的，
-#   等满一天才恢复体验太差，所以这类记录按更短的间隔单独重试。
-_DEFAULT_SNAPSHOT_HOURS = 24
+# 解析失败重试间隔（分钟）。「上一轮失败」是可自愈的，等满一轮发现间隔恢复体验太差，
+# 所以单独按短间隔重试（演员快照的保鲜期 = 发现间隔，见 snapshot_ttl_seconds）。
 _DEFAULT_RETRY_MINUTES = 20
-# 快照时间戳格式（与 `time` 字段一致）
+
+# 快照时间戳格式
 _STAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# 「新作品」的时间窗（天）：作品在**演员加入之后**首次出现起，N 天内标「新」。
+_NEW_WINDOW_DAYS = 3
+_NEW_WINDOW_SECONDS = _NEW_WINDOW_DAYS * 24 * 3600
+
+# 唯一发现源标识（短剧百科作为宿主媒体数据源的标识）。
+#
+# ⚠️ 必须用**规范标识** ``duanju``（与 ShortDramaBaikeSource 的 ``MEDIA_SOURCE_KEY`` 一致）：
+# 官方插件开发文档要求「通用媒体身份必须同时包含 media_source + media_id，不要在通用
+# 链路中只保存裸 ID」，而宿主侧的分类规则（``sources: ["duanju"]``）、来源目录
+# （``GET /api/v1/media/source``）认的都是这个规范值 —— 用旧标识订阅出去的条目
+# 会被当成另一个来源，分类规则里的来源过滤就落空了。
+# 早期标识 ``duanjubaike`` 由百科插件的别名表兜着（**只读兼容**，本插件不再产出它）。
+_BAIKE_SOURCE = "duanju"
+
+# 百科作品的类型：短剧一律按电视剧走（宿主没有「短剧」媒体类型）
+_BAIKE_TYPE = "电视剧"
+
+# 作品墙分页：单页上限与默认页大小。
+#
+# 作品墙是**服务端筛选 + 排序 + 分页**（真机实测 95 位演员 = 2256 部），前端按页拉、
+# 滚到底再拉下一页，所以默认页就是首屏规模（三两行卡片），不必一次拿全。
+_MAX_PAGE_SIZE = 200
+_DEFAULT_PAGE_SIZE = 60
+
+# 排序模式 → (作品记录字段, 比较方式)。四项都是作品自带的真实数据（短剧百科页面印的
+# 「354万 热度 / 996 播放 / 8.2 分 / 2025-07-09 首播」），缺数据的作品排最后。
+#   ``num``  → 数值降序（热度 / 播放 / 评分）
+#   ``date`` → 日期降序（``YYYY-MM-DD`` 字典序即时间序）
+_SORT_FIELDS = {
+    "heat": ("heat", "num"),
+    "play": ("play_count", "num"),
+    "rating": ("vote", "num"),
+    "date": ("release_date", "date"),
+}
+_DEFAULT_SORT = "heat"
+
+# 「搜索演员」时最多给前几位候选补档案（头像 / 作品数 / 简介）—— 每位一次页面请求，
+# 不设上限会让一次搜索拖很久；超出的候选仍以「只有名字」的卡片给出。
+_ACTOR_LOOKUP_LIMIT = 12
+
+# 快照记录的字段版本：低于当前值的记录会在下一轮刷新时重抓一次。
+# 2026-10-15 = 2：作品开始带类型 / 年份 / 热度 / 播放 / 版权方等筛选排序字段，
+# 旧快照里没有这些字段，靠这个版本号自动触发一次重抓（不必用户手动刷新）。
+_SNAPSHOT_SCHEMA = 2
+
+# 作品字段在数据源版本间会改名，一律按候选名依次取，取到第一个有值的为准。
+# 版权方（``studio``）目前只有作品详情页才有，演员页的卡片补齐后这里自动接上。
+_TAGS_FIELDS = ("tags", "genres", "genres_names")
+_HEAT_FIELDS = ("heat", "heat_count", "popularity")
+_PLAY_FIELDS = ("play_count", "plays", "play")
+_STUDIO_FIELDS = (
+    "studio",
+    "production_companies",
+    "production",
+    "producer",
+    "company",
+    "copyright",
+    "copyright_holder",
+)
 
 # 一次性任务 ID
 _ONCE_JOB_ID = "refresh_once"
-# 只刷新作品快照（不下载）的一次性任务 ID，与上面分开以免互相覆盖
-_ONCE_JOB_ID_WORKS = "refresh_works_once"
 
-# 下载器标签：便于在下载器里一眼认出哪些种子由本插件发起
-_DOWNLOAD_TAG = PLUGIN_NAME
-
-# 站点「短剧分类」识别关键词。站点分类结构形如
-# {"tv": [{"id": 419, "cat": "TV", "desc": "Playlet/短剧"}], "field": "cat"}
-_SHORT_DRAMA_CATEGORY_HINTS = ("短剧", "微短", "竖屏", "playlet", "short drama", "shortdrama")
-
-# 一个剧名归一化后的最小长度：低于该长度不做「包含式」目录匹配，避免误命中
-_MIN_TITLE_FOR_LOOSE_MATCH = 4
-
-# TMDB combined_credits 会返回演员的全部作品（可能上百条），逐条去站点搜索成本过高，
-# 因此按年份倒序只保留最近的一批。豆瓣侧受接口限制最多只有 10 条，这里按下限放宽，
-# 保证并集不丢近期作品（尤其短剧演员的产出集中在近一两年）。
-_TMDB_CREDITS_LIMIT = 40
-
-# TMDB 海报 CDN 前缀。combined_credits 只给 `poster_path`（形如 `/abc.jpg`），
-# 尺寸段固定 w300 —— 作品墙卡片宽度约 134px，2:3 海报取 w300 已足够清晰。
-_TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w300"
-
-# 全角 ASCII → 半角（用于剧名归一化；0x3000 是全角空格）
+# 全角 ASCII → 半角（剧名归一化用；0x3000 是全角空格）
 _FULLWIDTH_MAP = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)}
 _FULLWIDTH_MAP[0x3000] = 0x20
 
-# 季/部标记：归一化剧名时剔除。注意「云渺3」这类**片名序号不属于季标记**，必须保留。
+# 季/部标记：归一化剧名时剔除。注意「云渺3」这类**片名序号不属于季标记**，必须保留 ——
+# 「云渺3：镇魔世家」和「云渺4：绝嗣佛子」是两部独立的剧，序号是唯一的区分键。
 _SEASON_TOKEN_PATTERNS = (
     re.compile(r"(?:full\s*)?season\s*0*\d+", re.IGNORECASE),
-    # 排除 S01E02 这种「季+集」连写，避免把集数标记也吃掉
     re.compile(r"[sS]0*\d{1,2}(?!\d)(?!\s*[eE]\d)"),
     re.compile(r"第\s*0*\d+\s*[季部]"),
     re.compile(r"第\s*[一二三四五六七八九十]+\s*[季部]"),
 )
 
-# 集数标记：只作为信息字段，同时必须从剧名里剔除以免影响归一化
+# 集数标记：只作信息字段，同时要从剧名里剔除以免影响归一化
 _EPISODE_PATTERNS = (
     re.compile(r"共\s*\d+\s*集"),
     re.compile(r"全\s*\d+\s*集"),
@@ -197,103 +172,144 @@ _NAME_NOISE = re.compile(
     r"[\s\-_.·•:：、,，;；!！?？~～^《》<>「」『』\[\]［］\(\)（）\"'“”‘’]+"
 )
 
-# 年份：只认 4 位且带边界，避免把分辨率（2160p）或集数当年份
-_YEAR_TOKEN = re.compile(r"(?:19|20)\d{2}")
-
-# 种子标题中「剧名」与「技术尾巴」的分界标记
-_TITLE_STOP_TOKEN = re.compile(
-    r"^(?:19|20)\d{2}$"          # 年份
-    r"|^[sS]\d{1,2}(?:[eE]\d{1,4})?$"  # S01 / S01E02
-    r"|^\d{3,4}[piPI]$"          # 1080p / 720i
-    r"|^4K$|^UHD$|^FHD$|^SD$"    # 分辨率别名
-    r"|^第[0-9一二三四五六七八九十]+[季部]$",
-    re.IGNORECASE,
-)
-
-# 分辨率 → 分数（择优排序的最后一级）
-_RESOLUTION_SCORES = (
-    ("2160", 2160),
-    ("4K", 2160),
-    ("UHD", 2160),
-    ("1440", 1440),
-    ("2K", 1440),
-    ("1080", 1080),
-    ("720", 720),
-    ("576", 576),
-    ("480", 480),
-)
-
-# 豆瓣人物主页地址 → 人物 ID（允许用户直接粘贴链接）
-_PERSON_URL_PATTERN = re.compile(r"(?:personage|celebrity)/(\d+)")
-
-# 豆瓣登录态提示文案
-_NEED_LOGIN_HINT = "豆瓣要求登录（need_login），匿名搜索额度极低，建议在 CookieCloud 中同步豆瓣登录态"
-_COOKIE_EXPIRED_HINT = "豆瓣 Cookie 已失效，请重新登录豆瓣并同步到 CookieCloud"
-_RATE_LIMIT_HINT = "豆瓣接口限流，稍后会自动重试"
-
 
 # ─────────────────────────── 纯函数（可单测） ───────────────────────────
 
 
 def _clean_text(value: Any) -> str:
-    """统一清洗外部文本：去首尾空白、把多余空白压成单个空格。"""
-    return re.sub(r"\s+", " ", str(value or "")).strip()
+    """把任意值收敛成去空白的字符串（None / 数字 / 空白串 → 空串）。"""
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
-# ── 失败原因归一：决定「面板怎么展示」，而不是「有没有失败」 ──
-#
-# 演员作品解析失败绝大多数是**临时的**：豆瓣登录态过期、限流、网络抖动 ——
-# 插件每轮都会重试，所以不该在面板上逐条铺错误（用户明确要求「等待重试」即可）。
-# 只有「豆瓣确实没有影视条目」是稳定结果，重试也不会变，按中性文案说明。
-_DOUBAN_AUTH_MARKERS = ("Cookie 已失效", "要求登录", "need_login")
-_DOUBAN_RATE_MARKERS = ("限流", "稍后会自动重试")
-_DOUBAN_EMPTY_MARKERS = ("没有「影视」作品集", "没有可解析的影视条目", "人物详情为空")
-# 短剧百科：站上确实没有这位演员 / 演员页没有作品 = 稳定结果（重试也不会变）；
-# 其余百科失败（插件未装、查找异常）= 临时性，等下一轮自动重试
-_BAIKE_EMPTY_MARKERS = ("短剧百科：未收录", "短剧百科：演员页没有作品")
+def _to_bool(value: Any, default: bool = False) -> bool:
+    """宽松布尔转换：前端可能传真布尔，也可能传 "true"/"on"/"1" 之类的字符串。"""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    """宽松整数转换；拿不到数字返回默认值（百科的集数/热度字段经常是字符串或空）。"""
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    """宽松浮点转换；拿不到数字返回默认值（评分缺省按 0 处理，前端会统一格式化）。"""
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _pick_text(item: Dict[str, Any], names: Any) -> str:
+    """按候选字段名依次取值，返回第一个非空文本（数据源版本间字段会改名）。
+
+    ``[{"name": "红果…"}]``（宿主模型形态）、``{"name": "红果…"}``、``"红果…"``
+    三种形态都收敛成同一个字符串。
+    """
+    for name in names:
+        value = item.get(name)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        if isinstance(value, dict):
+            value = value.get("name")
+        text = _clean_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _pick_number(item: Dict[str, Any], names: Any) -> float:
+    """按候选字段名依次取数值；一个都没有就返回 0（排序时自然排到最后）。"""
+    for name in names:
+        value = item.get(name)
+        if value in (None, ""):
+            continue
+        number = _to_float(value, -1.0)
+        if number >= 0:
+            return number
+    return 0.0
+
+
+def tags_of(item: Dict[str, Any]) -> List[str]:
+    """作品的题材/类型标签（去重保序，可单测）。
+
+    兼容三种形态：``["逆袭", "都市日常"]``、``"逆袭,都市日常"``、
+    ``[{"name": "逆袭"}]`` —— 数据源在卡片 / 详情 / 宿主模型里给的并不一致。
+    """
+    raw: Any = None
+    for name in _TAGS_FIELDS:
+        value = item.get(name)
+        if value:
+            raw = value
+            break
+    if isinstance(raw, str):
+        raw = re.split(r"[,，/、|;；]+", raw)
+    if not isinstance(raw, (list, tuple)):
+        return []
+    result: List[str] = []
+    seen: set = set()
+    for entry in raw:
+        if isinstance(entry, dict):
+            entry = entry.get("name")
+        text = _clean_text(entry)
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+def work_year(item: Dict[str, Any]) -> str:
+    """作品的年份：优先 ``year``，否则从 ``release_date``（首播日期）里取前四位。"""
+    year = _clean_text(item.get("year"))
+    if year:
+        return year
+    release = _clean_text(item.get("release_date") or item.get("first_air_date"))
+    match = re.match(r"(\d{4})", release)
+    return match.group(1) if match else ""
 
 
 def classify_error(message: str) -> str:
-    """把一条失败原因归一成原因码（可单测）。
+    """把百科侧的错误文案归成稳定的原因码。
 
-    - ``douban_auth`` / ``douban_rate``：临时性失败 → 等下一轮自动重试，不必打扰用户
-    - ``douban_empty``：豆瓣确实没有影视条目 → 稳定结果，重试无意义
-    - ``baike_empty``：短剧百科确实没有收录 → 稳定结果
-    - ``baike`` / ``tmdb`` / ``other``：其余来源（临时性）
+    * ``baike_empty`` —— **稳定**结果：百科没收录这位演员（或百科插件没装/停用）；
+    * ``baike`` —— **临时**故障：网络抖动 / 索引超时，重试大概率自愈；
+    * ``other`` —— 其余。
     """
     text = _clean_text(message)
-    if any(marker in text for marker in _DOUBAN_AUTH_MARKERS):
-        return "douban_auth"
-    if any(marker in text for marker in _DOUBAN_RATE_MARKERS):
-        return "douban_rate"
-    if any(marker in text for marker in _DOUBAN_EMPTY_MARKERS):
-        return "douban_empty"
-    if any(marker in text for marker in _BAIKE_EMPTY_MARKERS):
+    if "未收录" in text or "没有作品" in text:
         return "baike_empty"
     if text.startswith("短剧百科"):
         return "baike"
-    if text.startswith("TMDB"):
-        return "tmdb"
     return "other"
 
 
 def record_state(record: Dict[str, Any]) -> str:
-    """把一条演员快照归一成展示状态（可单测）。
+    """演员记录当前的展示状态（可单测）。
 
-    - ``""``：正常（拿到了作品）
-    - ``waiting``：本轮没有作品且原因是临时的（登录态 / 限流 / 未知异常）
-      → 面板只给一句「等待自动重试」
-    - ``empty``：本轮没有作品，原因是稳定的（豆瓣确无影视条目、百科未收录、TMDB 未配置）
-      → 中性说明，不是故障，重试也无意义
+    * ``''`` 正常（已有作品）；
+    * ``'waiting'`` 临时性失败 —— 面板只给一句「等待自动重试」；
+    * ``'empty'`` 百科未收录 —— 中性说明，不是故障。
 
-    临时性优先：只要有一条临时原因，就按「会自己好」处理。
+    临时性优先：同一条记录里既有临时故障又有「未收录」时按可重试处理；
+    ``stale``（本轮数据源空手而归、沿用旧快照）同样按可重试处理 —— 否则要等满
+    整个快照 TTL 才会再去拉一次。
     """
-    if record.get("works"):
-        return ""
-    kinds = {classify_error(item) for item in (record.get("errors") or [])}
-    if kinds & {"douban_auth", "douban_rate", "other", "baike"}:
+    if not isinstance(record, dict):
         return "waiting"
-    if kinds & {"douban_empty", "baike_empty", "tmdb"}:
+    if record.get("works"):
+        return "waiting" if record.get("stale") else ""
+    kinds = {classify_error(str(item)) for item in record.get("errors") or []}
+    if "baike" in kinds or "other" in kinds:
+        return "waiting"
+    if "baike_empty" in kinds:
         return "empty"
     return "waiting"
 
@@ -322,17 +338,18 @@ def record_needs_refresh(
     ttl_seconds: float,
     retry_seconds: float,
     now: Optional[datetime] = None,
+    schema: int = 0,
 ) -> bool:
     """一条演员快照是否到了该重新解析的时间点（可单测）。
 
     - 没有记录 / 时间戳不可解析 → 要（新加的演员立刻解析）
-    - ``waiting``（临时性失败：登录态失效 / 限流）→ 按**失败重试间隔**判定
-    - 其余（正常拿到作品、``empty``）→ 按**快照刷新间隔**判定
-
-    ⚠️ 返回 True 只代表「时间到了」，不代表一定会成功；失败会被重新写成 ``waiting``
-    并继续按重试间隔等下一轮，因此不会出现「失败一次就锁一天」。
+    - 记录字段版本低于 ``schema``（数据源补齐了新字段）→ 要，立刻重抓一次
+    - ``waiting``（临时性失败）→ 按**失败重试间隔**判定
+    - 其余 → 按**快照刷新间隔**判定
     """
     if not isinstance(record, dict):
+        return True
+    if schema and _to_int(record.get("schema")) < schema:
         return True
     age = snapshot_age_seconds(record, now)
     if age is None:
@@ -341,20 +358,13 @@ def record_needs_refresh(
     if state == "waiting":
         return age >= retry_seconds
     if not state and not record.get("works"):
-        # 老快照（还没有 state 字段）里没作品的记录：分不清是「失败」还是「确无作品」，
-        # 按可重试处理 —— 重解析一次就会写上正确的 state，之后自然归位。
+        # 老快照（还没有 state 字段）里没作品的记录：分不清失败还是确无作品，按可重试处理
         return age >= retry_seconds
     return age >= ttl_seconds
 
 
 def is_retry_candidate(record: Dict[str, Any]) -> bool:
-    """该记录是否属于「解析失败、值得按短间隔重试」的一类（可单测）。
-
-    - 还没有记录（新加的演员）→ 是：立刻补上，不必等下一轮 6 小时的轮询
-    - ``state == "waiting"``（登录态失效 / 限流）→ 是
-    - 老快照（还没有 ``state``）里没作品的记录 → 是（重解析一次就会写上正确的 state）
-    - ``empty``（豆瓣确无影视条目）或已有作品 → 否：这两类走快照的整体刷新节奏
-    """
+    """该记录是否属于「解析失败、值得按短间隔重试」的一类（可单测）。"""
     if not isinstance(record, dict):
         return True
     if _clean_text(record.get("state")) == "waiting":
@@ -362,55 +372,35 @@ def is_retry_candidate(record: Dict[str, Any]) -> bool:
     return not record.get("state") and not record.get("works")
 
 
-def _to_bool(value: Any, default: bool = False) -> bool:
-    """宽松布尔转换：前端可能传真布尔，也可能传 "true"/"on"/"1" 之类的字符串。"""
-    if value is None or value == "":
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
+def stamp_epoch(value: Any) -> float:
+    """快照时间戳文本 → epoch 秒；缺失或格式非法返回 0（「新」判定用）。"""
+    parsed = parse_stamp(value)
+    return parsed.timestamp() if parsed else 0.0
 
 
-def _to_int(value: Any) -> int:
-    """宽松整数转换，失败返回 0（用于做种数等站点字段）。"""
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return 0
+def is_fresh_work(work: Dict[str, Any], now: float, baseline_at: float = 0.0) -> bool:
+    """作品是否属于「演员加入之后才出现的新作品」（可单测）。
 
+    1. 首次出现在**基线之后**（``first_seen`` > ``baseline_at``）—— 建立基线时就有的作品
+       永远不算新；
+    2. 首次出现距今在 ``_NEW_WINDOW_SECONDS`` 之内 —— 时间窗负责让「新」自然过期。
 
-def _to_float(value: Any) -> float:
-    """宽松浮点转换，失败返回 0.0（用于体积等站点字段）。"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _conf_field(item: Any, field: str, default: Any = None) -> Any:
-    """从宿主的配置对象里取字段。
-
-    宿主配置项在版本间可能是 pydantic 模型（``DownloaderConf`` /
-    ``TransferDirectoryConf``）也可能是原始 dict，这里两种形状都兼容，
-    避免因为一处``getattr``/``get`` 用法不对就让整个下拉静默变空。
+    ``first_seen`` 缺失按**不新**处理。
     """
-    if isinstance(item, dict):
-        return item.get(field, default)
-    return getattr(item, field, default)
+    first_seen = stamp_epoch(work.get("first_seen"))
+    if not first_seen:
+        return False
+    if baseline_at and first_seen <= baseline_at:
+        return False
+    return (now - first_seen) <= _NEW_WINDOW_SECONDS
 
 
 def normalize_title(title: str) -> str:
-    """把剧名归一化成可比较的键。
+    """把剧名归一化成可比较的键（全角转半角 → 去非法字符 → 剔季/集标记 → 去标点 → 小写）。
 
-    处理顺序：全角转半角 → 去非法字符 → 剔除季/部标记 → 剔除集数标记 →
-    去标点与空白 → 转小写。
-
-    **片名中的序号必须保留**：「云渺3：镇魔世家」和「云渺4：绝嗣佛子」是两部独立的剧，
-    序号是它们唯一的区分键（年份不足以区分，两者都是 2025）。
+    **片名中的序号必须保留**：见 ``_SEASON_TOKEN_PATTERNS`` 处的说明。
     """
-    text = str(title or "").strip()
+    text = _clean_text(title)
     if not text:
         return ""
     text = text.translate(_FULLWIDTH_MAP)
@@ -423,711 +413,74 @@ def normalize_title(title: str) -> str:
     return text.lower()
 
 
-def extract_year(text: str) -> str:
-    """从文本中提取年份（1900-2099），取第一个可信的 4 位数字。
+def work_key(title: str, year: str = "") -> str:
+    """作品的去重键：归一化剧名 + 年份。"""
+    return f"{normalize_title(title)}|{_clean_text(year)}"
 
-    只认**未被 ASCII 字母包夹**的 4 位数字，从而排除 ``2160p`` / ``x2049`` 这类噪声；
-    但允许后面紧跟汉字（``2024年``），这是中文站点的常见写法。
+
+#: ``media_id`` 的历史形态（百科插件只读兼容）；规范身份是 ``duanju`` + **裸数字**
+_LEGACY_ID_PREFIXES = ("duanjubaike:", "duanju:", "org:")
+
+
+def baike_media_id(work: Dict[str, Any]) -> str:
+    """把作品行的 ``media_id`` 归一成百科的**裸数字** ID（可单测）。
+
+    快照里同一部剧可能存在两种身份（新版 ``39980`` / 旧版 ``duanju:39980``），
+    只看字符串就会把一部剧拆成两行 —— 这里剥掉历史前缀，只剩数字。
+    无法归一（非数字）时原样返回，交给调用方回退。
     """
-    source = str(text or "")
-    for match in _YEAR_TOKEN.finditer(source):
-        start, end = match.span()
-        before = source[start - 1] if start > 0 else ""
-        after = source[end] if end < len(source) else ""
-        if (before.isascii() and before.isalpha()) or (after.isascii() and after.isalpha()):
-            continue
-        return match.group(0)
-    return ""
-
-
-def extract_episode_count(text: str) -> int:
-    """从站点副标题里提取总集数（如「全90集」→ 90）。
-
-    仅用于通知展示，**不参与匹配与去重**（见决策基线 7）。
-    """
-    source = str(text or "")
-    for pattern in (re.compile(r"共\s*(\d+)\s*集"), re.compile(r"全\s*(\d+)\s*集"), re.compile(r"(\d+)\s*集")):
-        match = pattern.search(source)
-        if match:
-            return _to_int(match.group(1))
-    return 0
-
-
-def resolution_score(text: str) -> int:
-    """把分辨率折算成分数，仅用作择优排序的最后一级。"""
-    upper = str(text or "").upper()
-    for token, score in _RESOLUTION_SCORES:
-        if token in upper:
-            return score
-    return 0
-
-
-def torrent_title_head(title: str) -> str:
-    """截取种子标题里「剧名」那一段，丢掉年份/季集/分辨率/编码等尾巴。
-
-    站长通常把剧名（多为拼音）写在最前面，例如
-    ``Wo De Shan Hun Lao Gong Shi Hao Men 2024 S01 720p WEB-DL AVC AAC-GodDramas``，
-    截断后得到 ``Wo De Shan Hun Lao Gong Shi Hao Men``。它等于剧名的拼音，
-    因此能与 TMDB 提供的英文名/原名对上，作为多语言别名的兜底。
-    """
-    head: List[str] = []
-    for token in str(title or "").split():
-        if _TITLE_STOP_TOKEN.match(token):
+    media_id = _clean_text(work.get("media_id"))
+    lowered = media_id.lower()
+    for prefix in _LEGACY_ID_PREFIXES:
+        if lowered.startswith(prefix):
+            media_id = media_id[len(prefix):].strip()
             break
-        head.append(token)
-    return " ".join(head)
+    return media_id
 
 
-def torrent_title_candidates(torrent: Dict[str, Any]) -> List[str]:
-    """列出一条搜索结果里可用来比对剧名的候选片段。
+def wall_row_key(work: Dict[str, Any]) -> str:
+    """作品墙行的去重键：**优先按百科 ID**，ID 归一不了再退回 剧名|年份。
 
-    站点种子的中文剧名通常写在**副标题**里，惯例是
-    ``剧名 | 全X集 | 年份 | 网络收费短剧 | 类型：…``，因此按分隔符切开全部保留；
-    再把正标题的「剧名段」作为拼音别名补上。
+    为什么不直接用 ``work_key(title, year)``：不同演员的快照抓取时间不同，
+    同一部剧可能一份带年份、一份是早年「年份恒空」的旧卡 —— 按剧名|年份
+    会把同一部剧数成两部（这正是真机上 2185 行里混着 78 对重复的根因）。
+    百科的数字 ID 是作品的一等身份，用它最稳。
     """
-    candidates: List[str] = []
-    description = str(torrent.get("description") or "")
-    for part in re.split(r"[|｜/／]", description):
-        part = _clean_text(part)
-        if part:
-            candidates.append(part)
-    head = _clean_text(torrent_title_head(torrent.get("title") or ""))
-    if head:
-        candidates.append(head)
-    return candidates
+    media_id = baike_media_id(work)
+    if media_id.isdigit():
+        return f"{_BAIKE_SOURCE}|{media_id}"
+    return work_key(work.get("title") or "", work.get("year") or "")
 
 
-def title_matches(torrent: Dict[str, Any], aliases: List[str]) -> bool:
-    """判定一条搜索结果是否命中目标剧。
+def merge_first_seen(old_works: Any, works: List[Dict[str, Any]], stamp: str) -> None:
+    """给本轮抓到的作品**就地**打上 ``first_seen``（可单测）。
 
-    规则（决策基线 4）：把种子侧候选片段与目标剧的全部别名分别归一化，要求
-    **精确相等**。别名可包含中文名与英文/原名，用于覆盖拼音命名的种子。
+    旧快照里已有的作品**继承原来的首次出现时间**，只有真正新冒出来的才记成本轮 ``stamp``。
+
+    ⚠️ 匹配是「先按 剧名|年份，再退回按剧名」：早年快照的作品卡没有年份（``year`` 恒空），
+    若只按完整键匹配，一旦数据源开始给年份，**整墙作品会被误判成新作品**。
     """
-    wanted = {normalize_title(item) for item in aliases if normalize_title(item)}
-    if not wanted:
-        return False
-    for candidate in torrent_title_candidates(torrent):
-        if normalize_title(candidate) in wanted:
-            return True
-    return False
-
-
-def year_compatible(torrent_year: str, want_year: str) -> bool:
-    """年份校验（决策基线 5）：任一侧缺失即放行，两侧都有才要求相等。"""
-    if not want_year or not torrent_year:
-        return True
-    return str(torrent_year) == str(want_year)
-
-
-def pick_best(torrents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """在同剧的多个资源包里择优一条（决策基线 8）。
-
-    排序键：``做种数 → 体积(码率代理) → 分辨率``。
-    做种数优先体现「**能下得动 > 画质好**」——短剧做种普遍稀少，先保证下载成功率。
-    刻意**不使用集数**：短剧整包发布，集数差异来自整合版本，不代表质量优劣。
-    """
-    if not torrents:
-        return None
-
-    def _key(item: Dict[str, Any]) -> Tuple[int, float, int]:
-        return (
-            _to_int(item.get("seeders")),
-            _to_float(item.get("size")),
-            resolution_score(item.get("title")),
-        )
-
-    return max(torrents, key=_key)
-
-
-def detect_short_drama_category(indexer: Optional[Dict[str, Any]]) -> str:
-    """从站点索引配置里探测「短剧分类」的 ID，探测不到返回空串。
-
-    宿主 ``TorrentsChain.browse(domain, cat=…)`` 支持按分类过滤，把搜索收窄到站点的
-    短剧区能显著降低同名误命中。分类结构形如::
-
-        {"tv": [{"id": 419, "cat": "TV", "desc": "Playlet/短剧"}], "field": "cat"}
-
-    站点没有短剧分类（实测馒头 13 个分类里没有）时返回空串，调用方退化为全站关键词搜索。
-    """
-    if not isinstance(indexer, dict):
-        return ""
-    categories = indexer.get("category")
-    if not isinstance(categories, dict):
-        return ""
-    for key, items in categories.items():
-        if key == "field" or not isinstance(items, list):
+    known: Dict[str, str] = {}
+    known_titles: Dict[str, str] = {}
+    for item in old_works or []:
+        if not isinstance(item, dict):
             continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            label = f"{item.get('desc') or ''} {item.get('cat') or ''}".lower()
-            if any(hint in label for hint in _SHORT_DRAMA_CATEGORY_HINTS):
-                category_id = str(item.get("id") or "").strip()
-                if category_id:
-                    return category_id
-    return ""
-
-
-def ledger_key(title: str, year: str) -> str:
-    """账本键 = 归一化剧名 + 年份(可空)。
-
-    **刻意不含集数**（决策基线 6）：同一部剧的 90 集版与 100 集整合版必须落到同一个键，
-    否则会被当成两部剧重复下载、重复入库。
-    """
-    return f"{normalize_title(title)}|{str(year or '').strip()}"
-
-
-def site_domain_of(url: str) -> str:
-    """从种子链接里取出站点域名（**纯域名**，去掉 ``www.`` 前缀）。
-
-    返回值刻意与宿主索引器清单的字典键保持一致：``/api/v1/site/supporting`` 里
-    PTS 的键是 ``ptskit.org`` 而不是 ``www.ptskit.org``，多一个 ``www.`` 就查不到。
-    裸域名（``ptskit.org``，没有协议头）同样要能处理 —— 宿主索引器记录的 ``domain``
-    就可能是这种形态，``urlparse`` 对它会返回空 netloc。
-    """
-    text = str(url or "").strip()
-    if not text:
-        return ""
-    try:
-        parsed = parse.urlparse(text)
-        domain = parsed.netloc or ""
-        if not domain:
-            # 没有协议时 urlparse 会把整串当成 path，这里退回手工切分
-            head = text.split("//", 1)[1] if "//" in text else text
-            domain = head.split("/", 1)[0]
-        domain = domain.lower().split(":", 1)[0].strip()  # 去掉端口
-        return domain[4:] if domain.startswith("www.") else domain
-    except Exception:  # pragma: no cover - 解析失败按空域名处理
-        return ""
-
-
-def site_domain_candidates(raw: str) -> List[str]:
-    """把一个「可能是完整 URL、也可能带 www」的域名字段展开成候选索引键（按优先级）。
-
-    ⚠️ 实测（MoviePilot v3.1.3）：``SitesHelper().get_indexers()`` 每条记录里的
-    ``domain`` 字段存的是**完整 URL**（``https://www.ptskit.org/``），而
-    ``SitesHelper().get_indexer(domain)`` 的匹配键是**纯域名**（``ptskit.org``，
-    与 ``/api/v1/site/supporting`` 的字典键一致）。把 URL 原样喂进 ``get_indexer()``
-    一律返回 ``None`` —— 外在表现就是日志里的「站点 … 不存在！」，
-    且整轮站点搜索颗粒无收（每个站点都被判为不存在）。
-    """
-    text = str(raw or "").strip()
-    if not text:
-        return []
-    host = site_domain_of(text)
-    candidates: List[str] = [host, text]
-    if host:
-        parts = [part for part in host.split(".") if part]
-        if len(parts) > 2:
-            # 下载链接常落在子域（pt.xxx.com / mua.xxx.com），退一级主域再试
-            candidates.append(".".join(parts[-2:]))
-        candidates.append(host[4:] if host.startswith("www.") else f"www.{host}")
-    result: List[str] = []
-    for item in candidates:
-        if item and item not in result:
-            result.append(item)
-    return result
-
-
-def config_text(value: Any) -> str:
-    """把配置项取成字符串，兼容前端 ``v-combobox`` 写回**整个 item 对象**的情形。
-
-    Vuetify 的 ``v-select`` 只回写 ``value``，而 ``v-combobox`` 会把选中的 item
-    **对象**直接写进 ``v-model``，于是配置里会出现
-    ``{"title": "★ 短剧（/vol00/…）", "value": "/vol00/…"}`` 这种脏值。
-    后端统一取 ``value`` 字段，不依赖前端用哪个组件、怎么绑。
-    """
-    if isinstance(value, dict):
-        return str(value.get("value") or "").strip()
-    if isinstance(value, (list, tuple)):
-        return config_text(value[0]) if value else ""
-    return str(value or "").strip()
-
-
-# ─────────────────────────── CookieCloud ───────────────────────────
-
-
-class _CookieCloudClient:
-    """从 CookieCloud 取指定域名的 Cookie。
-
-    为什么不自己解密：CookieCloud 服务端支持 ``POST /get/{key}`` 带密码直接返回**已解密**的
-    ``cookie_data``，插件因此不必实现 AES 解密，只依赖 ``app.sdk.network`` 即可。
-
-    Cookie 只留在内存里，不落盘、不写日志，避免把登录态持久化。
-    """
-
-    TIMEOUT = 20
-
-    def __init__(self, host: str = "", key: str = "", password: str = "") -> None:
-        self._host = str(host or "").strip().rstrip("/")
-        self._key = str(key or "").strip()
-        self._password = str(password or "").strip()
-        self.last_error = ""
-
-    @property
-    def configured(self) -> bool:
-        """服务器地址、用户 KEY、加密密码三者齐全才算配置可用。"""
-        return bool(self._host and self._key and self._password)
-
-    def fetch(self, domain_keyword: str) -> str:
-        """取包含 ``domain_keyword`` 的域名分组，拼成可直接使用的 Cookie 头。"""
-        self.last_error = ""
-        if not self.configured:
-            self.last_error = "CookieCloud 未配置（缺服务器地址 / KEY / 密码）"
-            return ""
-
-        response = None
-        try:
-            response = RequestUtils(content_type="application/json", timeout=self.TIMEOUT).post_res(
-                url=f"{self._host}/get/{self._key}", json={"password": self._password}
-            )
-            if response is None:
-                self.last_error = "CookieCloud 请求失败（网络不可达或地址有误）"
-                return ""
-            if response.status_code != 200:
-                self.last_error = f"CookieCloud 返回 HTTP {response.status_code}"
-                return ""
-            payload = response.json()
-        except Exception as err:  # noqa: BLE001 - 任何异常都降级为「取不到」
-            self.last_error = f"CookieCloud 请求异常：{err}"
-            return ""
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:  # pragma: no cover - 关闭失败可忽略
-                    pass
-
-        contents = payload.get("cookie_data") if isinstance(payload, dict) else None
-        if not isinstance(contents, dict):
-            self.last_error = (
-                "CookieCloud 只返回了密文（服务端未解密），请在插件配置里手工粘贴豆瓣 Cookie"
-                if isinstance(payload, dict) and payload.get("encrypted")
-                else "CookieCloud 返回内容为空"
-            )
-            return ""
-
-        pairs: List[str] = []
-        seen: set = set()
-        for domain, cookies in contents.items():
-            if domain_keyword not in str(domain).lower() or not isinstance(cookies, list):
-                continue
-            for item in cookies:
-                if not isinstance(item, dict):
-                    continue
-                name, value = item.get("name"), item.get("value")
-                if not name or value is None or name in seen:
-                    continue
-                seen.add(name)
-                pairs.append(f"{name}={value}")
-
-        if not pairs:
-            self.last_error = f"CookieCloud 里没有 {domain_keyword} 的 Cookie（请确认浏览器已登录并同步）"
-            return ""
-        return "; ".join(pairs)
-
-
-# ─────────────────────────── 豆瓣发现源 ───────────────────────────
-
-
-class _DoubanClient:
-    """豆瓣 Frodo API 的轻量客户端（插件内自持，不依赖宿主内部模块）。
-
-    签名规则与豆瓣移动端一致：``_sig = base64(hmac_sha1(secret, "GET&" + quote(path) + "&" + _ts))``。
-    ``path`` 必须是**完整请求路径**（含 ``/api/v2`` 前缀），漏掉前缀会直接 400。
-    """
-
-    BASE_URL = "https://frodo.douban.com/api/v2"
-    SIGN_BASE_PATH = "/api/v2"
-    API_KEY = "0dad551ec0f84ed02907ff5c42e8ec70"
-    API_SECRET = "bf7dddc7c9cfe6f7"
-    TIMEOUT = 15
-
-    # 作品集接口单次最多 10 条，且 start > 0 一律返回空，即**不支持翻页**，
-    # 因此每位演员实际只能取到最近 10 部作品。
-    MAX_WORKS_PER_REQUEST = 10
-    SORT_ORDERS = ("time", "collection")
-
-    RATE_LIMIT_STATUS = frozenset({403, 429, 503})
-    RATE_LIMIT_RETRIES = 2
-    RATE_LIMIT_BACKOFF = 1.5
-    POLITE_DELAY = 0.35
-
-    USER_AGENTS = (
-        "api-client/1 com.douban.frodo/7.22.0.beta9(231) Android/23 product/Mate 40 "
-        "vendor/HUAWEI model/Mate 40 brand/HUAWEI  rom/android  network/wifi  platform/AndroidPad",
-        "api-client/1 com.douban.frodo/7.18.0(230) Android/22 product/MI 9 vendor/Xiaomi "
-        "model/MI 9 brand/Android  rom/miui6  network/wifi  platform/mobile nd/1",
-    )
-
-    def __init__(self, proxy: bool = False, cookie: str = "") -> None:
-        self._proxy = proxy
-        self._cookie = str(cookie or "").strip()
-        self._last_request_at = 0.0
-        self.last_status = 0
-        self.last_error = ""
-        self.last_need_login = False
-        self.last_body = ""
-        self.search_calls = 0
-
-    @classmethod
-    def _sign(cls, url_path: str, ts: str) -> str:
-        """按豆瓣移动端规则生成 ``_sig``。"""
-        path = url_path if url_path.startswith(cls.SIGN_BASE_PATH) else f"{cls.SIGN_BASE_PATH}{url_path}"
-        raw = "&".join(["GET", parse.quote(path, safe=""), ts])
-        digest = hmac.new(cls.API_SECRET.encode(), raw.encode(), hashlib.sha1).digest()
-        return base64.b64encode(digest).decode()
-
-    def _wait_turn(self) -> None:
-        """维持相邻请求之间的最小间隔，降低触发限流的概率。"""
-        gap = time.monotonic() - self._last_request_at
-        if gap < self.POLITE_DELAY:
-            time.sleep(self.POLITE_DELAY - gap)
-        self._last_request_at = time.monotonic()
-
-    def _request_once(self, url_path: str, params: Dict[str, Any], proxies: Any):
-        """发起一次带签名的 GET，返回 ``(status, payload)``；网络层失败返回 None。"""
-        self._wait_turn()
-        response = None
-        try:
-            response = RequestUtils(
-                ua=choice(self.USER_AGENTS),
-                proxies=proxies,
-                cookies=self._cookie or None,
-                timeout=self.TIMEOUT,
-            ).get_res(url=f"{self.BASE_URL}{url_path}", params=params)
-            if response is None:
-                self.last_error = "豆瓣请求无响应"
-                return None
-            status = response.status_code
-            self.last_status = status
-            if status != 200:
-                try:
-                    self.last_body = (response.text or "")[:300]
-                except Exception:  # pragma: no cover - 读取失败不影响判定
-                    self.last_body = ""
-                if "need_login" in self.last_body:
-                    self.last_need_login = True
-                return status, None
-            payload = response.json()
-            return status, (payload if isinstance(payload, dict) else None)
-        except Exception as err:
-            self.last_error = str(err)
-            logger.error(f"{PLUGIN_NAME} 请求豆瓣接口失败（{url_path}）：{err}")
-            return None
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:  # pragma: no cover - 关闭失败可忽略
-                    pass
-
-    def _get(self, url_path: str, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        """发起一次签名 GET；限流时按指数退避重试，失败不抛异常。"""
-        ts = datetime.now().strftime("%Y%m%d")
-        params: Dict[str, Any] = dict(kwargs)
-        params.update(
-            {
-                "os_rom": "android",
-                "apiKey": self.API_KEY,
-                "_ts": ts,
-                "_sig": self._sign(url_path, ts),
-            }
+        title = item.get("title") or ""
+        key = work_key(title, item.get("year") or "")
+        seen = _clean_text(item.get("first_seen"))
+        if not (key and seen):
+            continue
+        if key not in known:
+            known[key] = seen
+        title_key = normalize_title(title)
+        if title_key and title_key not in known_titles:
+            known_titles[title_key] = seen
+    for work in works:
+        title = work.get("title") or ""
+        key = work_key(title, work.get("year") or "")
+        work["first_seen"] = (
+            known.get(key) or known_titles.get(normalize_title(title)) or stamp
         )
-        proxies = getattr(settings, "PROXY", None) if self._proxy else None
-
-        self.last_status = 0
-        self.last_error = ""
-        self.last_need_login = False
-        self.last_body = ""
-
-        for attempt in range(self.RATE_LIMIT_RETRIES + 1):
-            outcome = self._request_once(url_path, params, proxies)
-            if outcome is None:
-                return None
-            status, payload = outcome
-            if status == 200:
-                return payload
-            if status in self.RATE_LIMIT_STATUS:
-                # need_login 说明匿名请求被挡在门外，退避重试基本无效，直接放弃更省配额
-                if self.last_need_login and not self._cookie:
-                    self.last_error = "豆瓣要求登录（need_login）"
-                    return None
-                self.last_error = f"豆瓣限流（HTTP {status}）"
-                if attempt < self.RATE_LIMIT_RETRIES:
-                    time.sleep(self.RATE_LIMIT_BACKOFF * (2**attempt))
-                    continue
-                return None
-            self.last_error = f"豆瓣接口返回 HTTP {status}"
-            return None
-        return None
-
-    def failure_hint(self) -> str:
-        """按最近一次失败的成因给出**可操作**的提示。"""
-        if self.last_need_login:
-            return _COOKIE_EXPIRED_HINT if self._cookie else _NEED_LOGIN_HINT
-        return _RATE_LIMIT_HINT
-
-    def search_person(self, name: str, count: int = 10) -> List[Dict[str, Any]]:
-        """按名称搜索豆瓣人物，返回 ``[{id, name, avatar, url}]``。"""
-        self.search_calls += 1
-        payload = self._get("/search/subjects", type="person", q=name, start=0, count=count)
-        results: List[Dict[str, Any]] = []
-        seen: set = set()
-        for item in (payload or {}).get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            target = item.get("target") if isinstance(item.get("target"), dict) else {}
-            person_id = str(item.get("target_id") or target.get("id") or "").strip()
-            title = _clean_text(target.get("title"))
-            if not person_id.isdigit() or not title or person_id in seen:
-                continue
-            seen.add(person_id)
-            cover = target.get("cover_img") if isinstance(target.get("cover_img"), dict) else {}
-            results.append(
-                {
-                    "id": person_id,
-                    "name": title,
-                    "avatar": str(cover.get("url") or "").replace("/l/public/", "/s/public/") or None,
-                    "url": target.get("url"),
-                }
-            )
-        return results
-
-    def person_detail(self, person_id: str) -> Optional[Dict[str, Any]]:
-        """获取豆瓣人物详情（含作品集 modules）。"""
-        if not person_id:
-            return None
-        return self._get(f"/elessar/subject/{person_id}")
-
-    def person_works(self, collection_id: str, count: int = 10, sort_by: str = "time") -> List[Dict[str, Any]]:
-        """获取人物「影视」作品集（受接口限制只取首页，最多 10 条）。"""
-        if not collection_id:
-            return []
-        order = sort_by if sort_by in self.SORT_ORDERS else "time"
-        limit = min(max(1, _to_int(count) or self.MAX_WORKS_PER_REQUEST), self.MAX_WORKS_PER_REQUEST)
-        payload = self._get(
-            f"/elessar/work_collections/{collection_id}/works",
-            sortby=order,
-            collection_title="影视",
-            start=0,
-            count=limit,
-        )
-        return [item for item in (payload or {}).get("works") or [] if isinstance(item, dict)]
-
-
-def douban_work_to_candidate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """把豆瓣作品条目转成统一的候选结构。
-
-    结构：``{title, year, alt_title, source, media_id, type, poster, vote}``。
-    豆瓣作品条目的媒体类型在 ``subject.subtype``（``subject.type`` 恒为占位的 ``"subject"``），
-    这里只保留电影/电视剧两类，其余（书、音乐、综艺等）跳过。
-    """
-    if not isinstance(raw, dict):
-        return None
-    subject = raw.get("subject") if isinstance(raw.get("subject"), dict) else raw
-    raw_type = _clean_text(subject.get("subtype") or subject.get("type_name") or subject.get("type"))
-    if raw_type.lower() in ("subject", ""):
-        raw_type = _clean_text(raw.get("subtype") or raw.get("type_name"))
-    if raw_type and raw_type not in ("电影", "电视剧", "movie", "tv", "series"):
-        return None
-
-    title = _clean_text(subject.get("title") or raw.get("title"))
-    if not title:
-        return None
-    extra = subject.get("extra") if isinstance(subject.get("extra"), dict) else {}
-    year = _clean_text(subject.get("year") or raw.get("year"))
-    if not year:
-        # 豆瓣部分条目把年份写在 card_subtitle 里，如 "2024 / 中国大陆 / 剧情"
-        year = extract_year(subject.get("card_subtitle") or raw.get("card_subtitle") or "")
-    if not year:
-        # 当前版本把年份放在 extra.year（并冗余在 extra.short_info 里）
-        year = _clean_text(extra.get("year")) or extract_year(extra.get("short_info") or "")
-    media_id = str(subject.get("id") or raw.get("id") or "").strip()
-    return {
-        "title": title,
-        "year": year,
-        "alt_title": "",
-        "source": "douban",
-        "media_id": media_id,
-        # subtype 是英文（movie / tv），统一译成宿主那套中文媒体类型，便于前端展示
-        "type": {"movie": "电影", "tv": "电视剧", "series": "电视剧"}.get(raw_type.lower(), raw_type),
-        # 作品墙卡片用的海报与评分（取不到就是空，前端会显示占位图）
-        "poster": douban_poster_url(subject),
-        "vote": douban_vote(subject, extra),
-    }
-
-
-def douban_poster_url(subject: Dict[str, Any]) -> str:
-    """从豆瓣条目里取海报地址。
-
-    实测字段有 ``pic.{large,normal}``、``cover.{large,normal}`` 与扁平的 ``cover_url``，
-    不同接口（作品集内嵌 / 单条详情）给的形状不一样，因此这里逐个兜底。
-    豆瓣图片 CDN 有防盗链，取到的地址必须经宿主 ``system/img`` 代理才能显示（见前端）。
-    """
-    pic = subject.get("pic") if isinstance(subject.get("pic"), dict) else {}
-    cover = subject.get("cover") if isinstance(subject.get("cover"), dict) else {}
-    for candidate in (
-        pic.get("large"),
-        pic.get("normal"),
-        cover.get("large"),
-        cover.get("normal"),
-        subject.get("cover_url"),
-    ):
-        # 个别版本把地址包成 {"url": ...}
-        url = candidate.get("url") if isinstance(candidate, dict) else candidate
-        text = _clean_text(url)
-        if text.startswith("http"):
-            return text
-    return ""
-
-
-def douban_vote(subject: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> float:
-    """取豆瓣评分；无评分时返回 0（卡片上不展示）。
-
-    位置是 ``extra.rating_group.rating.value``，实测无评分时为 ``None``。
-    """
-    extra = extra if isinstance(extra, dict) else subject.get("extra")
-    extra = extra if isinstance(extra, dict) else {}
-    group = extra.get("rating_group") if isinstance(extra.get("rating_group"), dict) else {}
-    rating = group.get("rating") if isinstance(group.get("rating"), dict) else {}
-    return _to_float(rating.get("value"))
-
-
-def tmdb_poster_url(path: Any) -> str:
-    """把 TMDB 的 ``poster_path`` 拼成可访问的海报地址；缺图返回空串。"""
-    text = _clean_text(path)
-    return f"{_TMDB_IMAGE_BASE}{text}" if text.startswith("/") else ""
-
-
-# ─────────────────────────── TMDB 发现源 ───────────────────────────
-
-
-class _TmdbClient:
-    """TMDB 的轻量客户端，用于「演员 → 参演作品」发现。
-
-    只依赖 ``app.sdk.network`` 与宿主设置里的 ``TMDB_API_KEY`` / ``TMDB_API_DOMAIN``：
-    后者在本机实例被配置成镜像域名，直接用它比硬编码官方域名更贴合宿主环境。
-    任何失败都返回空列表，由调用方与豆瓣结果做并集，不中断主流程。
-    """
-
-    TIMEOUT = 15
-    # only 取演员参演（cast），排除剧组其他职位
-    CREDITS_PATH = "/3/person/{person_id}/combined_credits"
-
-    def __init__(self, proxy: bool = False) -> None:
-        self._proxy = proxy
-        self._api_key = str(getattr(settings, "TMDB_API_KEY", "") or "").strip()
-        self._api_domain = str(getattr(settings, "TMDB_API_DOMAIN", "") or "").strip() or "api.themoviedb.org"
-        self.last_error = ""
-
-    @property
-    def configured(self) -> bool:
-        """有 API Key 才能用。宿主默认带一个公共 Key，因此通常都是可用的。"""
-        return bool(self._api_key)
-
-    def _get(self, path: str, **params: Any) -> Optional[Dict[str, Any]]:
-        """发起一次 TMDB GET，失败返回 None（不抛异常）。"""
-        self.last_error = ""
-        if not self.configured:
-            self.last_error = "未取到 TMDB_API_KEY，TMDB 发现源不可用"
-            return None
-        query = dict(params)
-        query["api_key"] = self._api_key
-        if "language" not in query:
-            query["language"] = "zh-CN"
-        proxies = getattr(settings, "PROXY", None) if self._proxy else None
-        response = None
-        try:
-            response = RequestUtils(proxies=proxies, timeout=self.TIMEOUT).get_res(
-                url=f"https://{self._api_domain}{path}", params=query
-            )
-            if response is None:
-                self.last_error = "TMDB 请求无响应"
-                return None
-            if response.status_code != 200:
-                self.last_error = f"TMDB 返回 HTTP {response.status_code}"
-                return None
-            payload = response.json()
-            return payload if isinstance(payload, dict) else None
-        except Exception as err:  # noqa: BLE001 - 任何异常都降级为「取不到」
-            self.last_error = f"TMDB 请求异常：{err}"
-            return None
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:  # pragma: no cover
-                    pass
-
-    def search_person(self, name: str) -> List[Dict[str, Any]]:
-        """按名称搜索 TMDB 人物，返回 ``[{id, name, original_name}]``。"""
-        payload = self._get("/3/search/person", query=name)
-        results: List[Dict[str, Any]] = []
-        for item in (payload or {}).get("results") or []:
-            if not isinstance(item, dict):
-                continue
-            person_id = str(item.get("id") or "").strip()
-            if not person_id:
-                continue
-            results.append(
-                {
-                    "id": person_id,
-                    "name": _clean_text(item.get("name")),
-                    "original_name": _clean_text(item.get("original_name")),
-                }
-            )
-        return results
-
-    def person_credits(self, person_id: str) -> List[Dict[str, Any]]:
-        """取人物参演作品，返回统一候选结构。
-
-        只用 ``cast``（演员本人参演），不含 ``crew``（编剧/导演等），
-        与决策基线 2「候选范围仅演员本人」一致。结果按年份倒序截断到
-        ``_TMDB_CREDITS_LIMIT``：追短剧关心的是近期产出，而每条候选都要付出
-        「站点数 × 1 次搜索」的成本，不能无节制展开。
-        """
-        if not person_id:
-            return []
-        payload = self._get(self.CREDITS_PATH.format(person_id=person_id))
-        results: List[Dict[str, Any]] = []
-        for item in (payload or {}).get("cast") or []:
-            if not isinstance(item, dict):
-                continue
-            media_type = _clean_text(item.get("media_type"))
-            # 只要电影/电视剧；短剧在 TMDB 侧一律被归入 tv
-            if media_type not in ("movie", "tv"):
-                continue
-            title = _clean_text(item.get("name") or item.get("title") or item.get("original_name"))
-            if not title:
-                continue
-            date = _clean_text(item.get("first_air_date") or item.get("release_date"))
-            results.append(
-                {
-                    "title": title,
-                    "year": extract_year(date),
-                    "alt_title": _clean_text(item.get("original_name") or item.get("original_title")),
-                    "source": "tmdb",
-                    "media_id": str(item.get("id") or "").strip(),
-                    "type": MediaType.TV.value if media_type == "tv" else MediaType.MOVIE.value,
-                    # combined_credits 只给 poster_path，拼成完整地址；缺图时留空由前端占位
-                    "poster": tmdb_poster_url(item.get("poster_path")),
-                    "vote": _to_float(item.get("vote_average")),
-                }
-            )
-        # 年份缺失的排在最后（空串小于任何年份），因此优先保留近期作品
-        results.sort(key=lambda item: item.get("year") or "", reverse=True)
-        return results[:_TMDB_CREDITS_LIMIT]
-
-
-# ─────────────────────── 短剧百科发现源（跨插件） ───────────────────────
-#
-# 数据来自 ShortDramaBaikeSource（duanjubaike.org），经 ``self.chain.run_module`` 分发调用：
-#   search_actors(name)    → 候选 {actor_id, name, media_id, url}
-#   actor_works(actor_id)  → 作品卡 {title, poster, rating, media_id, …}（**无年份**）
-# 演员页抓取与站点纪律（/zh-Hans 前缀等）都在百科插件侧，本插件只消费结果。
-# ⚠️ 必须走 ``self.chain``：V3 SDK 的 ``_PluginBase`` 不继承 ChainBase，
-# ``self.run_module`` 不存在（生产报过 ``no attribute 'run_module'``）。
 
 
 def _actor_name_key(name: Any) -> str:
@@ -1136,10 +489,16 @@ def _actor_name_key(name: Any) -> str:
 
 
 def baike_work_to_candidate(card: Any) -> Optional[Dict[str, Any]]:
-    """把百科作品卡转成统一候选结构（与豆瓣/TMDB 同形）。
+    """把百科作品卡转成作品墙用的统一候选结构。
 
-    ⚠️ 站点的作品卡**没有年份**（演员页只给标题/海报/评分/集数等），``year`` 恒为
-    空串 —— 下载匹配按「年份缺失放行」处理；去重键相应退化为 ``剧名|``。
+    ``media_id`` 是百科自己的原生 ID（**裸数字**，形如 ``34146``），与 ``media_source``
+    一起构成宿主订阅系统认的**媒体身份** —— 作品墙上的「订阅」就是拿这两个字段
+    交给系统订阅。``duanju:`` 这类前缀是历史形态，百科插件仍能读，但本插件不再产出。
+
+    筛选 / 排序用的字段（``genres`` 类型、``year`` 年份、``heat`` 热度、
+    ``play_count`` 播放、``studio`` 版权方）**数据源给多少就存多少**，缺的一律
+    留空或 0 —— 前端据此隐藏没有数据的筛选项，绝不拿假值填充（假值会让「按版权方
+    筛选」出现一堆空标签，比没有这项更糟）。
     """
     if not isinstance(card, dict):
         return None
@@ -1148,373 +507,259 @@ def baike_work_to_candidate(card: Any) -> Optional[Dict[str, Any]]:
         return None
     return {
         "title": title,
-        "year": "",
-        "alt_title": "",
-        "source": "duanjubaike",
+        "year": work_year(card),
+        "type": _BAIKE_TYPE,
+        "source": _BAIKE_SOURCE,
         "media_id": _clean_text(card.get("media_id")),
-        "type": "电视剧",
-        # 海报是站内 CDN 绝对地址，前端统一走 system/img 代理，不挑来源
+        # 海报是站内 CDN 绝对地址，前端统一走宿主 system/img 代理
         "poster": _clean_text(card.get("poster")),
         "vote": _to_float(card.get("rating")),
+        "episode_count": _to_int(card.get("episode_count")),
+        "url": _clean_text(card.get("url")),
+        "genres": tags_of(card),
+        "heat": _pick_number(card, _HEAT_FIELDS),
+        "play_count": _pick_number(card, _PLAY_FIELDS),
+        "studio": _pick_text(card, _STUDIO_FIELDS),
+        "kind": _clean_text(card.get("kind")),
+        "release_date": _clean_text(card.get("release_date")),
     }
 
 
-# ─────────────────────────── 站点搜索 ───────────────────────────
+def work_row(work: Dict[str, Any], actor: str, actor_key: str) -> Dict[str, Any]:
+    """把候选作品补成作品墙的一行（带上演员归属与前端需要的字段）。"""
+    row = dict(work)
+    row["key"] = wall_row_key(work)
+    row["actor"] = actor
+    row["actor_key"] = actor_key
+    # 源标识统一收敛到规范值 ``duanju``：旧快照残留的 ``duanjubaike`` 只在百科插件
+    # 只读兼容，本插件产出的行必须带规范身份（订阅 / 在库探针都按它匹配）
+    row["media_source"] = _BAIKE_SOURCE
+    # 旧快照残留的 ``duanju:`` 前缀身份在此归一：媒体身份必须是 ``duanju`` + 裸数字，
+    # 带前缀的 ID 交给宿主订阅 / 在库探针都匹配不上
+    row["media_id"] = baike_media_id(work)
+    return row
 
 
-class _SiteSearcher:
-    """按剧名在配置的站点里搜索资源。
+def filter_works(
+    rows: List[Dict[str, Any]],
+    *,
+    actor: str = "",
+    genre: str = "",
+    year: str = "",
+    studio: str = "",
+    only_not_in_library: bool = False,
+    keyword: str = "",
+) -> List[Dict[str, Any]]:
+    """按查询条件过滤作品行（纯函数，可单测）。
 
-    走宿主公开的 ``TorrentsChain().browse(domain, keyword=…, cat=…)``：``keyword`` 就是
-    剧名关键字搜索，``cat`` 可把范围收窄到站点的短剧分类。
+    所有条件都是「空 = 不参与筛选」；演员命中口径与前端的演员 chip 一致 ——
+    同一部剧多位演员参演时行里的 ``actor`` 是「A / B」，命中任一即可。
+
+    ``only_not_in_library`` 只排除**明确已在库**的行（``in_library`` 为 ``True``）；
+    「未知」（字段缺失 / 查库失败）的行**保留** —— 任何一处把「没查成」塌缩成
+    「都不在库」，都会让异常被显示成结论。
+    """
+    word = normalize_title(keyword)
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        if actor:
+            owners = [item.strip() for item in str(row.get("actor") or "").split(" / ")]
+            if actor not in owners and actor != row.get("actor_key"):
+                continue
+        if genre and genre not in (row.get("genres") or []):
+            continue
+        if year and _clean_text(row.get("year")) != year:
+            continue
+        if studio and _clean_text(row.get("studio")) != studio:
+            continue
+        if only_not_in_library and row.get("in_library") is True:
+            continue
+        if word and word not in normalize_title(row.get("title") or ""):
+            continue
+        result.append(row)
+    return result
+
+
+def sort_works(rows: List[Dict[str, Any]], mode: str = _DEFAULT_SORT) -> List[Dict[str, Any]]:
+    """按作品自带的数值 / 日期排序（纯函数，可单测）。
+
+    * ``heat``（默认）→ 作品的热度降序；
+    * ``play`` → 作品的播放量降序；
+    * ``rating`` → 作品的评分降序；
+    * ``date`` → 作品的首播日期降序（新剧在前）。
+
+    所有值都来自作品本身（百科页面印的「354万 热度 / 996 播放 / 8.2 分 / 首播日期」）。
+    缺数据的作品排最后；同值时按剧名排序，保证顺序稳定可预期 ——
+    做法是**先按剧名排一遍，再按目标字段稳定排序**（Python 的 ``sort`` 是稳定排序），
+    这样不必为「日期降序但空值垫底」写特殊的可比较键。
+    """
+    field, kind = _SORT_FIELDS.get(_clean_text(mode)) or _SORT_FIELDS[_DEFAULT_SORT]
+    ordered = sorted(rows, key=lambda row: normalize_title(row.get("title") or ""))
+    if kind == "date":
+        # ``YYYY-MM-DD`` 的字典序就是时间序；空串最小，降序后自然落到末尾
+        ordered.sort(key=lambda row: _clean_text(row.get(field)) or "", reverse=True)
+    else:
+        ordered.sort(key=lambda row: _to_float(row.get(field)), reverse=True)
+    return ordered
+
+
+def build_facets(rows: List[Dict[str, Any]], limit: int = 60) -> Dict[str, Any]:
+    """算筛选项（纯函数，可单测）：类型 / 年份 / 版权方，各项带作品数。
+
+    基于**筛选前**的全集计算 —— 选项不随用户勾选跳动。某项一条数据都没有时天然
+    不在列表里：版权方在数据源补齐之前就是空数组，前端据此隐藏该筛选项。
+    """
+    genres: Dict[str, int] = {}
+    years: Dict[str, int] = {}
+    studios: Dict[str, int] = {}
+    for row in rows:
+        for tag in row.get("genres") or []:
+            genres[tag] = genres.get(tag, 0) + 1
+        year = _clean_text(row.get("year"))
+        if year:
+            years[year] = years.get(year, 0) + 1
+        studio = _clean_text(row.get("studio"))
+        if studio:
+            studios[studio] = studios.get(studio, 0) + 1
+
+    def top(counter: Dict[str, int], key: Any) -> List[Dict[str, Any]]:
+        return [
+            {"value": name, "count": count}
+            for name, count in sorted(counter.items(), key=key)[:limit]
+        ]
+
+    return {
+        "genres": top(genres, lambda kv: (-kv[1], kv[0])),
+        # 年份：新的在前
+        "years": top(
+            years, lambda kv: (-_to_int(kv[0]), kv[0])
+        ),
+        "studios": top(studios, lambda kv: (-kv[1], kv[0])),
+    }
+
+
+# ─────────────────────────── 媒体库在库探针 ───────────────────────────
+
+
+def _media_server_oper() -> Any:
+    """惰性拿宿主的媒体服务器库操作对象（见 :class:`_LibraryProbe` 的取舍说明）。"""
+    from app.db.oper.mediaserver import MediaServerOper
+
+    return MediaServerOper()
+
+
+class _LibraryProbe:
+    """「这部作品是否已在媒体库」的探针 —— 与宿主媒体详情页**同一套判定**。
+
+    宿主媒体详情页打开时会请求 ``GET /mediaserver/exists?media_source=&media_id=&title=&year=&season=&mtype=``，
+    该端点只是把参数转给 ``MediaServerOper().get_item_id()``，由后者按下述顺序在本地库表
+    ``mediaserveritem`` 里找条目（见宿主 ``db/oper/mediaserver.py`` 的 ``exists``）：
+
+    1. ``media_source`` + ``media_id`` 同时给出时，先按「规范媒体身份 + 类型」精确匹配；
+    2. 上一步未命中且有片名时，**回退**按「片名（+ 类型 + 年份）」匹配 ——
+       媒体库里一部作品只保存一个主来源，短剧百科里的剧就算被以别的来源入库，
+       靠这一手也能对得上；
+    3. 只给片名时直接走第 2 步。
+
+    这里刻意复用宿主自己的 ``MediaServerOper``，而不是自己写 SQL 或走
+    ``app.sdk`` 的 ``media_exists``（那是远程问 Emby/Plex，慢且语义不同）：判定口径
+    （尤其是回退规则与类型过滤）随宿主版本演进的细节都由宿主保证，插件只负责调用与展示。
+    调用失败（宿主版本差异、事务执行器未就绪等）一律返回 ``None``（未知），
+    绝不当成「不在库」——否则一次异常就会让整面墙看起来都没入库。
+
+    结果带 **TTL 缓存**：作品墙每次打开都要现算（``in_library`` 和 ``is_new`` 一样
+    不落盘），同一位演员的作品集变化不快，600 秒内重复打开墙面零查询。
     """
 
-    def __init__(self, sites: List[int], prefer_short_drama_category: bool = True) -> None:
-        self._sites = [int(item) for item in (sites or []) if str(item).strip()]
-        self._prefer_cat = bool(prefer_short_drama_category)
-        self._category_cache: Dict[str, str] = {}
+    #: 缓存有效期（秒）；过期后重新查库 —— 「不在库」的结论必须能被后续入库推翻
+    CACHE_TTL = 600.0
 
-    def _indexer(self, domain: str) -> Optional[Dict[str, Any]]:
-        """取站点索引配置（含分类表）。"""
-        if not HAS_FRAMEWORK:
-            return None
+    def __init__(self) -> None:
+        self._oper: Any = None
+        self._disabled = False
+        # key -> (True/False, 缓存时刻)；None 表示「查不了」，也缓存（免得反复撞同一个错误）
+        self._cache: Dict[Tuple[str, str, str, str, str], Tuple[Optional[bool], float]] = {}
+        self.last_error = ""
+
+    def _ensure_oper(self) -> Any:
+        """惰性导入宿主的库操作对象；不可用时只记录一次并停用后续尝试。"""
+        if self._oper is not None or self._disabled:
+            return self._oper
         try:
-            return SitesHelper().get_indexer(domain)
-        except Exception as err:  # noqa: BLE001 - 站点配置缺失按无分类处理
-            logger.warning(f"{PLUGIN_NAME} 读取站点配置失败（{domain}）：{err}")
-            return None
-
-    def _short_drama_cat(self, domain: str) -> str:
-        """带缓存的短剧分类探测：同一轮任务内每个站点只查一次。"""
-        if not self._prefer_cat:
-            return ""
-        if domain in self._category_cache:
-            return self._category_cache[domain]
-        cat = detect_short_drama_category(self._indexer(domain))
-        self._category_cache[domain] = cat
-        return cat
-
-    def _resolve_domain(self, raw: str) -> str:
-        """把宿主给的域名字段解析成 ``get_indexer()`` 真正认得的键。
-
-        宿主索引器记录里的 ``domain`` 是完整 URL，直接拿去查询会一律返回 ``None``；
-        这里按候选顺序实探一次（``get_indexer`` 只是本地字典查找，开销可忽略），
-        命中哪个就用哪个，保证后续 ``browse(domain=…)`` 与分类探测拿到的是同一个键。
-        """
-        candidates = site_domain_candidates(raw)
-        for candidate in candidates:
-            if self._indexer(candidate):
-                return candidate
-        return candidates[0] if candidates else ""
-
-    def _domains(self) -> List[str]:
-        """把配置里的站点 ID 解析成宿主索引器认得的域名列表。
-
-        用 ``get_indexers()`` 一次取回全部站点再按 ID 过滤 —— 单站点查询接口的名字在
-        宿主版本间并不稳定，一次取回再本地过滤更安全。
-        """
-        if not HAS_FRAMEWORK:
-            return []
-        try:
-            indexers = SitesHelper().get_indexers() or []
-        except Exception as err:  # noqa: BLE001
-            logger.warning(f"{PLUGIN_NAME} 读取站点列表失败：{err}")
-            return []
-        by_id: Dict[int, Dict[str, Any]] = {}
-        for item in indexers:
-            try:
-                by_id[int(item.get("id"))] = item
-            except (TypeError, ValueError):
-                continue
-        domains: List[str] = []
-        for site_id in self._sites:
-            site = by_id.get(site_id) or {}
-            # ⚠️ 实测这里取到的 domain 是完整 URL（如 https://www.ptskit.org/），
-            # 必须归一化成纯域名才能被 get_indexer() 认出来，否则整轮搜索全空。
-            raw = str(site.get("domain") or site.get("url") or "").strip()
-            domain = self._resolve_domain(raw) if raw else ""
-            if domain:
-                domains.append(domain)
-            else:
-                logger.warning(f"{PLUGIN_NAME} 站点 ID={site_id} 未解析出可用域名，已跳过")
-        return domains
+            self._oper = _media_server_oper()
+        except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+            self._disabled = True
+            self.last_error = str(err)
+            logger.warning(f"{PLUGIN_NAME} 媒体库存在性检查不可用，本轮不标注入库状态：{err}")
+        return self._oper
 
     @staticmethod
-    def _to_dict(torrent: Any) -> Dict[str, Any]:
-        """把宿主 ``TorrentInfo`` 转成普通字典（只保留决策需要的字段）。"""
-        keys = (
-            "title",
-            "description",
-            "enclosure",
-            "page_url",
-            "size",
-            "seeders",
-            "peers",
-            "grabs",
-            "pubdate",
-            "site",
-            "site_name",
-            "downloadvolumefactor",
-            "uploadvolumefactor",
-            "hit_and_run",
-            "labels",
+    def _cache_key(work: Dict[str, Any]) -> Tuple[str, str, str, str, str]:
+        return (
+            str(work.get("media_source") or ""),
+            str(work.get("media_id") or ""),
+            str(work.get("type") or ""),
+            str(work.get("title") or ""),
+            str(work.get("year") or ""),
         )
-        row: Dict[str, Any] = {}
-        for key in keys:
-            row[key] = getattr(torrent, key, None)
-        return row
 
-    def search(self, keyword: str) -> List[Dict[str, Any]]:
-        """在全部配置站点上按剧名搜索，返回合并后的结果列表。
+    def lookup(self, work: Dict[str, Any], now: Optional[float] = None) -> Optional[bool]:
+        """查询单个作品：``True`` 在库 / ``False`` 不在库 / ``None`` 未知（查不了）。
 
-        单个站点失败只记日志并继续，不影响其它站点。
+        ``now`` 仅供单测注入时钟。
         """
-        results: List[Dict[str, Any]] = []
-        if not HAS_FRAMEWORK:
-            logger.warning(f"{PLUGIN_NAME} 框架模块不可用，无法执行站点搜索")
-            return results
-        if not keyword:
-            return results
+        key = self._cache_key(work)
+        stamp = time.time() if now is None else now
+        cached = self._cache.get(key)
+        if cached is not None and stamp - cached[1] < self.CACHE_TTL:
+            return cached[0]
+        flag = self._lookup_uncached(work)
+        self._cache[key] = (flag, stamp)
+        return flag
 
-        for domain in self._domains():
-            cat = self._short_drama_cat(domain)
-            try:
-                torrents = TorrentsChain().browse(domain=domain, keyword=keyword, cat=cat or None)
-            except Exception as err:  # noqa: BLE001 - 站点异常不阻断本轮其它站点
-                logger.warning(f"{PLUGIN_NAME} 站点 {domain} 搜索失败：{err}")
-                continue
-            if not torrents:
-                continue
-            logger.info(
-                f"{PLUGIN_NAME} 站点 {domain} 关键词「{keyword}」"
-                f"{'（分类 ' + cat + '）' if cat else ''}命中 {len(torrents)} 条"
-            )
-            for torrent in torrents:
-                row = self._to_dict(torrent)
-                row["search_keyword"] = keyword
-                results.append(row)
-        return results
-
-
-# ─────────────────────────── 整理器（自建） ───────────────────────────
-
-# 支持的整理方式，与宿主系统设置里的「整理方式」保持同一套取值
-# （宿主 i18n 里同样是 copy / move / link / softlink 四项）。
-TRANSFER_TYPES = ("link", "softlink", "copy", "move")
-
-
-class _Organizer:
-    """自建整理入库：把下载完成的短剧搬进媒体库并生成 NFO。
-
-    与「从文件名猜剧名」的通用整理器不同，本插件**自带账本**：账本里已经记录了
-    「这个种子是哪部剧、哪一年」，因此整理时不需要识别、也不需要猜 —— 这是本插件
-    在整理环节相对通用方案的结构性优势。
-    """
-
-    def __init__(self, download_path: str, library_path: str, transfer_type: str = "link") -> None:
-        # 保留原始字符串：Path("") 会变成 "."（当前目录）且恒为真，直接用 Path 判空会误判
-        self._download_raw = str(download_path or "").strip()
-        self._library_raw = str(library_path or "").strip()
-        self._download_path = Path(self._download_raw).expanduser() if self._download_raw else None
-        self._library_path = Path(self._library_raw).expanduser() if self._library_raw else None
-        self._transfer_type = transfer_type if transfer_type in TRANSFER_TYPES else "link"
-
-    @property
-    def ready(self) -> bool:
-        """下载目录与媒体库目录都配置了才可整理。"""
-        return bool(self._download_raw and self._library_raw)
-
-    def find_content(self, entry: Dict[str, Any]) -> Optional[Path]:
-        """在下载目录里定位某个账本条目的已完成内容（目录或文件）。
-
-        匹配策略：先按**账本记录的种子名截断段**（拼音剧名）做精确/前缀匹配，再退回按
-        中文剧名做包含匹配。两种都比「猜文件名」可靠，因为比对对象来自账本而非推断。
-        """
-        if not self.ready or not self._download_path or not self._download_path.exists():
+    def _lookup_uncached(self, work: Dict[str, Any]) -> Optional[bool]:
+        if self._disabled:
+            # 之前失败过：本轮所有作品都是「未知」，不再反复触库刷警告
             return None
-
-        # 账本里 `torrent_title` 是种子原名（站点上多为拼音），`title` 是中文剧名。
-        # 两者都过一遍「截断出剧名段」再归一化：前者是最可靠的定位键（下载目录名通常就是
-        # 种子名的截断版），把 `title` 一并纳入是为了兜住 `torrent_title` 缺失的情形 ——
-        # 只按中文剧名找是不够的，AGSVPT 这类站点的落地目录名本身就只有拼音。
-        heads: List[str] = []
-        for raw in (entry.get("torrent_title"), entry.get("title")):
-            head = normalize_title(torrent_title_head(_clean_text(raw)))
-            if len(head) >= _MIN_TITLE_FOR_LOOSE_MATCH and head not in heads:
-                heads.append(head)
-
-        title = normalize_title(_clean_text(entry.get("title")))
-        try:
-            children = list(self._download_path.iterdir())
-        except OSError as err:
-            logger.warning(f"{PLUGIN_NAME} 读取下载目录失败：{err}")
+        media_source = str(work.get("media_source") or "").strip()
+        media_id = str(work.get("media_id") or "").strip()
+        title = str(work.get("title") or "").strip()
+        if not (media_source and media_id) and not title:
             return None
-
-        # 优先按种子名截断段做精确/前缀/包含匹配
-        for head in heads:
-            for child in children:
-                name = normalize_title(child.stem if child.is_file() else child.name)
-                if name and (name == head or name.startswith(head) or head in name):
-                    return child
-        # 退回中文剧名包含匹配（剧名过短达不到宽松匹配门槛时仍能救回来）
-        if title:
-            for child in children:
-                name = normalize_title(child.stem if child.is_file() else child.name)
-                if title in name:
-                    return child
-        return None
-
-    @staticmethod
-    def target_dir_name(entry: Dict[str, Any]) -> str:
-        """媒体库里的目标目录名：``剧名 (年份)``（无年份时只用剧名）。"""
-        title = _ILLEGAL_NAME_CHARS.sub("", _clean_text(entry.get("title") or "")) or "未命名短剧"
-        year = _clean_text(entry.get("year") or "")
-        return f"{title} ({year})" if year else title
-
-    def _move_tree(self, source: Path, target: Path) -> None:
-        """按配置的搬运方式把内容放到目标路径。
-
-        - ``move``：直接搬走（源不再保留）。
-        - ``softlink``：**不复制**，把文件换成指向源文件的符号链接。链接是路径级的，
-          因此跨设备也能用；媒体库侧仍建真实的目录结构，NFO 写在媒体库侧，不污染下载盘。
-        - ``link``：先复制、再尽力替换为硬链接。同设备时省空间，跨设备或文件系统不支持
-          硬链接时保留副本，且不视为失败（否则一个文件系统差异就会让整轮整理全挂）。
-        """
-        if self._transfer_type == "move":
-            shutil.move(str(source), str(target))
-            return
-
-        if self._transfer_type == "softlink":
-            if source.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-                for item in sorted(source.rglob("*")):
-                    destination = target / item.relative_to(source)
-                    if item.is_dir():
-                        destination.mkdir(parents=True, exist_ok=True)
-                    else:
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        self._symlink_or_copy(destination, item)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                self._symlink_or_copy(target, source)
-            return
-
-        if source.is_dir():
-            shutil.copytree(str(source), str(target), dirs_exist_ok=True, copy_function=shutil.copy2)
-            if self._transfer_type == "link":
-                for item in target.iterdir():
-                    if not item.is_file():
-                        continue
-                    origin = source / item.name
-                    self._replace_with_link(item, origin)
-            return
-
-        shutil.copy2(str(source), str(target))
-        if self._transfer_type == "link":
-            self._replace_with_link(target, source)
-
-    @staticmethod
-    def _symlink_or_copy(link_path: Path, origin: Path) -> None:
-        """建立符号链接；平台不支持（如无权限的 Windows）时回退为复制，不算失败。"""
+        oper = self._ensure_oper()
+        if oper is None:
+            return None
         try:
-            if link_path.is_symlink() or link_path.exists():
-                link_path.unlink()
-            link_path.symlink_to(origin, target_is_directory=origin.is_dir())
-        except OSError as err:
-            logger.warning(
-                f"{PLUGIN_NAME} 建立符号链接失败，回退为复制（{link_path.name}）：{err}"
+            item_id = oper.get_item_id(
+                media_source=media_source or None,
+                media_id=media_id or None,
+                title=title or None,
+                year=str(work.get("year") or "").strip() or None,
+                mtype=str(work.get("type") or "").strip() or None,
             )
-            if not link_path.exists() and origin.exists():
-                try:
-                    if origin.is_dir():
-                        shutil.copytree(str(origin), str(link_path), dirs_exist_ok=True)
-                    else:
-                        shutil.copy2(origin, link_path)
-                except (OSError, shutil.Error) as copy_err:  # pragma: no cover
-                    logger.error(f"{PLUGIN_NAME} 回退复制失败：{copy_err}")
-
-    @staticmethod
-    def _replace_with_link(link_path: Path, origin: Path) -> None:
-        """把已复制的文件替换成指向 ``origin`` 的硬链接；失败则回退为副本。"""
-        try:
-            link_path.unlink()
-            link_path.hardlink_to(origin)
-        except OSError as err:
-            logger.warning(f"{PLUGIN_NAME} 建立硬链接失败，保留文件副本（{link_path.name}）：{err}")
-            if not link_path.exists() and origin.exists():
-                try:
-                    shutil.copy2(origin, link_path)
-                except (OSError, shutil.Error) as copy_err:  # pragma: no cover
-                    logger.error(f"{PLUGIN_NAME} 回退复制失败：{copy_err}")
-
-    def organize(self, entry: Dict[str, Any]) -> Tuple[bool, str]:
-        """整理一个账本条目，返回 ``(是否成功, 说明)``。"""
-        if not self.ready:
-            return False, "未配置下载目录或媒体库目录"
-        if not self._library_path:
-            return False, "未配置媒体库目录"
-        source = self.find_content(entry)
-        if source is None:
-            return False, "下载目录里暂未找到对应内容（可能仍在下载）"
-
-        target_root = self._library_path / "短剧"
-        target = target_root / self.target_dir_name(entry)
-        if target.exists() and self._transfer_type != "move":
-            return True, "目标目录已存在，跳过"
-
-        try:
-            target_root.mkdir(parents=True, exist_ok=True)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            self._move_tree(source, target)
-            self._write_nfo(target if target.is_dir() else target.parent, entry)
-        except (OSError, shutil.Error) as err:
-            logger.error(f"{PLUGIN_NAME} 整理失败（{entry.get('title')}）：{err}")
-            return False, f"整理失败：{err}"
-        return True, str(target)
-
-    @staticmethod
-    def _write_nfo(series_dir: Path, entry: Dict[str, Any]) -> None:
-        """在剧集目录里生成最小可用 NFO。
-
-        只写**账本里确知**的字段（剧名、年份、来源身份），不做任何猜测性刮削。
-        """
-        try:
-            series_dir.mkdir(parents=True, exist_ok=True)
-            title = str(entry.get("title") or "")
-            year = str(entry.get("year") or "")
-            source = str(entry.get("media_source") or "")
-            media_id = str(entry.get("media_id") or "")
-            lines = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', "<tvshow>"]
-            lines.append(f"  <title>{title}</title>")
-            lines.append(f"  <originaltitle>{title}</originaltitle>")
-            if year:
-                lines.append(f"  <year>{year}</year>")
-                lines.append(f"  <premiered>{year}-01-01</premiered>")
-            if source and media_id:
-                lines.append(f'  <uniqueid type="{source}" default="true">{media_id}</uniqueid>')
-            lines.append("  <genre>短剧</genre>")
-            lines.append(f"  <studio>{PLUGIN_NAME}</studio>")
-            lines.append("</tvshow>")
-            (series_dir / "tvshow.nfo").write_text("\n".join(lines), encoding="utf-8")
-        except OSError as err:  # pragma: no cover - 写 NFO 失败不应让整理失败
-            logger.warning(f"{PLUGIN_NAME} 写入 NFO 失败：{err}")
+        except Exception as err:  # pragma: no cover - 宿主机内差异兜底
+            self._disabled = True
+            self.last_error = str(err)
+            logger.warning(f"{PLUGIN_NAME} 媒体库存在性检查失败，后续作品不再查询：{err}")
+            return None
+        # 宿主返回的是媒体服务器的 item_id 字符串；空值即「本地没有这条」
+        return bool(str(item_id or "").strip())
 
 
-# ─────────────────────────── 插件主类 ───────────────────────────
+# ─────────────────────────── 插件 ───────────────────────────
 
 
 class ShortDramaActorSubscribe(_PluginBase):
-    """按演员自动订阅短剧：剧名直搜站点，绕开宿主识别器。"""
+    """按演员发现短剧作品，订阅交回宿主订阅系统。"""
 
     # ── 插件元数据（需与 package.v3.json 保持一致） ──
-    # 注意：plugin_name / plugin_icon 必须是**字符串字面量**，不能引用模块常量。
-    # 宿主的部分离线安装工具会用 AST 静态解析插件类，只认 ast.Constant，
-    # 引用变量会被判定为「缺少 plugin_name」；一致性由 scripts/verify_plugin.py 校验。
+    # 注意：plugin_name / plugin_icon 必须是**字符串字面量**，不能引用模块常量 ——
+    # 宿主的部分离线安装工具用 AST 静态解析插件类，只认 ast.Constant。
     plugin_name = "短剧演员订阅"
     plugin_desc = (
-        "跟着喜欢的演员追短剧：合并 TMDB 与豆瓣的演员作品列表，把作品摆到作品墙上；"
-        "点「订阅」即用剧名直接在站点搜索并按「做种数→体积→分辨率」择优下载，凭账本去重、"
-        "全程不依赖宿主识别器，长尾短剧也能追；入库交给外部整理器（需要时可在插件内开启自带整理）。"
+        "跟着喜欢的演员追短剧：填演员名，插件从短剧百科（duanjubaike.org）取回他们的全部作品，"
+        "摆成和「探索」页同形的海报墙；看中哪部点「订阅」，走的就是 MoviePilot 自己的订阅系统"
+        "（搜索、下载、整理全部由系统负责）。作品墙按演员筛选，新作品自动标「新」。"
     )
     plugin_icon = (
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
@@ -1527,52 +772,28 @@ class ShortDramaActorSubscribe(_PluginBase):
     plugin_order = 55
     auth_level = 1
 
-    # ── 运行时状态 ──
+    # ── 运行时状态（⚠️ 全部在 init_plugin 里重新赋值，避免跨实例串味） ──
     _enabled = False
     _onlyonce = False
     _actors: List[str] = []
-    _sites: List[int] = []
-    _prefer_short_drama_category = True
-    _downloader = ""
-    _download_path = ""
-    _library_path = ""
-    _transfer_type = "link"
-    _interval_hours = 6
-    # 快照整体刷新间隔（小时）与解析失败重试间隔（分钟）：默认一天 / 20 分钟
-    _snapshot_hours = _DEFAULT_SNAPSHOT_HOURS
+    _interval_hours = 12
     _retry_minutes = _DEFAULT_RETRY_MINUTES
-    # ⚠️ 整理入库默认**关闭**：用户已另配外部整理器（shortdramaorganizer）监听同一个
-    # 下载目录并按文件事件入库，两个整理器同时工作会重复入库。本插件只负责「发现 → 下载」，
-    # 入库交给外部整理器；需要本插件自己整理时再把开关打开（代码与验收用例都保留）。
-    _organize_enabled = False
-    _organize_interval_minutes = 30
     _notify = True
-    _douban_cookie = ""
-    _proxy = False
-    _max_works = 10
-    # ⚠️ 下载闸门 = **订阅制（默认关闭自动下载）**。轮询只做发现；下载必须由用户在
-    # 作品墙点「订阅」。历史事故：轮询自动下载时，快照里所有没下过的作品会被挨个
-    # 搜索下载（演员名单到几十上百位 ⇒ 上千个种子瞬间灌进下载器，不可逆）。
-    _auto_download = False
-    # 短剧百科发现源（跨插件调用 ShortDramaBaikeSource）：默认开启。
-    # 百科是短剧覆盖最全的一等来源；关掉即回到「TMDB + 豆瓣」并集。
-    _use_baike = True
     _sidebar_nav = True
+    # 资源搜索站点：逗号分隔的站点 ID（空 = 不限定，走宿主默认）
+    _search_sites = ""
+    # 订阅下载器：宿主下载客户端的名字（空 = 跟随系统默认）。
+    # 插件后端不参与订阅 —— 这个值只负责持久化，作品墙提交订阅时由前端取用
+    # （系统订阅弹窗没有下载器选项，配置了就得绕过弹窗直接提交）。
+    _subscribe_downloader = ""
     # 同一进程内的重入保护：定时任务与手动触发可能撞在一起
     _lock = threading.Lock()
-    # 豆瓣登录态短路标志（类属性兜底：单测用 object.__new__ 跳过 __init__ 时也能读到）
-    _douban_blocked = False
 
     def __init__(self) -> None:
         super().__init__()
+        self._actors = []
         self._running = False
         self._last_result: Dict[str, Any] = {}
-        # CookieCloud 取数的进程内缓存（见 _resolve_douban_cookie）
-        self._cookie_cache = ""
-        self._cookie_cache_at = 0.0
-        # 本轮已判定豆瓣登录态失效（见 _discover_actor）：置位后同一轮内的后续演员
-        # 不再逐个去撞豆瓣，直接复用同一原因，等下一轮自动重试
-        self._douban_blocked = False
 
     # ── 生命周期 ──
 
@@ -1582,37 +803,14 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
         self._actors = self._parse_actors(config.get("actors"))
-        self._sites = [int(item) for item in (config.get("sites") or []) if str(item).strip()]
-        self._prefer_short_drama_category = bool(config.get("prefer_short_drama_category", True))
-        self._downloader = str(config.get("downloader") or "").strip()
-        # 路径与整理方式统一走 config_text：v-combobox 会把整个 item 对象写回配置，
-        # 直接 str() 会得到 "{'title': …, 'value': …}" 这种脏值、整理必然失败
-        self._download_path = config_text(config.get("download_path"))
-        self._library_path = config_text(config.get("library_path"))
-        self._transfer_type = config_text(config.get("transfer_type")) or "link"
-        self._interval_hours = max(1, _to_int(config.get("interval_hours")) or 6)
-        # 快照刷新间隔：默认一天（豆瓣额度紧）；失败重试默认 20 分钟（能自愈的失败不必等一天）
-        self._snapshot_hours = max(
-            1, _to_int(config.get("snapshot_hours")) or _DEFAULT_SNAPSHOT_HOURS
-        )
+        self._interval_hours = max(1, _to_int(config.get("interval_hours")) or 12)
         self._retry_minutes = max(
             1, _to_int(config.get("retry_minutes")) or _DEFAULT_RETRY_MINUTES
         )
-        self._organize_enabled = bool(config.get("organize_enabled", False))
-        self._organize_interval_minutes = max(5, _to_int(config.get("organize_interval_minutes")) or 30)
-        self._notify = bool(config.get("notify", True))
-        self._douban_cookie = str(config.get("douban_cookie") or "").strip()
-        self._proxy = bool(config.get("proxy"))
-        self._max_works = min(10, max(1, _to_int(config.get("max_works")) or 10))
-        # ⚠️ 缺省必须是 False（订阅制）：读成 True 会让轮询重新开始批量下载
-        self._auto_download = _to_bool(config.get("auto_download"), False)
-        # 短剧百科发现源：缺省开启（payload 缺键时不能被悄悄关掉）
-        self._use_baike = _to_bool(config.get("use_baike"), True)
-        self._sidebar_nav = bool(config.get("sidebar_nav", True))
-
-        # 配置变更后让 CookieCloud 缓存立刻失效，避免刚填好的 Cookie 不生效
-        self._cookie_cache = ""
-        self._cookie_cache_at = 0.0
+        self._notify = _to_bool(config.get("notify"), True)
+        self._sidebar_nav = _to_bool(config.get("sidebar_nav"), True)
+        self._search_sites = self._parse_site_ids(config.get("search_sites"))
+        self._subscribe_downloader = _clean_text(config.get("subscribe_downloader"))
 
         if self._onlyonce:
             self._add_once_job(delay_seconds=3, trigger="once")
@@ -1626,14 +824,14 @@ class ShortDramaActorSubscribe(_PluginBase):
         return self._enabled
 
     def stop_service(self) -> None:
-        """释放插件创建的后台资源（本插件不自建调度器/线程池，只清运行时标记）。"""
+        """释放插件创建的后台资源。"""
         self._running = False
 
     # ── 配置解析 ──
 
     @staticmethod
     def _parse_actors(value: Any) -> List[str]:
-        """解析演员配置：支持逗号/换行/分号分隔，去重且保序。"""
+        """解析演员配置：支持列表或逗号/换行/分号分隔的字符串，去重且保序。"""
         if isinstance(value, (list, tuple)):
             items = [str(item) for item in value]
         else:
@@ -1648,34 +846,33 @@ class ShortDramaActorSubscribe(_PluginBase):
             result.append(item)
         return result
 
-    def _live_config(self) -> Dict[str, Any]:
-        """组装当前运行时配置，用于回写（与 ``_default_config`` 的键保持一致）。
+    @staticmethod
+    def _parse_site_ids(value: Any) -> str:
+        """解析搜索站点配置：容忍列表或逗号/换行分隔，归一成逗号分隔的数字串。"""
+        items = value if isinstance(value, (list, tuple)) else re.split(r"[,，;；\n\r]+", str(value or ""))
+        ids: List[str] = []
+        for item in items:
+            text = _clean_text(str(item))
+            if text.isdigit() and text not in ids:
+                ids.append(text)
+        return ",".join(ids)
 
-        必须读**实例属性**（``self._xxx``）而不是类属性：插件虚拟分身会在同一份源码上
-        创建多个运行实例，类属性是共享的、也是过期的，只有实例属性才是本实例的真实配置。
+    def _live_config(self) -> Dict[str, Any]:
+        """组装当前运行时配置用于回写（键与 ``_default_config`` 一致）。
+
+        必须读**实例属性**：插件虚拟分身会在同一份源码上创建多个运行实例，只有实例属性
+        才是本实例的真实配置。
         """
         return {
             "enabled": self._enabled,
             "onlyonce": self._onlyonce,
             "actors": ",".join(self._actors),
-            "sites": list(self._sites),
-            "prefer_short_drama_category": self._prefer_short_drama_category,
-            "downloader": self._downloader,
-            "download_path": self._download_path,
-            "library_path": self._library_path,
-            "transfer_type": self._transfer_type,
             "interval_hours": self._interval_hours,
-            "snapshot_hours": self._snapshot_hours,
             "retry_minutes": self._retry_minutes,
-            "organize_enabled": self._organize_enabled,
-            "organize_interval_minutes": self._organize_interval_minutes,
             "notify": self._notify,
-            "douban_cookie": self._douban_cookie,
-            "proxy": self._proxy,
-            "max_works": self._max_works,
-            "auto_download": self._auto_download,
-            "use_baike": self._use_baike,
             "sidebar_nav": self._sidebar_nav,
+            "search_sites": self._search_sites,
+            "subscribe_downloader": self._subscribe_downloader,
         }
 
     @staticmethod
@@ -1685,36 +882,19 @@ class ShortDramaActorSubscribe(_PluginBase):
             "enabled": False,
             "onlyonce": False,
             "actors": "",
-            "sites": [],
-            "prefer_short_drama_category": True,
-            "downloader": "",
-            "download_path": "",
-            "library_path": "",
-            "transfer_type": "link",
-            "interval_hours": 6,
-            "snapshot_hours": _DEFAULT_SNAPSHOT_HOURS,
+            "interval_hours": 12,
             "retry_minutes": _DEFAULT_RETRY_MINUTES,
-            "organize_enabled": False,
-            "organize_interval_minutes": 30,
             "notify": True,
-            "douban_cookie": "",
-            "proxy": False,
-            "max_works": 10,
-            "auto_download": False,
-            "use_baike": True,
             "sidebar_nav": True,
+            "search_sites": "",
+            "subscribe_downloader": "",
         }
 
     # ── 页面与渲染模式 ──
 
     @staticmethod
     def get_render_mode() -> Tuple[str, str]:
-        """声明使用 Vue 联邦远程组件渲染，产物目录为 dist/assets。
-
-        Vue 模式下配置页 / 详情页 / 仪表板都由远程组件（Config / Page / Dashboard）绘制，
-        后端只负责给数据：``get_form`` 下发默认配置模型，``get_page`` 与仪表板的
-        页面 JSON 都返回空列表。
-        """
+        """声明使用 Vue 联邦远程组件渲染，产物目录为 dist/assets。"""
         return "vue", "dist/assets"
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -1726,27 +906,17 @@ class ShortDramaActorSubscribe(_PluginBase):
         return []
 
     def get_sidebar_nav(self) -> List[Dict[str, Any]]:
-        """声明主界面侧栏全页入口；只有 Vue 渲染模式的插件会被宿主聚合。
+        """侧栏入口「短剧演员」，落在宿主的「订阅」分组里。
 
-        与宿主订阅体系同形：宿主侧栏「订阅」分组里是 电影订阅 / 电视剧订阅 /
-        音乐订阅 / 订阅日历 / 订阅分享（见宿主功能表 ``TG``，各自 ``permission=subscribe``），
-        本插件以同样的形态追加一个「短剧」入口 —— ``section=subscribe`` +
-        ``permission=subscribe`` + 同族图标，因此会和它们并列落在「订阅」组里。
-
-        ⚠️ 宿主侧栏合并逻辑（``mp_default`` 里的 ``Ce()``）把插件项**追加到分组末尾**
-        （``V.value.push(navMenu)``），``order`` 只在多个插件项之间排序，无法插到宿主条目中间。
-
-        ``section`` 仅接受 start / discovery / subscribe / organize / system
-        （未知取值会被归入「系统」组）；``permission`` 仅接受
-        subscribe / discovery / search / manage / admin。是否露出由配置项
-        ``sidebar_nav`` 控制。
+        宿主侧栏合并逻辑把插件项**追加到分组末尾**（``order`` 只在插件项之间排序），
+        ``section`` 仅接受 start / discovery / subscribe / organize / system。
         """
         if not self.get_state() or not self._sidebar_nav:
             return []
         return [
             {
                 "nav_key": "main",
-                "title": "短剧",
+                "title": "短剧演员",
                 "icon": "mdi-movie-open-star-outline",
                 "section": "subscribe",
                 "permission": "subscribe",
@@ -1763,23 +933,22 @@ class ShortDramaActorSubscribe(_PluginBase):
     def get_dashboard(
         self, key: str = "", **kwargs: Any
     ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], List[dict]]]:
-        """声明仪表板内容，返回 ``(列配置, 全局配置, 页面 JSON)`` 三元组。
+        """仪表板内容：``(列配置, 全局配置, 页面 JSON)``。
 
-        Vue 联邦插件通过前端 Dashboard 组件呈现内容，因此页面 JSON 为空。
+        Vue 联邦插件由前端 Dashboard 组件呈现内容，因此页面 JSON 为空。
         """
         if not self.get_state():
             return None
         if key and key != "overview":
             return None
-        ledger = self._load_ledger()
-        misses = self._load_misses()
+        _, summary = self._work_rows()
         return (
             {"cols": 12, "sm": 6, "md": 4},
             {
                 "title": f"{self.plugin_name} · 追剧概览",
                 "subtitle": (
-                    f"{len(self._load_actors())} 位演员｜已下载 {len(ledger)} 部"
-                    f"｜冷却中 {len(misses)} 部"
+                    f"{len(self._actors)} 位演员｜{summary.get('total', 0)} 部作品"
+                    f"｜新作品 {summary.get('new', 0)} 部"
                 ),
                 "refresh": 300,
                 "border": True,
@@ -1787,78 +956,45 @@ class ShortDramaActorSubscribe(_PluginBase):
             [],
         )
 
-    # ── 后台能力 ──
+    # ── 服务 ──
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """注册定时服务：作品发现 + 解析失败重试；整理扫描仅在「启用整理入库」时注册。
-
-        ⚠️ **订阅制（默认）**：作品发现服务只刷新演员作品快照，**不下载任何东西** ——
-        下载一律由用户在作品墙点「订阅」触发。打开「自动下载」开关后，这个定时服务
-        才会顺带执行搜索与下载（老行为）。
-
-        两个发现层服务的节奏刻意分开（用户定稿 2026-10-14）：
-
-        * **作品发现**（``interval_hours``，默认 6 小时）：完整一轮 = 发现（+ 可选下载）；
-          其中发现层只在快照到期（``snapshot_hours``，默认一天）时才真的去请求豆瓣 / TMDB，
-          其余轮次直接用缓存，因此轮询频繁也不会额外消耗豆瓣额度。
-        * **失败重试**（``retry_minutes``，默认 20 分钟）：只重解析上一轮失败的演员，
-          不搜索、不下载 —— 登录态 / 限流这类失败能很快自愈，不必等满一天。
-          没有到期的演员时完全静默（不写盘、不打日志、不碰网络）。
-
-        整理默认关闭（入库交给外部整理器），此时**不注册**整理服务 ——
-        既不会空转，也不会在日志里留下无意义的扫描记录。
-
-        ⚠️ 传给被调函数的参数必须写在 ``func_kwargs`` 里。宿主注册时会把
-        ``service["kwargs"]`` **原样展开给** ``scheduler.add_job()``，而 ``trigger``
-        正是 ``add_job`` 自己的形参名 —— 写成 ``kwargs`` 会让它抛
-        ``got multiple values for argument 'trigger'`` 并**静默拒绝注册**。
-        这里传 ``func_kwargs={"trigger": ...}`` 仅为区分统计口径（定时 vs 手动）。
-        """
-        if not self.get_state():
+        """注册定时服务：作品发现（按间隔）+ 解析失败重试（短间隔）。"""
+        if not self.get_state() or not self._actors:
             return []
-        services: List[Dict[str, Any]] = []
-        if self._actors and self._sites:
-            services.append(
-                {
-                    "id": f"{self.__class__.__name__}.Refresh",
-                    "name": f"{self.plugin_name}·作品发现（订阅制不自动下载）"
-                    if not self._auto_download
-                    else f"{self.plugin_name}·作品发现+自动下载",
-                    "trigger": IntervalTrigger(hours=self._interval_hours),
-                    "func": self.execute_task,
-                    "func_kwargs": {"trigger": "interval"},
-                }
-            )
-        if self._actors:
-            services.append(
-                {
-                    "id": f"{self.__class__.__name__}.Retry",
-                    "name": f"{self.plugin_name}·解析失败重试",
-                    "trigger": IntervalTrigger(minutes=self._retry_minutes),
-                    "func": self.retry_failed_actors,
-                    "func_kwargs": {"trigger": "interval"},
-                }
-            )
-        if self._organize_enabled and self._download_path and self._library_path:
-            services.append(
-                {
-                    "id": f"{self.__class__.__name__}.Organize",
-                    "name": f"{self.plugin_name}·整理入库",
-                    "trigger": IntervalTrigger(minutes=self._organize_interval_minutes),
-                    "func": self.organize_once,
-                    "func_kwargs": {"trigger": "interval"},
-                }
-            )
+        # ⚠️ 传给被调函数的参数必须写在 ``func_kwargs`` 里。宿主注册时会把
+        # ``service["kwargs"]`` **原样展开给** ``scheduler.add_job()``，而 ``trigger``
+        # 正是 ``add_job`` 自己的形参名 —— 写成 ``kwargs`` 会抛
+        # ``got multiple values for argument 'trigger'`` 并**拒绝注册**（真机实证）。
+        services: List[Dict[str, Any]] = [
+            {
+                "id": f"{self.__class__.__name__}.Refresh",
+                "name": "短剧演员 · 作品发现",
+                "trigger": IntervalTrigger(hours=max(1, self._interval_hours)),
+                "func": self.refresh_works_task,
+                "func_kwargs": {"trigger": "interval"},
+            },
+        ]
+        # 失败重试与整体刷新是两条节奏：失败是临时故障，等满一天才恢复体验太差
+        services.append(
+            {
+                "id": f"{self.__class__.__name__}.Retry",
+                "name": "短剧演员 · 解析失败重试",
+                "trigger": IntervalTrigger(minutes=max(1, self._retry_minutes)),
+                "func": self.retry_failed_actors,
+                "func_kwargs": {"trigger": "interval"},
+            }
+        )
         return services
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
-        """注册远程命令，实际动作通过 EventType.PluginAction 事件路由。"""
+        """注册远程命令，实际动作通过 ``EventType.PluginAction`` 事件路由。"""
         return [
             {
                 "cmd": "/shortdrama",
                 "event": EventType.PluginAction,
-                "desc": "刷新短剧演员订阅",
+                "desc": "刷新短剧演员作品",
                 "category": "插件命令",
                 "data": {"action": "shortdramaactorsubscribe_refresh"},
             }
@@ -1867,1184 +1003,479 @@ class ShortDramaActorSubscribe(_PluginBase):
     @eventmanager.register(EventType.PluginAction)
     def on_plugin_action(self, event: Event) -> None:
         """响应远程命令；仅处理属于本插件的 action。"""
-        event_data = event.event_data or {}
-        if event_data.get("action") != "shortdramaactorsubscribe_refresh":
+        event_data = getattr(event, "event_data", None) or {}
+        if _clean_text((event_data or {}).get("action")) != "shortdramaactorsubscribe_refresh":
             return
-        self.execute_task()
+        if not self._lock.acquire(blocking=False):
+            logger.info(f"{PLUGIN_NAME} 已有刷新任务在运行，忽略本次命令")
+            return
+        try:
+            before = self._load_actors()
+            self._refresh_actors(force=True)
+            fresh = self._collect_fresh(before)
+            self._notify_fresh(fresh)
+        finally:
+            self._lock.release()
+
+    # ── 接口 ──
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """声明插件 HTTP 接口，最终挂载在 ``/api/v1/plugin/<PluginID>/<path>``。
+        """插件 HTTP 端点（``/api/v1/plugin/ShortDramaActorSubscribe/…``）。
 
-        联邦前端的三个组件（Config / Page / Dashboard）走同一套接口，统一用 ``bear``
-        鉴权：侧栏全页、配置弹窗、仪表板三处都能直接调用。
+        统一 ``auth: "bear"``：宿主 ``verify_token`` 同时接受 JWT 与 API Token，
+        这样面板（登录态）与外部脚本能共用同一批接口。
         """
         return [
-            {
-                "path": "/config",
-                "endpoint": self.api_get_config,
-                "methods": ["GET"],
-                "auth": "bear",
-                "summary": "获取插件配置与下拉候选",
-            },
-            {
-                "path": "/config",
-                "endpoint": self.api_update_config,
-                "methods": ["PUT"],
-                "auth": "bear",
-                "summary": "更新插件配置",
-            },
-            {
-                "path": "/options",
-                "endpoint": self.api_options,
-                "methods": ["GET"],
-                "auth": "bear",
-                "summary": "获取站点 / 下载器 / 整理方式候选",
-            },
             {
                 "path": "/status",
                 "endpoint": self.api_status,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "获取运行概览、账本与冷却列表",
-            },
-            {
-                "path": "/run",
-                "endpoint": self.api_run,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "立即执行一次订阅轮询",
-            },
-            {
-                "path": "/organize",
-                "endpoint": self.api_organize,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "立即整理一次",
-            },
-            {
-                "path": "/unmatch",
-                "endpoint": self.api_unmatch,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "从账本移除一条记录（允许重新下载）",
-            },
-            {
-                "path": "/miss/clear",
-                "endpoint": self.api_clear_miss,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "清空未命中冷却",
-            },
-            {
-                "path": "/search_actor",
-                "endpoint": self.api_search_actor,
-                "methods": ["GET"],
-                "auth": "bear",
-                "summary": "按名称搜索 TMDB / 豆瓣演员",
-            },
-            {
-                "path": "/clear",
-                "endpoint": self.api_clear,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "清空账本",
+                "summary": "插件状态",
             },
             {
                 "path": "/works",
                 "endpoint": self.api_works,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "演员作品墙（发现层快照 + 每条状态）",
+                "summary": "作品墙",
             },
             {
-                "path": "/works/subscribe",
-                "endpoint": self.api_subscribe,
-                "methods": ["POST"],
+                "path": "/actors",
+                "endpoint": self.api_actors,
+                "methods": ["GET"],
                 "auth": "bear",
-                "summary": "订阅一部作品：立即搜一次，没下到则持续重试",
+                "summary": "演员列表",
             },
             {
-                "path": "/works/unsubscribe",
-                "endpoint": self.api_unsubscribe,
+                "path": "/actors/search",
+                "endpoint": self.api_search_actor,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "取消订阅（仅未下到的订阅）",
+                "summary": "在短剧百科里查演员",
             },
             {
-                "path": "/works/subscribe_batch",
-                "endpoint": self.api_subscribe_batch,
+                "path": "/works/search",
+                "endpoint": self.api_search_work,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "批量订阅（多选后一次提交，后台依次下载）",
+                "summary": "在短剧百科里按片名查作品",
             },
             {
-                "path": "/works/unsubscribe_batch",
-                "endpoint": self.api_unsubscribe_batch,
+                "path": "/actors/add",
+                "endpoint": self.api_add_actor,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "批量取消订阅",
+                "summary": "添加演员",
             },
             {
-                "path": "/works/refresh",
-                "endpoint": self.api_refresh_works,
+                "path": "/actors/remove",
+                "endpoint": self.api_remove_actor,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "只刷新演员作品快照（不下载）",
+                "summary": "移除演员",
+            },
+            {
+                "path": "/actors/works",
+                "endpoint": self.api_actor_works,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "某位演员的全部作品（百科实时，关注与否均可）",
+            },
+            {
+                "path": "/refresh",
+                "endpoint": self.api_refresh,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "立即刷新作品",
+            },
+            {
+                "path": "/config",
+                "endpoint": self.api_get_config,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "读取配置",
+            },
+            {
+                "path": "/config",
+                "endpoint": self.api_update_config,
+                "methods": ["PUT"],
+                "auth": "bear",
+                "summary": "保存配置",
             },
         ]
 
-    # ── API 实现 ──
     def api_get_config(self) -> Dict[str, Any]:
-        """返回当前配置与下拉候选，供联邦 Config 组件回显。"""
-        config = self._live_config()
-        config["douban_cookie_source"] = self._douban_cookie_source()
-        return {
-            "success": True,
-            "message": "",
-            "data": {"config": config, "options": self._options_payload()},
-        }
+        """读取当前配置（前端配置弹窗用）。"""
+        return {"success": True, "config": self._live_config()}
 
     def api_update_config(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """接收前端提交的配置，持久化后重新初始化插件。
+        """保存配置：只认 ``_default_config()`` 里的键，其余一律丢弃。
 
-        与宿主配置页的保存**语义等价**：Vue 模式下配置页由远程组件渲染，组件只负责
-        抛出 ``save`` 事件，落盘仍由这里的接口（或宿主的 ``PUT /plugin/<id>``）完成，
-        否则侧栏全页里改的配置不会生效。
+        整体替换而不是合并，这样删掉的概念（比如曾经的配置项）会在用户保存一次后
+        自动从库里消失，不会残留成幽灵配置。
         """
-        if not isinstance(payload, dict):
-            return {"success": False, "message": "请求体不是合法对象", "data": None}
-
-        live = self._live_config()
-        merged: Dict[str, Any] = {}
-        for key, default in self._default_config().items():
-            merged[key] = payload.get(key, live.get(key, default))
-
-        merged["enabled"] = bool(merged.get("enabled"))
-        merged["onlyonce"] = bool(merged.get("onlyonce"))
-        merged["notify"] = bool(merged.get("notify"))
-        merged["proxy"] = bool(merged.get("proxy"))
-        merged["sidebar_nav"] = bool(merged.get("sidebar_nav", True))
-        merged["prefer_short_drama_category"] = bool(merged.get("prefer_short_drama_category", True))
-        merged["organize_enabled"] = bool(merged.get("organize_enabled", False))
-        merged["actors"] = str(merged.get("actors") or "").strip()
-        merged["sites"] = [
-            _to_int(item) for item in (merged.get("sites") or []) if str(item).strip().lstrip("-").isdigit()
-        ]
-        merged["downloader"] = str(merged.get("downloader") or "").strip()
-        merged["download_path"] = config_text(merged.get("download_path"))
-        merged["library_path"] = config_text(merged.get("library_path"))
-        merged["transfer_type"] = config_text(merged.get("transfer_type")) or "link"
-        merged["interval_hours"] = max(1, _to_int(merged.get("interval_hours")) or 6)
-        # 兜底值必须与类属性 / _default_config 一致：payload 里缺这两个键时（旧前端、
-        # 或用户只改了一个开关就保存）不能被悄悄改成别的节奏
-        merged["snapshot_hours"] = max(
-            1, _to_int(merged.get("snapshot_hours")) or _DEFAULT_SNAPSHOT_HOURS
-        )
-        merged["retry_minutes"] = max(
-            1, _to_int(merged.get("retry_minutes")) or _DEFAULT_RETRY_MINUTES
-        )
-        merged["organize_interval_minutes"] = max(5, _to_int(merged.get("organize_interval_minutes")) or 30)
-        merged["max_works"] = min(10, max(1, _to_int(merged.get("max_works")) or 10))
-        # ⚠️ 前端「保存」的 payload 可能不含这个键（旧前端 / 只改其它字段）。
-        # 这里必须兜成 **False**：兜成 True 等于用户随手保存一次就把自动下载打开，
-        # 下一轮轮询立刻批量灌下载器。
-        merged["auto_download"] = _to_bool(merged.get("auto_download"), False)
-        # 短剧百科开关：缺键兜回 True（默认开启），不能因旧前端保存一次就被关掉
-        merged["use_baike"] = _to_bool(merged.get("use_baike"), True)
-        merged["douban_cookie"] = str(merged.get("douban_cookie") or "").strip()
-
+        incoming = payload if isinstance(payload, dict) else {}
+        base = self._default_config()
+        merged = {key: incoming.get(key, base[key]) for key in base}
         self.update_config(merged)
         self.init_plugin(merged)
-        logger.info(f"{PLUGIN_NAME} 配置已通过前端接口更新")
-        return {"success": True, "message": "配置已保存", "data": self._live_config()}
-
-    def api_options(self) -> Dict[str, Any]:
-        """返回站点 / 下载器 / 整理方式的候选列表（供下拉框使用）。"""
-        return {"success": True, "message": "", "data": self._options_payload()}
-
-    def api_organize(self) -> Dict[str, Any]:
-        """立即整理一次（整理条目通常很少，允许同步执行）。
-
-        整理默认关闭（入库交给外部整理器），因此这里显式给出可读原因，
-        而不是让它走到 ``organize_once`` 里静默返回 False。
-        """
-        if not self.get_state():
-            return {"success": False, "message": "插件未启用", "data": None}
-        if not self._organize_enabled:
-            return {
-                "success": False,
-                "message": "整理入库已关闭（本插件只负责下载，入库交给外部整理器）；"
-                           "如确需本插件整理，请先在配置页打开「启用整理入库」",
-                "data": None,
-            }
-        ok = self.organize_once(trigger="api")
-        return {
-            "success": ok,
-            "message": "已执行整理扫描" if ok else "整理未执行（需配置下载目录与媒体库目录，且账本非空）",
-            "data": None,
-        }
-
-    def api_clear_miss(self) -> Dict[str, Any]:
-        """清空未命中冷却表，让所有「搜过但没搜到」的剧立刻可重搜。"""
-        self.save_data(_DATA_MISS, {})
-        return {"success": True, "message": "未命中冷却已清空", "data": None}
-
-    def api_search_actor(self, name: str = "") -> Dict[str, Any]:
-        """按名称搜索演员，返回 TMDB 与豆瓣的候选（供配置页直接取 ID）。
-
-        两个来源分别容错：任一来源失败只影响它自己的候选，另一个照常返回。
-        """
-        keyword = _clean_text(name)
-        if not keyword:
-            return {"success": False, "message": "缺少 name 参数", "data": []}
-        if not HAS_FRAMEWORK:
-            return {"success": False, "message": "框架模块不可用", "data": []}
-
-        items: List[Dict[str, Any]] = []
-        errors: List[str] = []
-
-        tmdb = _TmdbClient(proxy=self._proxy)
-        if tmdb.configured:
-            try:
-                for person in tmdb.search_person(keyword)[:8]:
-                    person_id = str(person.get("id") or "").strip()
-                    if not person_id:
-                        continue
-                    items.append(
-                        {
-                            "source": "tmdb",
-                            "id": person_id,
-                            "name": person.get("name") or person.get("original_name") or keyword,
-                            "original_name": person.get("original_name") or "",
-                            "avatar": "",
-                        }
-                    )
-            except Exception as err:  # noqa: BLE001 - 搜索失败降级为无候选
-                errors.append(f"TMDB：{err}")
-        else:
-            errors.append(tmdb.last_error or "TMDB 未配置")
-
-        douban = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
-        try:
-            for person in douban.search_person(keyword, count=8):
-                person_id = str(person.get("id") or "").strip()
-                if not person_id:
-                    continue
-                items.append(
-                    {
-                        "source": "douban",
-                        "id": person_id,
-                        "name": person.get("name") or keyword,
-                        "original_name": "",
-                        "avatar": str(person.get("avatar") or ""),
-                    }
-                )
-        except Exception as err:  # noqa: BLE001
-            errors.append(f"豆瓣：{err}")
-        if douban.last_error and not any(item["source"] == "douban" for item in items):
-            errors.append(f"豆瓣：{douban.failure_hint()}")
-
-        return {
-            "success": True,
-            "message": "" if items else ("；".join(errors) or "未找到匹配的演员"),
-            "data": items,
-        }
-
+        return {"success": True, "config": self._live_config()}
 
     def api_status(self) -> Dict[str, Any]:
-        """返回运行概览、账本与冷却列表（联邦前端与仪表板共用）。"""
-        ledger = self._load_ledger()
-        misses = self._load_misses()
-        stats = self._load_stats()
+        """插件状态总览：演员、作品、新作品、最近刷新时间。"""
+        rows, summary = self._work_rows()
+        snapshot = self._load_actors()
+        last = ""
+        for record in snapshot.values():
+            if isinstance(record, dict):
+                stamp = _clean_text(record.get("time"))
+                if stamp > last:
+                    last = stamp
         return {
             "success": True,
-            "message": "",
-            "data": {
-                "enabled": self._enabled,
-                "running": self._running,
-                "sidebar_nav": self._sidebar_nav,
-                "actors": self._load_actors(),
-                "stats": stats,
-                "ledger": self._ledger_rows(ledger),
-                "cooldown": self._cooldown_rows(misses),
-                "summary": {
-                    "actor_count": len(self._load_actors()),
-                    "candidate_count": _to_int(stats.get("candidates")),
-                    "downloaded_count": len(ledger),
-                    "subscribed_count": len(self._load_subs()),
-                    "auto_download": self._auto_download,
-                    "organized_count": sum(
-                        1
-                        for item in ledger.values()
-                        if isinstance(item, dict) and item.get("organized")
-                    ),
-                    "cooldown_count": len(misses),
-                    "last_run": str(stats.get("last_run") or ""),
-                    "elapsed": _to_float(stats.get("elapsed")),
-                },
-                "last_result": self._last_result,
+            "enabled": self.get_state(),
+            "configured": bool(self._actors),
+            "actors": len(self._actors),
+            "works": summary.get("total", 0),
+            "new_works": summary.get("new", 0),
+            "last_refresh": last,
+            "new_window_days": _NEW_WINDOW_DAYS,
+            "states": [
+                self._actor_row(key, record)
+                for key, record in snapshot.items()
+                if isinstance(record, dict)
+            ],
+        }
+
+    def api_works(
+        self,
+        actor: str = "",
+        genre: str = "",
+        year: str = "",
+        studio: str = "",
+        sort: str = "",
+        only_not_in_library: str = "",
+        keyword: str = "",
+        page: str = "",
+        page_size: str = "",
+    ) -> Dict[str, Any]:
+        """作品墙数据（服务端筛选 / 排序 / 分页）。
+
+        ⚠️ 参数一律声明成**函数形参**：宿主把插件端点直接交给 FastAPI 注册
+        （``adapters/web/plugin/routes.py`` → ``add_api_route``），查询参数靠 FastAPI
+        按形参名注入 —— 用 flask 的 ``request.args`` 读在 v3 上永远是空（真机实证：
+        ``?page_size=2`` 被忽略、照样返回整页）。
+
+        参数：
+
+        * ``actor`` —— 演员（名字或 key，空=全部）
+        * ``genre`` —— 类型（作品的题材标签，任一命中）
+        * ``year`` —— 年份（作品的首播年）
+        * ``studio`` —— 版权方（数据源给出才有，空选项时前端不显示这一栏）
+        * ``sort`` —— ``heat``（热度，默认）/ ``play``（播放）/ ``rating``（评分）/
+          ``date``（首播日期，新剧在前）
+        * ``only_not_in_library`` —— ``1`` 只看未入库（只排除**明确已在库**的；
+          查库失败/没有数据的「未知」作品保留，绝不把「没查成」显示成「都不在库」。
+          判定与宿主媒体详情页同一套：身份精确匹配 → 片名+类型+年份回退）
+        * ``keyword`` —— 剧名关键字
+        * ``page`` / ``page_size`` —— 分页（前端滚到底再拉下一页）
+
+        全部用字符串接、内部再宽松转换：非法值（比如 ``page=abc``）只该被当成默认值，
+        不该让 FastAPI 直接甩 422 把整面墙打死。
+
+        响应里的 ``facets`` 是筛选项（类型 / 年份 / 版权方，各带作品数）、
+        ``has_more`` 供前端判断还要不要继续加载。
+        """
+        rows, summary = self._work_rows(
+            {
+                "actor": actor,
+                "genre": genre,
+                "year": year,
+                "studio": studio,
+                "sort": sort,
+                "only_not_in_library": only_not_in_library,
+                "keyword": keyword,
+            }
+        )
+        page_no = max(1, _to_int(page, 1))
+        size = min(_MAX_PAGE_SIZE, max(1, _to_int(page_size, _DEFAULT_PAGE_SIZE)))
+        total = len(rows)
+        start = (page_no - 1) * size
+        chunk = rows[start : start + size]
+        return {
+            "success": True,
+            "total": total,
+            "page": page_no,
+            "page_size": size,
+            "has_more": start + len(chunk) < total,
+            "works": chunk,
+            "actor_filters": summary.get("actors", []),
+            "facets": summary.get("facets") or {"genres": [], "years": [], "studios": []},
+            "sort": _clean_text(sort) or _DEFAULT_SORT,
+            "new_window_days": _NEW_WINDOW_DAYS,
+            "summary": {
+                key: value
+                for key, value in summary.items()
+                if key not in ("actors", "facets")
             },
         }
 
-    def api_run(self) -> Dict[str, Any]:
-        """立即触发一次作品发现（订阅制下**不下载**，只刷新作品墙）。"""
-        if not self.get_state():
-            return {"success": False, "message": "插件未启用", "data": None}
-        self._add_once_job(delay_seconds=1, trigger="api")
-        return {"success": True, "message": "已提交执行", "data": None}
-
-    def api_unmatch(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """从账本移除一条记录，使其下次轮询可以重新下载。"""
-        payload = payload or {}
-        key = str(payload.get("key") or "").strip()
-        if not key:
-            return {"success": False, "message": "缺少 key", "data": None}
-        ledger = self._load_ledger()
-        if key not in ledger:
-            return {"success": False, "message": "账本中不存在该记录", "data": None}
-        ledger.pop(key)
-        self.save_data(_DATA_LEDGER, ledger)
-        # 同时清掉冷却，让这条记录在下一轮立刻被重新搜索
-        misses = self._load_misses()
-        if misses.pop(key, None) is not None:
-            self.save_data(_DATA_MISS, misses)
-        return {"success": True, "message": "已移除", "data": None}
-
-    def api_clear(self) -> Dict[str, Any]:
-        """清空账本。"""
-        self.save_data(_DATA_LEDGER, {})
-        self.save_data(_DATA_MISS, {})
-        return {"success": True, "message": "账本已清空", "data": None}
-
-    # ── 作品墙（「短剧页」的主体） ──
-
-    def _work_rows(self) -> List[Dict[str, Any]]:
-        """把演员快照里的作品摊平成作品墙行，并标出每条当前的状态。
-
-        状态口径与主流程**完全一致**（同一份账本 + 同一份冷却表），因此页面显示
-        的状态不会与实际行为错位：
-
-        * ``organized``  —— 账本命中且已整理入库
-        * ``downloaded`` —— 账本命中（已提交下载）
-        * ``subscribed``  —— **你订阅了、插件还没下到**（每轮都会重试，直到下到为止）
-        * ``cooling``    —— 搜过但站点暂无资源，冷却中
-        * ``pending``    —— 还没处理过（**订阅制：不会自动下载**，点「订阅」才下；
-          已打开「自动下载」开关时则下一轮会自行下载）
-        """
-        ledger = self._load_ledger()
-        misses = self._load_misses()
-        subs = self._load_subs()
-        now = time.time()
-        lifetime = _MISS_COOLDOWN_HOURS * 3600
-        rows: List[Dict[str, Any]] = []
-        for record in self._load_actors().values():
-            if not isinstance(record, dict):
-                continue
-            actor = _clean_text(record.get("name")) or _clean_text(record.get("key"))
-            for work in record.get("works") or []:
-                if not isinstance(work, dict):
-                    continue
-                title = _clean_text(work.get("title"))
-                if not title:
-                    continue
-                year = _clean_text(work.get("year"))
-                key = ledger_key(title, year)
-                row: Dict[str, Any] = {
-                    "key": key,
-                    "title": title,
-                    "year": year,
-                    "alt_title": _clean_text(work.get("alt_title")),
-                    "type": _clean_text(work.get("type")),
-                    "source": _clean_text(work.get("source")),
-                    "media_id": _clean_text(work.get("media_id")),
-                    "actor": actor,
-                    # 海报与评分只用于卡片展示；旧快照里没有这两个字段时前端显示占位图
-                    "poster": _clean_text(work.get("poster")),
-                    "vote": _to_float(work.get("vote")),
-                    "state": "pending",
-                    "subscribed": key in subs,
-                    "remaining_minutes": 0,
-                    "site_name": "",
-                    "torrent_title": "",
-                    "time": "",
-                }
-                entry = ledger.get(key)
-                if isinstance(entry, dict):
-                    row["state"] = "organized" if entry.get("organized") else "downloaded"
-                    row["site_name"] = _clean_text(entry.get("site_name"))
-                    row["torrent_title"] = _clean_text(entry.get("torrent_title"))
-                    row["time"] = _clean_text(entry.get("time"))
-                else:
-                    # 订阅中优先于冷却：订阅是你明确要的，站点暂时没资源也仍显示「订阅中」
-                    # （剩余冷却时间照样带出去，前端可以补一句「站点暂无资源」）
-                    if row["subscribed"]:
-                        row["state"] = "subscribed"
-                    last = _to_float(misses.get(key))
-                    if last:
-                        remaining = int(lifetime - (now - last))
-                        if remaining > 0:
-                            if not row["subscribed"]:
-                                row["state"] = "cooling"
-                            row["remaining_minutes"] = max(1, remaining // 60)
-                rows.append(row)
-
-        # 待办在前：订阅中 → 待订阅 → 冷却 → 已下载 → 已入库
-        order = {"subscribed": 0, "pending": 1, "cooling": 2, "downloaded": 3, "organized": 4}
-        rows.sort(
-            key=lambda item: (
-                order.get(str(item.get("state")), 9),
-                str(item.get("actor") or ""),
-                -_to_int(item.get("year")),
-                str(item.get("title") or ""),
-            )
-        )
-        return rows
-
-    def api_works(self) -> Dict[str, Any]:
-        """演员作品墙：发现层快照里的全部作品 + 每条的当前状态。
-
-        「短剧页」的主体数据。状态由账本与冷却表推导（与主流程同源），前端只负责
-        渲染与筛选；`pending` 的条目可以逐条「订阅」（见 ``api_subscribe``）。
-        """
-        rows = self._work_rows()
-        actors = self._load_actors()
-        refreshed = ""
-        for record in actors.values():
-            if not isinstance(record, dict):
-                continue
-            stamp = _clean_text(record.get("time"))
-            if stamp > refreshed:
-                refreshed = stamp
+    def api_actors(self) -> Dict[str, Any]:
+        """演员列表（含解析状态、百科 ID、作品数）。"""
+        snapshot = self._load_actors()
         return {
             "success": True,
-            "message": "",
-            "data": {
-                "items": rows,
-                "summary": {
-                    "total": len(rows),
-                    "pending": sum(1 for item in rows if item["state"] == "pending"),
-                    "subscribed": sum(1 for item in rows if item["state"] == "subscribed"),
-                    "cooling": sum(1 for item in rows if item["state"] == "cooling"),
-                    "downloaded": sum(
-                        1 for item in rows if item["state"] in ("downloaded", "organized")
-                    ),
-                },
-                "refreshed_at": refreshed,
-                "running": self._running,
-                "configured": bool(self._actors and self._sites),
-                "actors": list(self._actors),
-                "actor_count": len(actors),
-            },
+            "actors": [
+                self._actor_row(key, snapshot.get(key))
+                for key in self._actors
+            ],
         }
 
-    def _find_work(self, key: str) -> Optional[Dict[str, Any]]:
-        """按账本键在演员快照里反查一部作品（作品墙按钮只回传 key）。"""
-        if not key:
-            return None
-        for record in self._load_actors().values():
-            if not isinstance(record, dict):
-                continue
-            actor = _clean_text(record.get("name")) or _clean_text(record.get("key"))
-            for work in record.get("works") or []:
-                if not isinstance(work, dict):
-                    continue
-                title = _clean_text(work.get("title"))
-                if not title:
-                    continue
-                if ledger_key(title, work.get("year")) == key:
-                    found = dict(work)
-                    found["actor"] = actor
-                    return found
-        return None
+    def api_search_actor(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """在短剧百科里查演员：返回候选（供添加演员时挑选 / 演员搜索卡片）。
 
-    @staticmethod
-    def _sub_record(work: Dict[str, Any]) -> Dict[str, Any]:
-        """订阅表里一条记录的形状（够重试用：剧名 / 年份 / 别名 / 来源 id / 演员）。"""
-        return {
-            "title": _clean_text(work.get("title")),
-            "year": _clean_text(work.get("year")),
-            "alt_title": _clean_text(work.get("alt_title")),
-            "media_source": _clean_text(work.get("media_source")),
-            "media_id": _clean_text(work.get("media_id")),
-            "actor": _clean_text(work.get("actor")),
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        百科的站外索引召回**含模糊结果**，所以这里把候选原样返回给前端挑；
+        后端只在「归一化名字精确相等」时才认为可以直接采纳。
 
-    def _remember_sub(self, entry_key: str, work: Dict[str, Any]) -> None:
-        """把一部作品记进**订阅表**（你点名要的剧，插件负责一直试到下到为止）。
+        ``enrich`` 为真时再给**前 N 位**候选补上演员档案（头像 ``profile`` / 作品数
+        ``works_count`` / 简介 ``bio`` / 性别 / 国籍）—— 每位候选要多抓一次演员页，
+        所以只补前几位，且失败一律降级成「只有名字」的卡片，不让整次搜索失败。
+        面板的「搜索演员」用得上头像，添加演员的候选列表不需要，按需开启。
 
-        与账本的区别：账本 = **已下到**（去重用），订阅表 = **还没下到但你要**（重试用）。
+        ``subscribed`` 表示这位演员是否已在关注列表里（前端据此把卡片标成已添加）。
         """
-        if not entry_key:
-            return
-        subs = self._load_subs()
-        subs[entry_key] = self._sub_record(work)
-        self._save_subs(subs)
-
-    def drain_subscriptions_task(self, trigger: str = "manual") -> bool:
-        """立刻把订阅表处理一遍（批量订阅之后马上开工用）。
-
-        与轮询里的订阅重试是同一段逻辑；这里只做「你订阅过、还没下到」的条目，
-        绝不会碰未订阅的作品。
-        """
-        if not self.get_state():
-            return False
-        if not self._sites or not self._download_path or not self._downloader:
-            return False
-        if not self._lock.acquire(blocking=False):
-            logger.info(f"{PLUGIN_NAME} 后台任务执行中，跳过本次订阅下载（{trigger}）")
-            return False
-        self._running = True
+        body = payload if isinstance(payload, dict) else {}
+        name = _clean_text(body.get("name"))
+        if not name:
+            return {"success": False, "message": "请填写演员名"}
+        enrich = _to_bool(body.get("enrich"), False)
         try:
-            outcome = self._run_subscriptions()
-            message = (
-                f"订阅下载完成（{trigger}）：成功 {outcome['downloaded']} 部，"
-                f"仍待下载 {outcome['pending']} 部"
-            )
-            self._last_result = {"success": True, "message": message}
-            logger.info(f"{PLUGIN_NAME} {message}")
-            return True
-        except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务挂掉
-            logger.error(f"{PLUGIN_NAME} 订阅下载异常：{err}")
-            return False
-        finally:
-            self._running = False
-            self._lock.release()
-
-    def api_subscribe_batch(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """批量订阅（作品墙多选后一次提交）。
-
-        只把选中的作品写进订阅表，随后登记一个后台任务依次下载 —— 一次选几十部时，
-        同步接口会超时，所以这里立即返回、后台慢慢跑（进度看作品墙的状态徽标）。
-        """
-        payload = payload or {}
-        keys = [str(item or "").strip() for item in (payload.get("keys") or [])]
-        keys = [item for item in keys if item]
-        if not keys:
-            return {"success": False, "message": "没有选中任何作品", "data": None}
-        if not self.get_state():
-            return {"success": False, "message": "插件未启用", "data": None}
-        if not self._sites:
-            return {"success": False, "message": "未配置搜索站点", "data": None}
-        if not self._download_path or not self._downloader:
-            return {"success": False, "message": "未配置下载目录或下载器", "data": None}
-
-        ledger = self._load_ledger()
-        subs = self._load_subs()
-        added: List[str] = []
-        already = 0
-        for key in keys:
-            if key in ledger:
-                already += 1
-                continue
-            work = self._find_work(key)
-            if work is None or not _clean_text(work.get("title")):
-                continue
-            subs[key] = self._sub_record(work)
-            added.append(_clean_text(work.get("title")))
-        self._save_subs(subs)
-        if added:
-            self._add_once_job(
-                delay_seconds=1,
-                trigger="batch",
-                func=self.drain_subscriptions_task,
-                job_id=f"{_ONCE_JOB_ID}_batch",
-                job_name=f"{PLUGIN_NAME}批量订阅下载",
-            )
-        message = f"已订阅 {len(added)} 部，正在后台依次下载；站点暂无资源的会持续重试"
-        if already:
-            message += f"（{already} 部已在账本里，跳过）"
-        return {"success": True, "message": message, "data": {"added": len(added), "skipped": already}}
-
-    def api_unsubscribe_batch(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """批量取消订阅（只影响「订阅中」的条目，已下载的走「移出账本」）。"""
-        payload = payload or {}
-        keys = [str(item or "").strip() for item in (payload.get("keys") or [])]
-        keys = [item for item in keys if item]
-        if not keys:
-            return {"success": False, "message": "没有选中任何作品", "data": None}
-        subs = self._load_subs()
-        removed = 0
-        for key in keys:
-            if subs.pop(key, None) is not None:
-                removed += 1
-        self._save_subs(subs)
-        return {"success": True, "message": f"已取消 {removed} 部作品的订阅", "data": {"removed": removed}}
-
-    def _run_subscriptions(self, searcher: Optional["_SiteSearcher"] = None) -> Dict[str, int]:
-        """处理订阅表：把「你订阅了但还没下到」的作品逐条重试一遍。
-
-        订阅制下这是**唯一**会主动下载的入口（另一个是你在作品墙现场点「订阅」）。
-        成功的进账本并移出订阅表；站点仍无资源的留在表里，下一轮继续。
-        返回 ``{"downloaded": n, "pending": m}``。
-        """
-        subs = self._load_subs()
-        if not subs:
-            return {"downloaded": 0, "pending": 0}
-        ledger = self._load_ledger()
-        misses = self._load_misses()
-        searcher = searcher or _SiteSearcher(
-            self._sites, prefer_short_drama_category=self._prefer_short_drama_category
-        )
-        downloaded = 0
-        for key, info in list(subs.items()):
-            info = info if isinstance(info, dict) else {}
-            title = _clean_text(info.get("title"))
-            if not title:
-                subs.pop(key, None)
-                continue
-            if key in ledger:
-                # 已经下到了（可能在作品墙手动订阅过），订阅表收拾干净
-                subs.pop(key, None)
-                continue
-            work = {
-                "title": title,
-                "year": _clean_text(info.get("year")),
-                "alt_title": _clean_text(info.get("alt_title")),
-                "media_source": _clean_text(info.get("media_source")),
-                "media_id": _clean_text(info.get("media_id")),
-                "actor": _clean_text(info.get("actor")),
-            }
-            try:
-                outcome = self._process_candidate(work, searcher)
-            except Exception as err:  # noqa: BLE001 - 单条失败不影响其它订阅
-                logger.error(f"{PLUGIN_NAME} 订阅「{title}」重试异常：{err}")
-                continue
-            if outcome and outcome.get("ok"):
-                ledger[key] = outcome["entry"]
-                self._save_ledger(ledger)
-                subs.pop(key, None)
-                misses.pop(key, None)
-                downloaded += 1
-                logger.info(f"{PLUGIN_NAME} 订阅已下载：{title}（{outcome['entry'].get('site_name') or '未知站点'}）")
-            else:
-                # 站点暂无资源 / 提交失败：留在订阅表，更新一次冷却时间供页面提示
-                misses[key] = time.time()
-        self._save_subs(subs)
-        self.save_data(_DATA_MISS, misses)
-        return {"downloaded": downloaded, "pending": len(subs)}
-
-    def api_unsubscribe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """取消订阅（只在还没下到时有意义；已下载的请用「移出账本」）。"""
-        payload = payload or {}
-        key = str(payload.get("key") or "").strip()
-        if not key:
-            return {"success": False, "message": "缺少 key", "data": None}
-        subs = self._load_subs()
-        if subs.pop(key, None) is None:
-            return {"success": False, "message": "该作品不在订阅表里", "data": None}
-        self._save_subs(subs)
-        return {"success": True, "message": "已取消订阅", "data": None}
-
-    def api_subscribe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """订阅一部作品（作品墙上每条的「订阅」按钮）：立即试一次，没下到就持续重试。
-
-        与轮询里的订阅重试走**同一条**「搜索 → 匹配 → 择优 → 下载」链路，因此订阅的
-        条目同样会写账本、清冷却，不会被重复下载。同步执行（单条通常几秒）；
-        若后台正有一轮任务在跑则直接拒绝，避免同一部剧被提交两次。
-        """
-        payload = payload or {}
-        if not self.get_state():
-            return {"success": False, "message": "插件未启用", "data": None}
-        if not self._sites:
-            return {"success": False, "message": "未配置搜索站点", "data": None}
-        if not self._download_path or not self._downloader:
-            return {"success": False, "message": "未配置下载目录或下载器", "data": None}
-
-        key = str(payload.get("key") or "").strip()
-        work = self._find_work(key) if key else None
-        if work is None:
-            title_raw = _clean_text(payload.get("title"))
-            if not title_raw:
-                return {"success": False, "message": "缺少作品信息（key 或 title）", "data": None}
-            work = {
-                "title": title_raw,
-                "year": _clean_text(payload.get("year")),
-                "alt_title": _clean_text(payload.get("alt_title")),
-                "media_source": _clean_text(payload.get("media_source")),
-                "media_id": _clean_text(payload.get("media_id")),
-                "actor": _clean_text(payload.get("actor")),
-            }
-
-        title = _clean_text(work.get("title"))
-        entry_key = ledger_key(title, work.get("year"))
-        ledger = self._load_ledger()
-        if entry_key in ledger:
-            return {
-                "success": False,
-                "message": f"「{title}」已在账本里（已下载）；如需重下，请先在下方列表移除该条",
-                "data": None,
-            }
-
-        if not self._lock.acquire(blocking=False):
-            return {"success": False, "message": "后台正在执行任务，请稍后再试", "data": None}
-        try:
-            searcher = _SiteSearcher(
-                self._sites, prefer_short_drama_category=self._prefer_short_drama_category
-            )
-            outcome = self._process_candidate(work, searcher)
-            if outcome is None:
-                # 站点暂时没有资源：**订阅照样成立**（订阅是持续的），
-                # 记一条冷却时间供页面显示「站点暂无资源」，插件每轮会重试。
-                misses = self._load_misses()
-                misses[entry_key] = time.time()
-                self.save_data(_DATA_MISS, misses)
-                self._remember_sub(entry_key, work)
-                return {
-                    "success": True,
-                    "message": f"已订阅「{title}」：站点暂时没有资源，插件会持续重试",
-                    "data": None,
-                }
-            if not outcome.get("ok"):
-                self._remember_sub(entry_key, work)
-                return {
-                    "success": True,
-                    "message": (
-                        f"已订阅「{title}」：本次下载提交失败"
-                        f"（{outcome.get('reason') or '未知原因'}），插件会持续重试"
-                    ),
-                    "data": None,
-                }
-            entry = outcome["entry"]
-            ledger[entry_key] = entry
-            self._save_ledger(ledger)
-            subs = self._load_subs()
-            if subs.pop(entry_key, None) is not None:
-                self._save_subs(subs)
-            misses = self._load_misses()
-            if misses.pop(entry_key, None) is not None:
-                self.save_data(_DATA_MISS, misses)
-            stats = self._load_stats()
-            stats["downloaded"] = len(ledger)
-            self._save_stats(stats)
-            logger.info(f"{PLUGIN_NAME} 手动订阅「{title}」已提交下载")
-            return {
-                "success": True,
-                "message": f"已订阅「{title}」，已提交下载（{entry.get('site_name') or '未知站点'}）",
-                "data": entry,
-            }
-        except Exception as err:  # noqa: BLE001 - 单条失败不影响其它
-            logger.error(f"{PLUGIN_NAME} 手动订阅「{title}」失败：{err}")
-            return {"success": False, "message": f"订阅失败：{err}", "data": None}
-        finally:
-            self._lock.release()
-
-    def api_refresh_works(self) -> Dict[str, Any]:
-        """只刷新演员作品快照（不下载），供作品墙的「刷新作品」按钮。
-
-        发现层要打 TMDB + 豆瓣，演员多时可能几十秒，因此登记成一次性后台任务；
-        前端轮询 ``GET /works`` 的 ``running`` 判断是否结束。
-        """
-        if not self.get_state():
-            return {"success": False, "message": "插件未启用", "data": None}
-        if not self._actors:
-            return {"success": False, "message": "未配置演员", "data": None}
-        if self._running:
-            return {"success": False, "message": "已有任务在执行，请稍候", "data": None}
-        ok = self._add_once_job(
-            delay_seconds=1,
-            trigger="api",
-            func=self.refresh_works_task,
-            job_id=_ONCE_JOB_ID_WORKS,
-            job_name=f"{PLUGIN_NAME}刷新作品",
-        )
-        return {
-            "success": ok,
-            "message": "已提交刷新作品，稍后自动更新" if ok else "提交失败（当前宿主不支持一次性任务）",
-            "data": None,
-        }
-
-    def refresh_works_task(self, trigger: str = "manual") -> bool:
-        """只跑发现层：刷新演员作品快照并落库，不触发任何下载。
-
-        用户点「刷新作品」就是要看最新的，因此**强制重解析**（``force=True``），
-        不受「快照一天刷一次」的缓存约束。与 ``execute_task`` 共用同一把锁，
-        避免和整轮任务同时打豆瓣/TMDB。
-        """
-        if not self.get_state() or not self._actors:
-            return False
-        if not self._lock.acquire(blocking=False):
-            logger.info(f"{PLUGIN_NAME} 后台任务执行中，跳过本次作品刷新（{trigger}）")
-            return False
-        self._running = True
-        try:
-            candidates = self._refresh_actors(force=True)
-            logger.info(f"{PLUGIN_NAME} 作品快照已刷新，共 {len(candidates)} 部候选")
-            return True
-        except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务挂掉
-            logger.error(f"{PLUGIN_NAME} 刷新作品失败：{err}")
-            return False
-        finally:
-            self._running = False
-            self._lock.release()
-
-    # ── 前端展示辅助 ──
-
-    @staticmethod
-    def _ledger_rows(ledger: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """把账本转成前端友好的行列表（带 key、按时间倒序）。"""
+            candidates = self.chain.run_module("search_actors", name=name) or []
+        except Exception as err:  # noqa: BLE001 - 百科不可用只降级
+            logger.warning(f"{PLUGIN_NAME} 短剧百科查找演员失败（{name}）：{err}")
+            return {"success": False, "message": f"短剧百科查找失败：{err}"}
         rows: List[Dict[str, Any]] = []
-        for key, entry in ledger.items():
-            if not isinstance(entry, dict):
+        for row in candidates:
+            if not isinstance(row, dict):
                 continue
-            row = dict(entry)
-            row["key"] = key
-            rows.append(row)
-        rows.sort(key=lambda item: str(item.get("time") or ""), reverse=True)
-        return rows
-
-    def _title_index(self) -> Dict[str, Dict[str, str]]:
-        """由演员快照建立「账本键 → 剧名/年份/演员」索引。
-
-        冷却表的键是归一化后的剧名（去标点、小写），直接展示不可读，
-        因此回显时用它换回原始剧名。
-        """
-        index: Dict[str, Dict[str, str]] = {}
-        for record in self._load_actors().values():
-            if not isinstance(record, dict):
+            actor_id = _clean_text(row.get("actor_id"))
+            if not actor_id:
                 continue
-            actor_name = _clean_text(record.get("name")) or _clean_text(record.get("key"))
-            for work in record.get("works") or []:
-                if not isinstance(work, dict):
-                    continue
-                title = _clean_text(work.get("title"))
-                if not title:
-                    continue
-                index[ledger_key(title, work.get("year"))] = {
-                    "title": title,
-                    "year": _clean_text(work.get("year")),
-                    "actor": actor_name,
-                }
-        return index
-
-    def _cooldown_rows(self, misses: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """把冷却表转成可读行（仅保留仍在冷却期内的，附剩余分钟数）。"""
-        index = self._title_index()
-        now = time.time()
-        lifetime = _MISS_COOLDOWN_HOURS * 3600
-        rows: List[Dict[str, Any]] = []
-        for key, stamp in misses.items():
-            last = _to_float(stamp)
-            if not last:
-                continue
-            remaining = int(lifetime - (now - last))
-            if remaining <= 0:
-                continue
-            parts = str(key).split("|")
-            info = index.get(str(key)) or {}
+            label = _clean_text(row.get("name"))
             rows.append(
                 {
-                    "key": str(key),
-                    "title": info.get("title") or (parts[0] if parts else str(key)),
-                    "year": info.get("year") or (parts[1] if len(parts) > 1 else ""),
-                    "actor": info.get("actor") or "",
-                    "remaining_minutes": max(1, remaining // 60),
+                    "name": label,
+                    "actor_id": actor_id,
+                    "media_id": _clean_text(row.get("media_id")),
+                    "url": _clean_text(row.get("url")),
+                    "exact": _actor_name_key(label) == _actor_name_key(name),
+                    "subscribed": label in self._actors,
                 }
             )
-        rows.sort(key=lambda item: item["remaining_minutes"])
-        return rows
+        if enrich and rows:
+            self._enrich_actor_cards(rows[:_ACTOR_LOOKUP_LIMIT])
+        return {"success": True, "name": name, "candidates": rows}
 
-    def _options_payload(self) -> Dict[str, Any]:
-        """前端下拉候选：搜索站点 / 下载器 / 系统目录 / 整理方式。
+    def api_search_work(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """在短剧百科里按片名查作品：返回候选（搜索结果页的作品卡片用）。
 
-        ``directories`` 直接取自宿主「目录管理」（下载目录与媒体库目录成对），
-        这样配置页的下载路径不必让用户再手抄一遍；``defaults`` 给出推荐初值：
-        系统默认下载器、以及优先命中的「短剧」目录（没有就叫第一个目录）。
+        经 ``run_module("search_medias", meta=…, media_source="duanju")`` 分发给
+        短剧百科数据源 —— 与宿主搜索框同一条检索链路（URL 库 → 站内索引 → 站点
+        搜索），返回宿主 ``MediaInfo``，这里只挑展示用的字段转成纯 dict。
         """
-        directories = self._system_directories()
-        preferred = next((item for item in directories if item.get("is_short_drama")), None)
-        if preferred is None and directories:
-            preferred = directories[0]
-        preferred = preferred or {}
-        return {
-            "sites": self._site_items(),
-            "downloaders": self._downloader_items(),
-            "transfer_types": [
-                {"title": "硬链接（推荐，省空间，需同盘）", "value": "link"},
-                {"title": "软链接（跨盘可用，指向下载文件）", "value": "softlink"},
-                {"title": "复制", "value": "copy"},
-                {"title": "移动", "value": "move"},
-            ],
-            "directories": [
+        body = payload if isinstance(payload, dict) else {}
+        name = _clean_text(body.get("name"))
+        if not name:
+            return {"success": False, "message": "请填写作品名"}
+        meta = MetaInfo(name)
+        try:
+            infos = self.chain.run_module(
+                "search_medias", meta=meta, media_source=_BAIKE_SOURCE
+            ) or []
+        except Exception as err:  # noqa: BLE001 - 百科不可用只降级
+            logger.warning(f"{PLUGIN_NAME} 短剧百科查找作品失败（{name}）：{err}")
+            return {"success": False, "message": f"短剧百科查找失败：{err}"}
+        works: List[Dict[str, Any]] = []
+        for info in infos:
+            media_id = _clean_text(getattr(info, "media_id", "") or "")
+            title = _clean_text(getattr(info, "title", "") or "")
+            if not media_id or not title:
+                continue
+            works.append(
                 {
-                    "title": self._directory_label(item),
-                    "value": str(item.get("download_path") or ""),
-                    "name": str(item.get("name") or ""),
-                    "download_path": str(item.get("download_path") or ""),
-                    "library_path": str(item.get("library_path") or ""),
-                    "media_type": str(item.get("media_type") or ""),
-                    "media_category": str(item.get("media_category") or ""),
-                    "is_short_drama": bool(item.get("is_short_drama")),
+                    "media_source": _clean_text(getattr(info, "media_source", "") or "")
+                    or _BAIKE_SOURCE,
+                    "media_id": media_id,
+                    "title": title,
+                    "year": _clean_text(str(getattr(info, "year", "") or "")),
+                    "poster": _clean_text(getattr(info, "poster_path", "") or ""),
+                    "overview": _clean_text(getattr(info, "overview", "") or ""),
+                    "vote": float(getattr(info, "vote_average", 0) or 0),
                 }
-                for item in directories
-            ],
-            "defaults": {
-                "downloader": self._default_downloader(),
-                "directory": str(preferred.get("download_path") or ""),
-                "library_path": str(preferred.get("library_path") or ""),
-                "directory_name": str(preferred.get("name") or ""),
-            },
+            )
+        return {"success": True, "name": name, "works": works}
+
+    def _enrich_actor_cards(self, rows: List[Dict[str, Any]]) -> None:
+        """给演员候选补头像 / 作品数 / 简介（就地改 ``rows``，best-effort）。
+
+        ``actor_profile(enrich=False)`` 只抓演员页本身、不补作品详情 —— 卡片只需要
+        头像与作品数，补详情是浪费。任何异常都只跳过这一位候选。
+        """
+        for row in rows:
+            actor_id = _clean_text(row.get("actor_id"))
+            if not actor_id:
+                continue
+            try:
+                profile = self.chain.run_module(
+                    "actor_profile", actor_id=actor_id, enrich=False
+                ) or {}
+            except Exception as err:  # noqa: BLE001 - 补档案失败只跳过
+                logger.debug(f"{PLUGIN_NAME} 取演员档案失败（{actor_id}）：{err}")
+                continue
+            if not isinstance(profile, dict) or not profile:
+                continue
+            row["name"] = _clean_text(profile.get("name")) or row.get("name", "")
+            row["profile"] = _clean_text(profile.get("profile"))
+            row["works_count"] = _to_int(profile.get("works_count"))
+            row["bio"] = _clean_text(profile.get("bio"))
+            row["gender"] = _clean_text(profile.get("gender"))
+            row["nationality"] = _clean_text(profile.get("nationality"))
+            row["job_title"] = _clean_text(profile.get("job_title"))
+            row["url"] = _clean_text(profile.get("url")) or row.get("url", "")
+
+    def api_add_actor(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """添加演员到关注列表。
+
+        - 给了 ``actor_id``（用户在候选里挑过）→ 直接采用；
+        - 只给名字 → 先查百科，**只有归一化名字精确相等**才采纳（宁可让用户挑一次，
+          也不错配成另一个演员）；没有精确命中就把候选回给前端（``need_pick``）。
+        """
+        body = payload if isinstance(payload, dict) else {}
+        name = _clean_text(body.get("name"))
+        actor_id = _clean_text(body.get("actor_id"))
+        if not name:
+            return {"success": False, "message": "请填写演员名"}
+        if name in self._actors:
+            return {"success": False, "message": f"「{name}」已经在关注列表里"}
+
+        if not actor_id:
+            picked = self.api_search_actor({"name": name})
+            if not picked.get("success"):
+                return {"success": False, "message": str(picked.get("message") or "短剧百科查找失败")}
+            rows = [row for row in picked.get("candidates") or [] if row.get("exact")]
+            if not rows:
+                return {
+                    "success": False,
+                    "code": "need_pick",
+                    "message": f"短剧百科里没有与「{name}」完全同名的演员，请从候选里挑一位",
+                    "candidates": picked.get("candidates") or [],
+                }
+            actor_id = _clean_text(rows[0].get("actor_id"))
+
+        # 先把演员写进配置，再立即抓一轮（让用户马上看到作品，而不是等下个轮询周期）
+        self._actors = self._actors + [name]
+        config = self._live_config()
+        self.update_config(config)
+        self.init_plugin(config)
+        # 记下百科 ID：后续轮次直接按 ID 取作品页，不再走站外索引
+        snapshot = self._load_actors()
+        snapshot[name] = {
+            "key": name,
+            "name": name,
+            "baike_id": actor_id,
+            "works": [],
+            "errors": [],
+        }
+        self.save_data(_DATA_ACTORS, snapshot)
+        count = self._refresh_one(name)
+        return {
+            "success": True,
+            "message": f"已添加「{name}」" + (f"，拿到 {count} 部作品" if count else "，正在获取作品"),
+            "actors": self._actors,
         }
 
-    def _douban_cookie_source(self) -> str:
-        """回显当前豆瓣 Cookie 来源：manual / cookiecloud / none（只读）。"""
-        if self._douban_cookie:
-            return "manual"
-        if not HAS_FRAMEWORK:
-            return "none"
-        try:
-            return "cookiecloud" if self._resolve_douban_cookie() else "none"
-        except Exception as err:  # noqa: BLE001 - 回显失败不影响页面渲染
-            logger.debug(f"{PLUGIN_NAME} 读取 CookieCloud 登录态失败：{err}")
-            return "none"
+    def api_remove_actor(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """把演员移出关注列表（连同他的快照一起删掉）。"""
+        body = payload if isinstance(payload, dict) else {}
+        name = _clean_text(body.get("name"))
+        if not name or name not in self._actors:
+            return {"success": False, "message": "演员不在关注列表里"}
+        self._actors = [item for item in self._actors if item != name]
+        config = self._live_config()
+        self.update_config(config)
+        self.init_plugin(config)
+        snapshot = self._load_actors()
+        snapshot.pop(name, None)
+        self.save_data(_DATA_ACTORS, snapshot)
+        return {"success": True, "message": f"已移除「{name}」", "actors": self._actors}
 
-    # ── 数据存取 ──
+    def api_actor_works(self, actor_id: str = "", name: str = "") -> Dict[str, Any]:
+        """某位演员的**全部**作品（点演员卡片展开作品墙用，关注与否均可）。
 
-    def _load_ledger(self) -> Dict[str, Any]:
-        """读取已下账本（键为 ``归一化剧名|年份``）。"""
-        data = self.get_data(_DATA_LEDGER)
-        return data if isinstance(data, dict) else {}
-
-    def _save_ledger(self, ledger: Dict[str, Any]) -> None:
-        """保存账本。"""
-        self.save_data(_DATA_LEDGER, ledger)
-
-    def _load_subs(self) -> Dict[str, Any]:
-        """读取订阅表（键与账本一致：``归一化剧名|年份``）。"""
-        data = self.get_data(_DATA_SUBS)
-        return data if isinstance(data, dict) else {}
-
-    def _save_subs(self, subs: Dict[str, Any]) -> None:
-        """保存订阅表。"""
-        self.save_data(_DATA_SUBS, subs)
-
-    def _load_actors(self) -> Dict[str, Any]:
-        """读取演员及其作品快照。"""
-        data = self.get_data(_DATA_ACTORS)
-        return data if isinstance(data, dict) else {}
-
-    def _load_stats(self) -> Dict[str, Any]:
-        """读取运行统计。"""
-        data = self.get_data(_DATA_STATS)
-        return data if isinstance(data, dict) else {}
-
-    def _load_misses(self) -> Dict[str, float]:
-        """读取未命中冷却表（键与账本一致，值为上次搜索的 Unix 时间戳）。"""
-        data = self.get_data(_DATA_MISS)
-        return data if isinstance(data, dict) else {}
-
-    def _save_stats(self, stats: Dict[str, Any]) -> None:
-        """保存运行统计。"""
-        self.save_data(_DATA_STATS, stats)
-
-    # ── 配置表单候选值 ──
-
-    @staticmethod
-    def _site_items() -> List[Dict[str, Any]]:
-        """站点下拉项（从宿主站点配置读取）。"""
-        if not HAS_FRAMEWORK:
-            return []
-        try:
-            return [
-                {"title": str(indexer.get("name") or indexer.get("domain") or ""), "value": indexer.get("id")}
-                for indexer in SitesHelper().get_indexers()
-                if indexer.get("id")
-            ]
-        except Exception as err:  # noqa: BLE001 - 读取失败给空列表，页面仍可渲染
-            logger.warning(f"{PLUGIN_NAME} 读取站点列表失败：{err}")
-            return []
-
-    @staticmethod
-    def _downloader_items() -> List[Dict[str, Any]]:
-        """下载器下拉项（从宿主下载器配置读取，并标出系统默认的那个）。
-
-        ⚠️ 实测坑：宿主 ``ServiceBaseHelper.get_configs()`` 返回的是 **``{name: conf}``
-        字典**（不是列表），且 ``conf`` 是 ``DownloaderConf`` 对象而不是 dict。
-        直接 ``for item in get_configs()`` 迭代到的是字符串键，``item.get(...)`` 抛
-        ``AttributeError`` 被 except 吞掉 ⇒ 下拉永远是空的（本插件踩过一次）。
-        因此这里键与字段两种来源都取，并对对象 / dict 都做兼容。
+        作品**现查**短剧百科（``run_module("actor_works")``，每条都已补成作品页
+        记录），不落盘、不进快照 —— 关注列表的作品墙数据照旧走 ``/works``。
+        参数是函数形参（FastAPI 按名注入，见 ``api_works`` 的说明）。
         """
-        if not HAS_FRAMEWORK:
-            return []
+        actor_id = _clean_text(actor_id)
+        name = _clean_text(name)
+        if not actor_id and not name:
+            return {"success": False, "message": "缺少演员标识（actor_id 或 name）"}
         try:
-            raw = DownloaderHelper().get_configs() or {}
-        except Exception as err:  # noqa: BLE001 - 读取失败给空列表，页面仍可渲染
-            logger.warning(f"{PLUGIN_NAME} 读取下载器列表失败：{err}")
-            return []
-        pairs = list(raw.items()) if isinstance(raw, dict) else [(None, item) for item in raw]
-        items: List[Dict[str, Any]] = []
-        for key, conf in pairs:
-            name = str(key or _conf_field(conf, "name") or "").strip()
-            if not name:
+            works = self.chain.run_module("actor_works", actor_id=actor_id, name=name) or []
+        except Exception as err:  # noqa: BLE001 - 百科不可用时降级报错
+            logger.warning(f"{PLUGIN_NAME} 短剧百科取演员作品失败（{actor_id or name}）：{err}")
+            return {"success": False, "message": f"短剧百科取作品失败：{err}"}
+        rows: List[Dict[str, Any]] = []
+        seen: set = set()
+        for work in works:
+            if not isinstance(work, dict):
                 continue
-            items.append(
-                {
-                    "title": name,
-                    "value": name,
-                    "default": bool(_conf_field(conf, "default")),
-                }
-            )
-        return items
-
-    # ── 系统目录与默认下载器（读宿主既有配置，避免重复手填） ──
-
-    @staticmethod
-    def _system_directories() -> List[Dict[str, Any]]:
-        """读取宿主「目录管理」里维护的目录清单（下载目录 + 媒体库目录成对）。
-
-        宿主前端下载/整理用的就是这一份配置（``GET /download/paths`` 与
-        ``GET /storage/directories`` 同源），插件直接复用，用户就不必在插件里
-        再手抄一遍路径。取不到时返回空列表，前端退化为「可手填」。
-        """
-        if not HAS_FRAMEWORK:
-            return []
-        try:
-            from app.application.directory import DirectoryHelper
-        except Exception as err:  # noqa: BLE001 - 宿主未暴露该模块时降级
-            logger.debug(f"{PLUGIN_NAME} 宿主未暴露 DirectoryHelper：{err}")
-            return []
-        try:
-            items: List[Dict[str, Any]] = []
-            for conf in DirectoryHelper().get_dirs():
-                name = _clean_text(_conf_field(conf, "name"))
-                download_path = _clean_text(_conf_field(conf, "download_path"))
-                library_path = _clean_text(_conf_field(conf, "library_path"))
-                media_type = _clean_text(_conf_field(conf, "media_type"))
-                media_category = _clean_text(_conf_field(conf, "media_category"))
-                if not download_path and not library_path:
-                    continue
-                items.append(
-                    {
-                        "name": name,
-                        "download_path": download_path,
-                        "library_path": library_path,
-                        "media_type": media_type,
-                        "media_category": media_category,
-                        "priority": _to_int(_conf_field(conf, "priority")),
-                        "is_short_drama": "短剧" in f"{name}{media_category}{download_path}",
-                    }
-                )
-            items.sort(
-                key=lambda item: (_to_int(item.get("priority")), str(item.get("name") or ""))
-            )
-            return items
-        except Exception as err:  # noqa: BLE001 - 读取失败不影响页面渲染
-            logger.warning(f"{PLUGIN_NAME} 读取系统目录配置失败：{err}")
-            return []
-
-    @staticmethod
-    def _default_downloader() -> str:
-        """宿主下载器配置里被标为「默认」的那个名字；取不到返回空串。"""
-        if not HAS_FRAMEWORK:
-            return ""
-        try:
-            from app.application.configuration import get_configured_system_config
-            from app.schemas.types import SystemConfigKey
-
-            configs = get_configured_system_config().get(SystemConfigKey.Downloaders) or []
-        except Exception as err:  # noqa: BLE001 - 读不到就让前端显示「未指定」
-            logger.debug(f"{PLUGIN_NAME} 读取系统默认下载器失败：{err}")
-            return ""
-        for item in configs:
-            if not isinstance(item, dict):
+            candidate = baike_work_to_candidate(work)
+            if not candidate:
                 continue
-            if item.get("default") and item.get("enabled", True):
-                return str(item.get("name") or "")
-        return ""
+            row = work_row(candidate, name, actor_id)
+            if row["key"] in seen:
+                continue
+            seen.add(row["key"])
+            # 在库判定与作品墙同一套探针（三态；查不了就是「未知」，不硬给结论）
+            row["in_library"] = self.library_probe.lookup(row)
+            rows.append(row)
+        sort_works(rows, _DEFAULT_SORT)
+        return {"success": True, "name": name, "total": len(rows), "works": rows}
 
-    @staticmethod
-    def _directory_label(item: Dict[str, Any]) -> str:
-        """目录下拉的展示文案：``短剧（/vol00/…/短剧/）``。"""
-        name = _clean_text(item.get("name")) or _clean_text(item.get("media_category")) or "未命名"
-        path = _clean_text(item.get("download_path"))
-        return f"{name}（{path}）" if path else name
-
-    # ── 一次性任务 ──
-
-    def _add_once_job(
-        self,
-        delay_seconds: float = 3,
-        trigger: str = "once",
-        func: Optional[Callable[..., Any]] = None,
-        job_id: str = _ONCE_JOB_ID,
-        job_name: str = "",
-    ) -> bool:
-        """向宿主调度器登记一次性任务。
-
-        关键字是 ``func_kwargs``（不是 ``kwargs``），传错会被内部 try/except 吞掉、
-        只留一条错误日志，表现为「手动运行没反应」。
-
-        ``func`` 缺省是整轮任务（``execute_task``）；「刷新作品」等只跑一部分的
-        动作传自己的函数，并用 ``job_id`` 与整轮任务区分，避免互相覆盖。
-        """
+    def api_refresh(self) -> Dict[str, Any]:
+        """立即刷新全部演员的作品（忽略缓存）。"""
+        if not self._actors:
+            return {"success": False, "message": "还没有添加演员"}
+        if not self._lock.acquire(blocking=False):
+            return {"success": False, "message": "已有刷新任务在运行"}
         try:
-            from app.sdk import scheduler as scheduler_sdk
+            before = self._load_actors()
+            self._refresh_actors(force=True)
+            fresh = self._collect_fresh(before)
+            self._notify_fresh(fresh)
+            rows, summary = self._work_rows()
+            return {
+                "success": True,
+                "message": f"刷新完成：{summary.get('total', 0)} 部作品"
+                + (f"，新增 {len(fresh)} 部" if fresh else ""),
+                "total": summary.get("total", 0),
+                "new": summary.get("new", 0),
+            }
+        finally:
+            self._lock.release()
 
-            add_once = getattr(scheduler_sdk, "add_plugin_once_job", None)
-            if not add_once:
-                logger.warning(f"{PLUGIN_NAME} 当前宿主不支持一次性任务接口")
-                return False
-            add_once(
-                self.__class__.__name__,
-                job_id,
-                func or self.execute_task,
-                job_name or f"{PLUGIN_NAME}执行",
-                delay_seconds=delay_seconds,
-                func_kwargs={"trigger": trigger},
-            )
-            return True
-        except Exception as err:  # pragma: no cover - 宿主版本差异兜底
-            logger.warning(f"{PLUGIN_NAME} 登记一次性任务失败：{err}")
-            return False
-
-    # ── 发现层 ──
-
-    def _resolve_douban_cookie(self) -> str:
-        """决定用哪份豆瓣 Cookie：配置优先，否则复用宿主 CookieCloud 的登录态。
-
-        带 60 秒进程内缓存：一轮任务里**每位演员**都会取一次 Cookie，直接打 CookieCloud
-        会把同一个请求重复几十次（这一层是纯网络往返，宿主侧没有缓存）。
-        """
-        if self._douban_cookie:
-            return self._douban_cookie
-        now = time.time()
-        if self._cookie_cache_at and now - self._cookie_cache_at < 60:
-            return self._cookie_cache
-        host = str(getattr(settings, "COOKIECLOUD_HOST", "") or "").strip()
-        key = str(getattr(settings, "COOKIECLOUD_KEY", "") or "").strip()
-        password = str(getattr(settings, "COOKIECLOUD_PASSWORD", "") or "").strip()
-        client = _CookieCloudClient(host=host, key=key, password=password)
-        if not client.configured:
-            self._cookie_cache = ""
-            self._cookie_cache_at = now
-            return ""
-        cookie = client.fetch("douban.com")
-        if cookie:
-            logger.info(f"{PLUGIN_NAME} 已从 CookieCloud 取到豆瓣登录态")
-        else:
-            logger.warning(f"{PLUGIN_NAME} CookieCloud 未取到豆瓣 Cookie：{client.last_error}")
-        self._cookie_cache = cookie
-        self._cookie_cache_at = now
-        return cookie
+    # ── 发现层：只认短剧百科 ──
 
     def _discover_actor(self, key: str) -> Dict[str, Any]:
-        """发现单个演员的作品列表。
+        """发现单个演员的作品列表（只认短剧百科）。
 
-        两档（``use_baike`` 开关）：
-
-        - **开（默认）**：只看短剧百科 —— 用户定稿（2026-10-15）：短剧百科的数据
-          在 TMDB/豆瓣不一定有，展示的作品要**全**在短剧百科，因此豆瓣/TMDB 整条
-          跳过（豆瓣配额极紧、Cookie 常态失效，不调它们顺便把这摊烦全免了）；
-        - **关**：TMDB + 豆瓣并集（旧口径）。
-
-        返回 ``{"key", "name", "douban_id", "tmdb_id", "baike_id", "works": [...],
-        "errors": [...]}``。所有来源都失败时 ``works`` 为空、``errors`` 有可读原因。
+        返回 ``{"key","name","baike_id","works","errors","baseline_at"}``。
         """
         record: Dict[str, Any] = {
             "key": key,
             "name": key,
-            "douban_id": "",
-            "tmdb_id": "",
             "baike_id": "",
             "works": [],
             "errors": [],
@@ -3053,74 +1484,48 @@ class ShortDramaActorSubscribe(_PluginBase):
 
         existing = self._load_actors().get(key)
         if isinstance(existing, dict):
-            record["douban_id"] = str(existing.get("douban_id") or "")
-            record["tmdb_id"] = str(existing.get("tmdb_id") or "")
             # 百科演员 ID 缓存在快照里：解析一次后，后续轮次直接按 ID 取作品页，
-            # 不再走站外索引（搜索引擎一次 10 秒级，95 位演员逐个查一轮不可接受）
-            record["baike_id"] = str(existing.get("baike_id") or "")
-            record["name"] = str(existing.get("name") or key)
+            # 不再走站外索引（搜索引擎一次 10 秒级，几十位演员逐个查一轮不可接受）
+            record["baike_id"] = _clean_text(existing.get("baike_id"))
+            record["name"] = _clean_text(existing.get("name")) or key
 
-        if self._use_baike:
-            # ── 百科单源模式：作品墙只展示短剧百科里有的作品 ──
-            self._baike_works(record, works)
-            record["works"] = works  # 单源无需跨源合并
-            record["state"] = record_state(record)
-            return record
+        # 「新作品」基线：第一次见到这位演员时记下时间，之后每轮沿用它判定谁是新来的
+        stamp = datetime.now().strftime(_STAMP_FORMAT)
+        baseline = _clean_text(existing.get("baseline_at")) if isinstance(existing, dict) else ""
+        record["baseline_at"] = baseline or stamp
 
-        # ── 豆瓣：可填人物 ID 或主页链接，否则按名称搜索 ──
-        person_id = record["douban_id"] or self._extract_person_id(key)
-        person_id = person_id or ""
-        if self._douban_blocked:
-            # 同一轮内已有演员确认豆瓣登录态失效：剩下的不再逐个去撞（省配额、省日志），
-            # 直接复用同一原因，等下一轮（CookieCloud 更新后）自动重试。
-            record["errors"].append(f"豆瓣：{_COOKIE_EXPIRED_HINT}")
-        else:
-            douban = _DoubanClient(proxy=self._proxy, cookie=self._resolve_douban_cookie())
-            if not person_id:
-                matches = douban.search_person(key)
-                if matches:
-                    person_id = matches[0]["id"]
-                    record["name"] = matches[0].get("name") or key
-                elif douban.last_error:
-                    record["errors"].append(f"豆瓣：{douban.failure_hint()}")
-            if person_id:
-                record["douban_id"] = person_id
-                works.extend(self._douban_works(douban, person_id, record))
-            # 豆瓣明确要求登录 ⇒ 本轮后续演员大概率同样失败，直接短路
-            if douban.last_need_login:
-                self._douban_blocked = True
-
-        # ── TMDB ──
-        tmdb = _TmdbClient(proxy=self._proxy)
-        tmdb_id = record["tmdb_id"]
-        if not tmdb_id:
-            matches = tmdb.search_person(key)
-            if matches:
-                tmdb_id = matches[0]["id"]
-            elif tmdb.last_error:
-                record["errors"].append(f"TMDB：{tmdb.last_error}")
-        if tmdb_id:
-            record["tmdb_id"] = tmdb_id
-            credits = tmdb.person_credits(tmdb_id)
-            if not credits and tmdb.last_error:
-                record["errors"].append(f"TMDB：{tmdb.last_error}")
-            works.extend(credits)
-
-        record["works"] = self._merge_works(works)
-        # 展示状态：面板据此决定是「安静等待自动重试」还是「中性说明豆瓣确无影视条目」，
-        # 而不是把 errors 逐条铺给用户（临时性失败插件每轮都会自己重试）。
+        self._baike_works(record, works)
+        # ⚠️ 数据源这一轮空手而归时**保留旧作品**：真机见过数据源插件处于升级/中间态
+        # 时演员页返回 0 部作品，若直接覆盖，整面作品墙会被一次临时故障清空。
+        # 保留旧数据并标 ``stale``，让它按「临时故障」的短间隔重试（见 record_state）。
+        if not works and record.get("errors"):
+            kept = [
+                dict(item)
+                for item in (
+                    (existing.get("works") if isinstance(existing, dict) else None) or []
+                )
+                if isinstance(item, dict)
+            ]
+            if kept:
+                works = kept
+                record["stale"] = True
+        # first_seen 就地从旧快照继承（只有新冒出来的才记成本轮时间）
+        merge_first_seen(
+            existing.get("works") if isinstance(existing, dict) else None, works, stamp
+        )
+        record["works"] = works
+        # 字段版本：低于当前版本的记录会被判定为「需要重抓」（见 _SNAPSHOT_SCHEMA）
+        record["schema"] = _SNAPSHOT_SCHEMA
         record["state"] = record_state(record)
         return record
 
     def _baike_works(self, record: Dict[str, Any], works: List[Dict[str, Any]]) -> None:
         """从短剧百科插件取一位演员的全部作品（就地追加进 ``works``）。
 
-        链路（全部经 ``self.chain.run_module`` 分发给 ShortDramaBaikeSource；
+        链路（全部经 ``self.chain.run_module`` 分发给 ShortDramaBaikeSource）：
 
-        1. 快照里已缓存 ``baike_id`` → 直接 ``actor_works(actor_id)``（库里已有 URL，零引擎请求）；
-        2. 没缓存 → ``search_actors(name)`` 按名字解析。站外索引召回**含模糊结果**
-           （实测搜「王石」会带出「王碩」），因此只收**归一化名字精确相等**的候选，
-           宁可漏也不错配；解析成功后把 ``actor_id`` 写回 ``record`` 供下轮复用。
+        1. 快照里已缓存 ``baike_id`` → 直接 ``actor_works(actor_id)``（零引擎请求）；
+        2. 没缓存 → ``search_actors(name)``，只收**归一化名字精确相等**的候选。
 
         任何异常都只记进 ``errors``，不会拖垮发现任务。
         """
@@ -3141,7 +1546,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                     and _clean_text(row.get("actor_id"))
                 ]
                 if not matched:
-                    # 稳定结果：站上没收录这位演员（或百科插件未安装/未启用，文案里一并说明）
+                    # 稳定结果：站上没收录这位演员（或百科插件未安装/已停用）
                     record["errors"].append(
                         "短剧百科：未收录该演员（若百科插件未安装或已停用也会出现此提示）"
                     )
@@ -3155,180 +1560,52 @@ class ShortDramaActorSubscribe(_PluginBase):
                     works.append(candidate)
             if baike_id and not cards:
                 record["errors"].append("短剧百科：演员页没有作品")
-        except Exception as err:  # noqa: BLE001 - 百科不可用不拖垮其余来源
+        except Exception as err:  # noqa: BLE001 - 百科不可用只记错误
             record["errors"].append(f"短剧百科：查找失败（{err}）")
-
-    @staticmethod
-    def _extract_person_id(value: str) -> str:
-        """从「纯数字 ID」或「豆瓣人物主页链接」里取人物 ID；取不到返回空串。"""
-        text = _clean_text(value)
-        if text.isdigit():
-            return text
-        match = _PERSON_URL_PATTERN.search(text)
-        return match.group(1) if match else ""
-
-    def _douban_works(self, client: _DoubanClient, person_id: str, record: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """取一位豆瓣人物的影视作品集（先取详情，作品集与作品都在详情里）。"""
-        detail = client.person_detail(person_id)
-        if not detail:
-            if client.last_error:
-                record["errors"].append(f"豆瓣：{client.failure_hint()}")
-            else:
-                record["errors"].append("豆瓣：人物详情为空（可能人物 ID 无效）")
-            return []
-        collection = self._work_collection(detail)
-        if not collection:
-            # 静默返回空会让「作品墙只有 TMDB 的几条」这种问题无从排查，
-            # 因此把详情里实际有哪些 module 类型一并报出来。
-            types = [
-                str(module.get("type"))
-                for module in (detail.get("modules") or [])
-                if isinstance(module, dict)
-            ]
-            record["errors"].append(f"豆瓣：人物详情里没有「影视」作品集（modules={types or '无'}）")
-            return []
-
-        works: List[Dict[str, Any]] = []
-        for raw in collection.get("works") or []:
-            candidate = douban_work_to_candidate(raw)
-            if candidate:
-                works.append(candidate)
-            if len(works) >= self._max_works:
-                break
-
-        if not works:
-            # 集合里没内嵌作品时，退回按集合 id 请求一次（老结构的行为）
-            collection_id = _clean_text(collection.get("id")) or _clean_text(collection.get("_payload_id"))
-            for raw in client.person_works(collection_id, count=self._max_works):
-                candidate = douban_work_to_candidate(raw)
-                if candidate:
-                    works.append(candidate)
-
-        if not works:
-            record["errors"].append("豆瓣：作品集里没有可解析的影视条目")
-        return works
-
-    @staticmethod
-    def _work_collection(detail: Dict[str, Any]) -> Dict[str, Any]:
-        """从人物详情里取「影视」作品集（返回整个集合对象，作品就内嵌在里面）。
-
-        ⚠️ 实测（2026-10，豆瓣 frodo ``/elessar/subject/{id}``）：真实结构是
-
-        ``modules[type=work_collections].payload.collections[].{id, title, total, works}``
-
-        两个与直觉不符的点，都足以让整条豆瓣链路**静默失效**（不报错、只是没数据）：
-
-        1. 比早期文档多了一层 ``payload``（``module["collections"]`` 恒为 ``None``）；
-        2. 集合自身的 ``id`` 是**空串**（``payload.id`` 才是可用 ID），
-           ``works`` 直接内嵌在集合里（10 条；``start>0`` 一律返回空，即不支持翻页）。
-
-        因此这里对「内嵌 ``payload``」与「旧版直接挂 collections」两种结构都做兼容。
-        """
-        for module in detail.get("modules") or []:
-            if not isinstance(module, dict) or module.get("type") != "work_collections":
-                continue
-            payload = module.get("payload") if isinstance(module.get("payload"), dict) else {}
-            collections: Any = payload.get("collections")
-            if collections is None:
-                collections = module.get("collections")  # 旧结构兜底
-            for collection in collections or []:
-                if not isinstance(collection, dict):
-                    continue
-                if "影视" not in _clean_text(collection.get("title")):
-                    continue
-                merged = dict(collection)
-                if payload.get("id"):
-                    merged["_payload_id"] = payload.get("id")
-                return merged
-        return {}
-
-    @staticmethod
-    def _merge_works(works: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """合并多来源作品，按「归一化剧名 + 年份」去重，先到者补齐别名等字段。
-
-        去重键与账本键一致，保证「发现 → 匹配 → 记账」用的是同一套身份口径。
-
-        ⚠️ 短剧百科的作品卡**没有年份**（站点不给），直接按 ``剧名|`` 入键会让
-        同一部剧出两张卡（TMDB/豆瓣一条带年份、百科一条不带）。因此补一条二级
-        归并：**只要有一侧缺年份**、且归一化剧名唯一命中已有条目，就并进去
-        （缺的年份顺带补上）；两侧都有年份仍然按精确键走，不同年份的同名剧
-        （翻拍）不会被错误合并。
-        """
-        merged: Dict[str, Dict[str, Any]] = {}
-        by_title: Dict[str, List[str]] = {}
-        for item in works:
-            if not isinstance(item, dict):
-                continue
-            title = _clean_text(item.get("title"))
-            if not title:
-                continue
-            year = _clean_text(item.get("year"))
-            title_key = normalize_title(title)
-            key = ledger_key(title, year)
-            current = merged.get(key)
-            if current is None:
-                same_title = by_title.get(title_key) or []
-                if len(same_title) == 1:
-                    other = merged.get(same_title[0])
-                    # 只在「一侧缺年份」时归并：都带年份的同名剧可能是翻拍，不能合
-                    if other is not None and (not year or not _clean_text(other.get("year"))):
-                        key = same_title[0]
-                        current = other
-            if current is None:
-                merged[key] = dict(item)
-                by_title.setdefault(title_key, []).append(key)
-                continue
-            # 已经有一条时：补齐缺失字段，不覆盖已有值
-            for field in ("year", "alt_title", "media_id", "type", "poster", "vote"):
-                if not current.get(field) and item.get(field):
-                    current[field] = item[field]
-        return list(merged.values())
 
     # ── 发现层节奏 ──
 
     def snapshot_ttl_seconds(self) -> float:
-        """快照整体刷新间隔（秒）。"""
-        return max(1, _to_int(self._snapshot_hours) or _DEFAULT_SNAPSHOT_HOURS) * 3600.0
+        """演员快照的保鲜期（秒）= 发现间隔。
+
+        「发现间隔」既是定时任务的轮询节奏，也是快照的 TTL：
+        每轮任务把「距上次抓取已超过一个间隔」的演员重抓一遍，
+        两个口径天然一致，不再分开配置。
+        """
+        return max(1, _to_int(self._interval_hours) or 12) * 3600.0
 
     def retry_seconds(self) -> float:
         """解析失败后的重试间隔（秒）。"""
         return max(1, _to_int(self._retry_minutes) or _DEFAULT_RETRY_MINUTES) * 60.0
 
     def _due_actor_keys(self, cached: Dict[str, Any]) -> List[str]:
-        """当前到期待解析的演员（新加的 / 快照过期 / 失败已到重试点）。"""
+        """当前到期待解析的演员（新加的 / 快照过期 / 字段版本落后 / 失败已到重试点）。"""
         ttl = self.snapshot_ttl_seconds()
         retry = self.retry_seconds()
         return [
-            key for key in self._actors if record_needs_refresh(cached.get(key), ttl, retry)
+            key
+            for key in self._actors
+            if record_needs_refresh(cached.get(key), ttl, retry, schema=_SNAPSHOT_SCHEMA)
         ]
 
-    @staticmethod
-    def _candidates_from(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """把快照摊平成候选作品列表（键与账本一致，后见覆盖先见）。"""
-        candidates: Dict[str, Dict[str, Any]] = {}
-        for key, record in snapshot.items():
-            if not isinstance(record, dict):
-                continue
-            for work in record.get("works") or []:
-                work = dict(work)
-                work["actor"] = record.get("name") or key
-                candidates[ledger_key(work.get("title") or "", work.get("year") or "")] = work
-        return list(candidates.values())
+    def _refresh_one(self, key: str) -> int:
+        """只重解析一位演员并落盘，返回作品数（添加演员时用）。"""
+        snapshot = self._load_actors()
+        record = self._discover_actor(key)
+        record["time"] = datetime.now().strftime(_STAMP_FORMAT)
+        snapshot[key] = record
+        self.save_data(_DATA_ACTORS, snapshot)
+        return len(record.get("works") or [])
 
     def _refresh_actors(
         self, force: bool = False, only: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
-        """汇总候选作品；只重解析「到期」的演员，其余直接沿用缓存。
+        """刷新演员作品快照；只重解析「到期」的演员，其余沿用缓存。
 
-        用户定的口径：快照**整体一天刷新一次**（``snapshot_hours``），只有「上一轮解析
-        失败」的演员会在 ``retry_minutes``（默认 20 分钟）后单独重试。这样正常状态下
-        一天只对豆瓣消耗一轮额度（额度极紧），失败又能在 20 分钟内自愈。
+        - ``force=True``（手动刷新）无视缓存全部重解析；
+        - ``only=[…]`` 只重解析指定演员（失败重试任务用）。
 
-        - ``force=True``（手动「刷新作品」/「立即运行」）无视缓存全部重解析；
-        - ``only=[…]`` 只重解析指定演员（失败重试任务用，避免顺手把整表刷一遍）。
-
-        全部命中缓存时**不写盘也不打日志** —— 定时轮询每轮都会走这里，静默是常态；
-        否则 20 分钟一次的重试任务会把「等待重试」那几条汇总日志刷满。
+        全部命中缓存时**不写盘也不打日志** —— 定时轮询每轮都会走这里，静默是常态。
         """
         cached = {
             key: value for key, value in self._load_actors().items() if key in self._actors
@@ -3344,8 +1621,6 @@ class ShortDramaActorSubscribe(_PluginBase):
             return self._candidates_from(cached)
 
         snapshot: Dict[str, Any] = dict(cached)
-        # 每轮重置豆瓣短路标志（上一轮登录态失效不代表这一轮还失效）
-        self._douban_blocked = False
         for key in due:
             try:
                 record = self._discover_actor(key)
@@ -3355,451 +1630,339 @@ class ShortDramaActorSubscribe(_PluginBase):
             record["state"] = record_state(record)
             record["time"] = datetime.now().strftime(_STAMP_FORMAT)
             snapshot[key] = record
-            # ⚠️ 逐演员**增量落盘**（与账本增量落盘同一课：114 部事故的教训）。
-            # 接入百科后首轮解析可能拉长到几十分钟（每位演员一次站外索引检索），
-            # 宿主 reconcile 随时会重载插件打断整轮 —— 整轮结束才写盘会把已解析的
-            # 演员全部丢回去重来。
+            # ⚠️ 逐演员**增量落盘**：首轮解析可能拉长到几十分钟，宿主 reconcile 随时会
+            # 重载插件打断整轮 —— 整轮结束才写盘会把已解析的演员全部丢回去重来。
             self.save_data(_DATA_ACTORS, snapshot)
         # 只保留配置里现有的演员（用户删掉的演员其作品不该再出现在作品墙）
         snapshot = {key: snapshot[key] for key in self._actors if key in snapshot}
-        # 失败提示只在日志里**汇总一条**：解析失败大多是临时的（豆瓣登录态失效 / 限流），
-        # 到期会自动重试，逐条 warning 只会刷屏（用户明确要求「等待重试」即可）。
         self._log_actor_states(snapshot)
         self.save_data(_DATA_ACTORS, snapshot)
-        if only is None and len(due) < len(self._actors):
-            logger.info(
-                f"{PLUGIN_NAME} 快照：重新解析 {len(due)} 位演员、沿用缓存 "
-                f"{len(self._actors) - len(due)} 位（整体每 {self._snapshot_hours} 小时刷新，"
-                f"解析失败 {self._retry_minutes} 分钟后重试）"
-            )
         return self._candidates_from(snapshot)
 
+    @staticmethod
+    def _candidates_from(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """把快照摊平成作品行列表（同一部剧被多位演员参演时只保留一条，后见覆盖先见）。"""
+        rows: Dict[str, Dict[str, Any]] = {}
+        for key, record in snapshot.items():
+            if not isinstance(record, dict):
+                continue
+            actor = _clean_text(record.get("name")) or key
+            for work in record.get("works") or []:
+                if not isinstance(work, dict):
+                    continue
+                row = work_row(work, actor, key)
+                rows[row["key"]] = row
+        return list(rows.values())
+
+    def _work_rows(
+        self, query: Optional[Dict[str, Any]] = None
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """作品墙数据（可单测）：先算筛选前的全集，再按查询参数过滤 + 排序。
+
+        :param query: 查询条件（``actor`` / ``genre`` / ``year`` / ``studio`` /
+            ``sort`` / ``keyword``）。不传 = 不过滤、按默认排序
+            （``api_status`` 只取统计口径，走这条路）。
+
+        ``is_new`` **不落盘**，每次查询现算 —— 过期的「新」自动消失，读旧快照也不会
+        显示过期标记。
+        """
+        snapshot = {
+            key: value for key, value in self._load_actors().items() if key in self._actors
+        }
+        rows: Dict[str, Dict[str, Any]] = {}
+        actor_counts: Dict[str, int] = {}
+        for key, record in snapshot.items():
+            if not isinstance(record, dict):
+                continue
+            actor = _clean_text(record.get("name")) or key
+            baseline = stamp_epoch(record.get("baseline_at"))
+            works = record.get("works") or []
+            actor_counts[actor] = len(works)
+            for work in works:
+                if not isinstance(work, dict):
+                    continue
+                row = work_row(work, actor, key)
+                row["is_new"] = is_fresh_work(work, time.time(), baseline)
+                seen = rows.get(row["key"])
+                if seen:
+                    # 同一部剧多位演员参演时合并演员名（「A / B」），命中任一演员的筛选都算
+                    owners = {
+                        item.strip()
+                        for item in str(seen.get("actor") or "").split(" / ")
+                        if item.strip()
+                    }
+                    owners.add(actor)
+                    merged = " / ".join(sorted(owners))
+                    # 新旧快照并存的同一部剧：早年作品卡「年份恒空」、字段残缺，
+                    # 不能拿残缺的做底（空年份 + 失真的「新」标记都会上墙）——
+                    # 字段更全的行顶上，演员归属无论谁做底都要合并
+                    if not _clean_text(seen.get("year")) and _clean_text(row.get("year")):
+                        row["actor"] = merged
+                        rows[row["key"]] = row
+                    else:
+                        seen["actor"] = merged
+                    continue
+                rows[row["key"]] = row
+
+        all_rows = list(rows.values())
+
+        # ── 在库判定（与宿主媒体详情页同一套口径）──
+        # ``in_library`` 和 ``is_new`` 一样**不落盘**、每次查询现算：媒体库是活的，
+        # 落盘的结论会过期。探针内部带 TTL 缓存，同一批作品反复打开墙面零查询。
+        # 三态：True 在库 / False 不在库 / None 未知（查不了）——未知不参与统计、
+        # 也不被「只看未入库」排除，免得把「没查成」说成「都不在库」。
+        probe = self.library_probe
+        for row in all_rows:
+            row["in_library"] = probe.lookup(row)
+        known = [row for row in all_rows if row.get("in_library") is not None]
+
+        summary = {
+            "total": len(all_rows),
+            "new": sum(1 for row in all_rows if row.get("is_new")),
+            # 「已在库」统计只在**至少查成一条**时才给：整个库表都查不了时
+            # library_known=0，前端据此隐藏统计与「只看未入库」开关
+            "library_known": len(known),
+            "in_library": sum(1 for row in known if row.get("in_library") is True),
+            "actors": [
+                {
+                    "key": _clean_text(record.get("name")) or key,
+                    "name": _clean_text(record.get("name")) or key,
+                    "works": len(record.get("works") or []),
+                    "state": _clean_text(record.get("state")),
+                }
+                for key, record in snapshot.items()
+                if isinstance(record, dict)
+            ],
+            # 筛选项基于**全集**算：选项不随勾选跳动
+            "facets": build_facets(all_rows),
+        }
+
+        # ── 查询参数：筛选 → 排序 ──
+        params = query if isinstance(query, dict) else {}
+        filtered = filter_works(
+            all_rows,
+            actor=_clean_text(params.get("actor")),
+            genre=_clean_text(params.get("genre")),
+            year=_clean_text(params.get("year")),
+            studio=_clean_text(params.get("studio")),
+            only_not_in_library=_to_bool(params.get("only_not_in_library")),
+            keyword=_clean_text(params.get("keyword")),
+        )
+        return sort_works(filtered, _clean_text(params.get("sort"))), summary
+
+    @property
+    def library_probe(self) -> _LibraryProbe:
+        """作品在库探针（实例级复用：TTL 缓存跨请求生效，进程里只建一个 Oper）。"""
+        probe = getattr(self, "_probe", None)
+        if probe is None:
+            probe = _LibraryProbe()
+            self._probe = probe
+        return probe
+
+    def _actor_row(self, key: str, record: Any) -> Dict[str, Any]:
+        """演员列表的一行（状态 / 作品数 / 错误原因）。"""
+        record = record if isinstance(record, dict) else {}
+        return {
+            "key": key,
+            "name": _clean_text(record.get("name")) or key,
+            "baike_id": _clean_text(record.get("baike_id")),
+            "works": len(record.get("works") or []),
+            "state": _clean_text(record.get("state")),
+            "time": _clean_text(record.get("time")),
+            "errors": [str(item) for item in record.get("errors") or []],
+        }
+
+    def _collect_fresh(self, before: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """对比刷新前后的快照，找出这一轮**新出现**的作品。
+
+        只统计「刷新前已经有快照」的演员 —— 首次建立基线那一轮的全部作品都不算新，
+        否则一次导入十几位演员会整片标成新作品。
+        """
+        after = self._load_actors()
+        fresh: List[Dict[str, Any]] = []
+        for key, record in after.items():
+            if not isinstance(record, dict):
+                continue
+            old = before.get(key)
+            if not isinstance(old, dict) or not old.get("works"):
+                continue
+            old_keys = {
+                work_key(work.get("title") or "", work.get("year") or "")
+                for work in old.get("works") or []
+                if isinstance(work, dict)
+            }
+            # 早年快照的作品没有年份（``year`` 恒空），字段升级后完整键会变
+            # ⇒ 同时按剧名比对，否则整墙作品会被误判成本轮新出现的
+            old_titles = {
+                normalize_title(work.get("title") or "")
+                for work in old.get("works") or []
+                if isinstance(work, dict)
+            }
+            actor = _clean_text(record.get("name")) or key
+            for work in record.get("works") or []:
+                if not isinstance(work, dict):
+                    continue
+                if work_key(work.get("title") or "", work.get("year") or "") in old_keys:
+                    continue
+                if normalize_title(work.get("title") or "") in old_titles:
+                    continue
+                fresh.append({"actor": actor, **work})
+        return fresh
+
+    def _notify_fresh(self, fresh: List[Dict[str, Any]]) -> None:
+        """新作品汇总通知（一条，不逐条刷屏）。"""
+        if not fresh or not self._notify:
+            return
+        lines = [f"发现 {len(fresh)} 部新作品："]
+        for item in fresh[:10]:
+            title = _clean_text(item.get("title"))
+            actor = _clean_text(item.get("actor"))
+            lines.append(f"· {actor}：{title}")
+        if len(fresh) > 10:
+            lines.append(f"· ……另有 {len(fresh) - 10} 部")
+        try:
+            self.post_message(
+                mtype=_MessageType.Plugin,
+                title=f"【{self.plugin_name}】新作品",
+                text="\n".join(lines),
+            )
+        except Exception as err:  # noqa: BLE001 - 通知失败不该影响发现结果
+            logger.warning(f"{PLUGIN_NAME} 发送新作品通知失败：{err}")
+
+    @staticmethod
+    def _log_actor_states(snapshot: Dict[str, Any]) -> None:
+        """把整轮演员状态汇总成最多两条日志（等待重试 / 百科未收录）。"""
+        waiting: List[str] = []
+        empty: List[str] = []
+        for key, record in snapshot.items():
+            name = _clean_text(record.get("name")) or key
+            state = _clean_text(record.get("state"))
+            if state == "waiting":
+                waiting.append(name)
+            elif state == "empty":
+                empty.append(name)
+        if waiting:
+            logger.info(
+                f"{PLUGIN_NAME} 暂未取到作品的演员（会自动重试）：{'、'.join(waiting)}"
+            )
+        if empty:
+            logger.info(f"{PLUGIN_NAME} 短剧百科未收录的演员：{'、'.join(empty)}")
+
+    # ── 任务 ──
+
+    def refresh_works_task(self, trigger: str = "interval") -> bool:
+        """定时发现任务：刷新演员作品快照，新作品发一条汇总通知。
+
+        ⚠️ 这里**不下载、不订阅** —— 插件只负责把作品摆到墙上，追哪部由用户在墙上点
+        「订阅」，后续搜索 / 下载 / 整理全部由宿主订阅系统接管。
+        """
+        if not self.get_state() or not self._actors:
+            return False
+        if not self._lock.acquire(blocking=False):
+            logger.info(f"{PLUGIN_NAME} 上一轮刷新还在进行，本次跳过（{trigger}）")
+            return False
+        try:
+            before = self._load_actors()
+            self._refresh_actors()
+            fresh = self._collect_fresh(before)
+            self._notify_fresh(fresh)
+            rows, summary = self._work_rows()
+            self._last_result = {
+                "trigger": trigger,
+                "works": summary.get("total", 0),
+                "new": len(fresh),
+            }
+            logger.info(
+                f"{PLUGIN_NAME} 作品发现完成（{trigger}）：{len(self._actors)} 位演员、"
+                f"{summary.get('total', 0)} 部作品"
+                + (f"，新增 {len(fresh)} 部" if fresh else "")
+            )
+            return True
+        except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务挂掉
+            logger.error(f"{PLUGIN_NAME} 作品发现异常：{err}")
+            return False
+        finally:
+            self._lock.release()
+
     def retry_failed_actors(self, trigger: str = "interval") -> bool:
-        """失败重试任务：只重解析「到期的失败演员」，不搜索、不下载。
+        """失败重试任务：只重解析「到期的失败演员」。
 
-        与完整轮询分开，是因为两者时间尺度不同：快照一天刷一次，而失败的演员
-        20 分钟后就该再试一次（豆瓣登录态一恢复就能自己好，不必等满一天）。
-        整表按 TTL 到期的那次刷新仍由订阅轮询负责，这里只碰 ``is_retry_candidate``
-        认定的失败记录（含「新加的演员」——第一次解析失败不该等 6 小时）。
-
-        没有到期的演员时**完全静默**：不写盘、不打日志、不碰网络。
-        重试成功后新发现的作品会立刻出现在作品墙（状态「待订阅」），
-        真正下载交给下一轮轮询或用户手动点「订阅」，避免这里顺手跑全站搜索。
+        与完整刷新分开，是因为两者时间尺度不同：快照一天刷一次，而失败的演员
+        20 分钟后就该再试一次（百科插件一恢复就能自己好，不必等满一天）。
         """
         if not self.get_state() or not self._actors:
             return False
         cached = self._load_actors()
-        # 只处理「失败」类记录（``is_retry_candidate``）：整表按 TTL（一天）到期的那次
-        # 刷新交给订阅轮询任务，两个任务职责不重叠 —— 否则日志里会出现「重试任务」却
-        # 顺手把全表刷了一遍的怪现象，排查时很难解释。
         due = [
             key for key in self._due_actor_keys(cached) if is_retry_candidate(cached.get(key))
         ]
         if not due:
             return False
         if not self._lock.acquire(blocking=False):
-            # 整轮任务正在跑：它自己会顺带把到期的演员解析掉，这次跳过即可
             return False
         try:
             before = {
-                key: str((cached.get(key) or {}).get("state") or "")
+                key: _clean_text((cached.get(key) or {}).get("state"))
                 for key in self._actors
                 if isinstance(cached.get(key), dict)
             }
-            candidates = self._refresh_actors(only=due)
+            before_snapshot = dict(cached)
+            self._refresh_actors(only=due)
             after = self._load_actors()
             recovered = [
                 key
                 for key, state in before.items()
-                if state == "waiting" and str((after.get(key) or {}).get("state") or "") != "waiting"
+                if state == "waiting"
+                and _clean_text((after.get(key) or {}).get("state")) != "waiting"
             ]
+            fresh = self._collect_fresh(before_snapshot)
+            self._notify_fresh(fresh)
             logger.info(
-                f"{PLUGIN_NAME} 解析失败重试完成（{trigger}）：重试 {len(due)} 位演员"
-                f"（{'、'.join(due)}），候选 {len(candidates)} 部"
+                f"{PLUGIN_NAME} 解析失败重试完成（{trigger}）：重试 {len(due)} 位"
                 + (f"，已恢复 {len(recovered)} 位：{'、'.join(recovered)}" if recovered else "")
             )
             return True
-        except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务挂掉
+        except Exception as err:  # noqa: BLE001 - 兜底
             logger.error(f"{PLUGIN_NAME} 失败重试异常：{err}")
             return False
         finally:
             self._lock.release()
 
-    @staticmethod
-    def _log_actor_states(snapshot: Dict[str, Any]) -> None:
-        """把整轮演员状态汇总成最多两条日志（等待重试 / 豆瓣确无作品）。"""
-        waiting: List[str] = []
-        expired = False
-        empty: List[str] = []
-        for key, record in snapshot.items():
-            name = str(record.get("name") or key)
-            state = record.get("state")
-            if state == "waiting":
-                waiting.append(name)
-                kinds = {classify_error(item) for item in (record.get("errors") or [])}
-                if "douban_auth" in kinds:
-                    expired = True
-            elif state == "empty":
-                empty.append(name)
-        if waiting:
-            reason = _COOKIE_EXPIRED_HINT if expired else _RATE_LIMIT_HINT
-            logger.info(
-                f"{PLUGIN_NAME} {len(waiting)} 位演员本轮未取到作品（{reason}），"
-                f"等待下一轮自动重试：{'、'.join(waiting)}"
-            )
-        if empty:
-            logger.info(
-                f"{PLUGIN_NAME} {len(empty)} 位演员在豆瓣没有影视作品集（非故障，不再重试）：{'、'.join(empty)}"
-            )
+    # ── 工具 ──
 
-    # ── 主流程 ──
+    def _load_actors(self) -> Dict[str, Any]:
+        """加载演员快照；没有数据时返回空字典（首次运行）。"""
+        data = self.get_data(_DATA_ACTORS)
+        return data if isinstance(data, dict) else {}
 
-    def execute_task(self, trigger: str = "manual") -> bool:
-        """执行一轮任务：**发现**（+ 订阅重试 / 可选全量下载）。
+    def _add_once_job(
+        self,
+        delay_seconds: float = 3,
+        trigger: str = "once",
+        func: Optional[Any] = None,
+        job_id: str = _ONCE_JOB_ID,
+    ) -> bool:
+        """向宿主调度器登记一次性任务（立即刷新一次）。
 
-        订阅制（默认，``auto_download=False``）下本函数只做两件事：
-
-        1. **刷新演员作品快照** —— 新作品自动出现在作品墙；
-        2. **重试订阅表** —— 你在作品墙点过「订阅」但还没下到的作品，每轮再试一次。
-
-        未订阅的作品**永远不会**被下载。打开「自动下载」开关后恢复老行为：
-        发现 → 把快照里所有没下过的作品挨个搜索下载（会把下载器灌爆，慎用）。
-
-        返回是否成功（无异常即视为成功，即使没有新作品）。
+        ⚠️ 关键字是 ``func_kwargs``（不是 ``kwargs``），传错会被内部 try/except 吞掉，
+        只留一条错误日志，表现为「手动运行没反应」。
         """
-        if not self.get_state():
-            return False
-        if not self._actors or not self._sites:
-            self._last_result = {"success": False, "message": "未配置演员或搜索站点"}
-            logger.warning(f"{PLUGIN_NAME} 未配置演员或搜索站点，跳过执行")
-            return False
-        if not self._lock.acquire(blocking=False):
-            logger.info(f"{PLUGIN_NAME} 上一轮仍在执行，跳过本次触发（{trigger}）")
-            return False
-        self._running = True
-        started = time.time()
         try:
-            logger.info(f"{PLUGIN_NAME} 开始执行（触发方式：{trigger}）")
-            # 只有定时轮询走「快照缓存」：快照一天才刷一次，中间几轮直接用缓存，
-            # 省下极紧的豆瓣额度；手动触发（立即运行 / 命令 / 一次性）一律强制重解析，
-            # 用户点了按钮却看不到新作品才叫奇怪。
-            candidates = self._refresh_actors(force=trigger != "interval")
+            from app.sdk import scheduler as scheduler_sdk
 
-            # ── 订阅制：本轮到此为止（发现已完成） ────────────────
-            # 唯一会主动下载的是**订阅表**里的条目（你在作品墙点过「订阅」的）。
-            # 未订阅的作品永远不会被下载 —— 这类批量提交不可逆（种子进下载器就收不回来）。
-            if not self._auto_download:
-                outcome = self._run_subscriptions()
-                total_sub = outcome["downloaded"] + outcome["pending"]
-                if total_sub:
-                    message = (
-                        f"本轮仅发现：候选 {len(candidates)} 部；订阅重试 {total_sub} 部"
-                        f"（成功 {outcome['downloaded']} 部，仍待下载 {outcome['pending']} 部）"
-                    )
-                else:
-                    message = (
-                        f"本轮仅发现：候选 {len(candidates)} 部（订阅制：未自动下载；"
-                        f"在作品墙点「订阅」才会下载）"
-                    )
-                stats = self._load_stats()
-                stats.update(
-                    {
-                        "candidates": len(candidates),
-                        "last_run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "elapsed": round(time.time() - started, 1),
-                    }
-                )
-                stats["downloaded"] = len(self._load_ledger())
-                self._save_stats(stats)
-                self._last_result = {"success": True, "message": message}
-                logger.info(f"{PLUGIN_NAME} {message}")
-                return True
-
-            ledger = self._load_ledger()
-            misses = self._load_misses()
-            searcher = _SiteSearcher(self._sites, prefer_short_drama_category=self._prefer_short_drama_category)
-
-            downloaded: List[Dict[str, Any]] = []
-            skipped = 0
-            cooled = 0
-            errors: List[str] = []
-            cooldown_seconds = _MISS_COOLDOWN_HOURS * 3600
-
-            for work in candidates:
-                title = _clean_text(work.get("title"))
-                year = _clean_text(work.get("year"))
-                key = ledger_key(title, year)
-                if key in ledger:
-                    skipped += 1
-                    continue
-                if not title:
-                    continue
-                # 未命中冷却：上次搜过且空手而归的剧，冷却期内不重复搜索
-                last_miss = _to_float(misses.get(key))
-                if last_miss and time.time() - last_miss < cooldown_seconds:
-                    cooled += 1
-                    continue
-                try:
-                    outcome = self._process_candidate(work, searcher)
-                except Exception as err:  # noqa: BLE001 - 单剧失败不影响整轮
-                    logger.error(f"{PLUGIN_NAME} 处理「{title}」失败：{err}")
-                    errors.append(f"{title}：{err}")
-                    continue
-                # 无论「站点没资源」还是「下载提交失败」，都记一次冷却；
-                # 成功下载的剧从冷却表移除（账本接手去重）。
-                if outcome is None:
-                    misses[key] = time.time()
-                elif outcome.get("ok"):
-                    misses.pop(key, None)
-                    ledger[key] = outcome["entry"]
-                    # ⚠️ **增量落盘**：账本若只在整轮结束时写一次，中途被宿主重载 /
-                    # 异常打断就会把本轮所有下载丢出去重记录，下一轮**重复下载**同一批。
-                    # 这一条曾经真的发生过（一轮 114 部全丢）。每成功一部立刻落盘。
-                    self._save_ledger(ledger)
-                    downloaded.append(outcome["entry"])
-                else:
-                    misses[key] = time.time()
-                    if outcome.get("reason"):
-                        errors.append(f"{title}：{outcome['reason']}")
-
-            self._save_ledger(ledger)
-            self.save_data(_DATA_MISS, misses)
-            stats = {
-                "candidates": len(candidates),
-                "downloaded": len(ledger),
-                "last_run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "elapsed": round(time.time() - started, 1),
-            }
-            self._save_stats(stats)
-            self._last_result = {
-                "success": True,
-                "message": (
-                    f"本轮候选 {len(candidates)} 部，跳过已下载 {skipped} 部，"
-                    f"冷却中 {cooled} 部，新下载 {len(downloaded)} 部，耗时 {stats['elapsed']}s"
-                ),
-            }
-            logger.info(f"{PLUGIN_NAME} {self._last_result['message']}")
-            if self._notify:
-                self._send_notify(self._last_result["message"], downloaded, errors)
+            add_once = getattr(scheduler_sdk, "add_plugin_once_job", None)
+            if not add_once:
+                logger.warning(f"{PLUGIN_NAME} 当前宿主不支持一次性任务接口")
+                return False
+            add_once(
+                self.__class__.__name__,
+                job_id,
+                func or self.refresh_works_task,
+                f"{PLUGIN_NAME}执行",
+                delay_seconds=delay_seconds,
+                func_kwargs={"trigger": trigger},
+            )
             return True
-        except Exception as err:  # noqa: BLE001 - 兜底，避免定时任务整体挂掉
-            self._last_result = {"success": False, "message": f"执行异常：{err}"}
-            logger.error(f"{PLUGIN_NAME} 执行异常：{err}")
+        except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+            logger.warning(f"{PLUGIN_NAME} 登记一次性任务失败：{err}")
             return False
-        finally:
-            self._running = False
-            self._lock.release()
-
-    def _process_candidate(self, work: Dict[str, Any], searcher: _SiteSearcher) -> Optional[Dict[str, Any]]:
-        """处理单个候选作品：搜索 → 匹配 → 择优 → 下载。
-
-        返回 ``None`` 表示站点无资源（不算错误）；否则返回
-        ``{"ok": bool, "entry"|"reason": ...}``。
-        """
-        title = _clean_text(work.get("title"))
-        alt_title = _clean_text(work.get("alt_title"))
-        year = _clean_text(work.get("year"))
-        aliases = [item for item in (title, alt_title) if item]
-
-        results = searcher.search(title)
-        if not results:
-            return None
-
-        matched: List[Dict[str, Any]] = []
-        for torrent in results:
-            if not title_matches(torrent, aliases):
-                continue
-            torrent_year = extract_year(
-                f"{torrent.get('title') or ''} {torrent.get('description') or ''}"
-            )
-            if not year_compatible(torrent_year, year):
-                continue
-            torrent["_year"] = torrent_year
-            matched.append(torrent)
-
-        if not matched:
-            return None
-
-        best = pick_best(matched)
-        if not best:
-            return None
-
-        download_hash = self._download(best)
-        if not download_hash:
-            return {"ok": False, "reason": "下载提交失败"}
-
-        return {
-            "ok": True,
-            "entry": {
-                "title": title,
-                "year": year,
-                "episodes": extract_episode_count(best.get("description") or ""),
-                "site_name": best.get("site_name") or "",
-                "torrent_title": best.get("title") or "",
-                "torrent_hash": download_hash,
-                "media_source": work.get("source") or "",
-                "media_id": work.get("media_id") or "",
-                "actor": work.get("actor") or "",
-                "alternatives": len(matched),
-                "organized": False,
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            },
-        }
-
-    # ── 下载 ──
-
-    def _download(self, torrent: Dict[str, Any]) -> Optional[str]:
-        """下载种子文件并提交给下载器，成功返回下载哈希。
-
-        流程与宿主内的常规下载一致：带站点 Cookie 拉种子文件 → 校验是合法种子 →
-        交给 ``DownloaderHelper`` 的实例按下载器类型调用 ``add_torrent``。
-        """
-        if not HAS_FRAMEWORK:
-            logger.error(f"{PLUGIN_NAME} 框架模块不可用，无法下载")
-            return None
-        enclosure = str(torrent.get("enclosure") or "").strip()
-        if not enclosure:
-            logger.error(f"{PLUGIN_NAME} 种子无下载链接：{torrent.get('title')}")
-            return None
-        if not self._download_path:
-            logger.error(f"{PLUGIN_NAME} 未配置下载目录")
-            return None
-        if not self._downloader:
-            logger.error(f"{PLUGIN_NAME} 未选择下载器")
-            return None
-
-        cookie = self._site_cookie(site_domain_of(enclosure))
-        proxies = getattr(settings, "PROXY", None) if self._proxy else None
-        response = None
-        try:
-            response = RequestUtils(cookies=cookie, timeout=30, proxies=proxies).get_res(enclosure)
-            if not response or not response.content:
-                logger.error(f"{PLUGIN_NAME} 下载种子文件失败：{torrent.get('title')}")
-                return None
-            content = response.content
-            head = content[:20] if len(content) >= 20 else content
-            if not (head.startswith(b"d8:announce") or b"d8:announce" in head):
-                logger.error(f"{PLUGIN_NAME} 下载到的内容不是合法种子文件")
-                return None
-        except Exception as err:  # noqa: BLE001 - 网络异常统一降级为失败
-            logger.error(f"{PLUGIN_NAME} 获取种子文件异常：{err}")
-            return None
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:  # pragma: no cover
-                    pass
-
-        try:
-            service = DownloaderHelper().get_service(name=self._downloader)
-            if not service or not service.instance:
-                logger.error(f"{PLUGIN_NAME} 下载器 {self._downloader} 不存在或未连接")
-                return None
-            instance = service.instance
-            if DownloaderHelper().is_downloader("qbittorrent", service=service):
-                success, hashes = instance.add_torrent(
-                    content=content, download_dir=self._download_path, tag=_DOWNLOAD_TAG
-                )
-                if not success:
-                    logger.error(f"{PLUGIN_NAME} qBittorrent 添加种子失败")
-                    return None
-                download_hash = hashes[0] if hashes else None
-            else:
-                added = instance.add_torrent(
-                    content=content, download_dir=self._download_path, labels=[_DOWNLOAD_TAG]
-                )
-                if not added:
-                    logger.error(f"{PLUGIN_NAME} Transmission 添加种子失败")
-                    return None
-                download_hash = getattr(added, "hashString", None)
-            logger.info(f"{PLUGIN_NAME} 已提交下载：{torrent.get('title')}（hash={download_hash}）")
-            return download_hash or "submitted"
-        except Exception as err:  # noqa: BLE001
-            logger.error(f"{PLUGIN_NAME} 提交下载器异常：{err}")
-            return None
-
-    @staticmethod
-    def _site_cookie(domain: str) -> str:
-        """按域名取站点 Cookie（用于下载种子文件）。
-
-        候选顺序里已经包含「子域退一级主域」（下载链接常落在 ``pt.xxx.com`` 这类子域上），
-        所以不再需要单独写一次降级；第一个cookie 非空的候选即为结果。
-        """
-        if not domain or not HAS_FRAMEWORK:
-            return ""
-        try:
-            helper = SitesHelper()
-            for candidate in site_domain_candidates(domain):
-                site = helper.get_indexer(candidate)
-                cookie = str((site or {}).get("cookie") or "")
-                if cookie:
-                    return cookie
-            return ""
-        except Exception as err:  # noqa: BLE001
-            logger.warning(f"{PLUGIN_NAME} 读取站点 Cookie 失败（{domain}）：{err}")
-            return ""
-
-    # ── 整理 ──
-
-    def organize_once(self, trigger: str = "manual") -> bool:
-        """扫描账本中已下载未整理的条目，逐一整理入库。
-
-        与下载解耦：整理是独立的定时任务，因此下载还在进行时不会误判为失败。
-        ``trigger`` 由宿主调度器按 ``func_kwargs`` 注入（interval/manual），
-        仅用于日志口径，不影响行为。
-        """
-        if not self.get_state() or not self._organize_enabled:
-            return False
-        ledger = self._load_ledger()
-        if not ledger:
-            return False
-        organizer = _Organizer(
-            download_path=self._download_path,
-            library_path=self._library_path,
-            transfer_type=self._transfer_type,
-        )
-        if not organizer.ready:
-            logger.warning(f"{PLUGIN_NAME} 未配置下载目录或媒体库目录，跳过整理")
-            return False
-
-        organized = 0
-        changed = False
-        for key, entry in ledger.items():
-            if not isinstance(entry, dict) or entry.get("organized"):
-                continue
-            ok, message = organizer.organize(entry)
-            if ok:
-                entry["organized"] = True
-                entry["organized_path"] = message
-                organized += 1
-                changed = True
-                logger.info(f"{PLUGIN_NAME} 已整理「{entry.get('title')}」→ {message}")
-        if changed:
-            self._save_ledger(ledger)
-            logger.info(f"{PLUGIN_NAME} 本轮整理完成，共 {organized} 部")
-        return True
-
-    # ── 通知 ──
-
-    def _send_notify(self, detail: str, downloaded: List[Dict[str, Any]], errors: List[str]) -> None:
-        """通过宿主通知渠道发送结果；通知失败不影响主流程。"""
-        lines = [detail]
-        if downloaded:
-            lines.append("")
-            lines.append("新下载：")
-            for item in downloaded[:10]:
-                episode = f" 全{item['episodes']}集" if item.get("episodes") else ""
-                lines.append(f"· {item['title']}（{item.get('year') or '年份未知'}）{episode} @ {item.get('site_name') or '未知站点'}")
-        if errors:
-            lines.append("")
-            lines.append("异常：")
-            lines.extend(f"· {item}" for item in errors[:5])
-        try:
-            self.post_message(
-                mtype=_MessageType.Plugin,
-                title=f"【{self.plugin_name}】订阅轮询完成",
-                text="\n".join(lines),
-            )
-        except Exception as err:  # pragma: no cover - 未配置通知渠道时兜底
-            logger.warning(f"{PLUGIN_NAME} 发送通知失败：{err}")

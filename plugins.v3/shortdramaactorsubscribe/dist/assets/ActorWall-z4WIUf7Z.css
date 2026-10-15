@@ -1,0 +1,240 @@
+
+.sdas-hover-area[data-v-6ee01f0f] {
+  inline-size: 100%;
+}
+.sdas-card[data-v-6ee01f0f] {
+  cursor: pointer;
+}
+
+/* 海报骨架：与宿主 .media-card-placeholder 同一口径 */
+.sdas-poster-skeleton[data-v-6ee01f0f] {
+  inline-size: 100%;
+  block-size: 100%;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.sdas-poster-empty[data-v-6ee01f0f] {
+  aspect-ratio: 2 / 3;
+  inline-size: 100%;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+/* 悬停浮层里的文字（对应宿主 .media-card-title / .media-card-overview） */
+.sdas-card-title[data-v-6ee01f0f] {
+  font-size: 1.125rem;
+  line-height: 1.25rem;
+}
+.sdas-card-overview[data-v-6ee01f0f] {
+  font-size: 0.875rem;
+  line-height: 1.125rem;
+  opacity: 0.92;
+}
+
+.sdas[data-v-6c26e0f7] {
+  --sdas-fg: rgb(var(--v-theme-on-surface));
+  --sdas-fg-dim: rgba(var(--v-theme-on-surface), 0.62);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 12px;
+  color: var(--sdas-fg);
+}
+.sdas--full[data-v-6c26e0f7] {
+  padding: 12px 16px 24px;
+}
+
+/* 标题行：标题 + 统计小字，竖排 */
+.sdas-head[data-v-6c26e0f7] {
+  padding: 0 12px;
+}
+.sdas-title[data-v-6c26e0f7] {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.sdas-sub[data-v-6c26e0f7] {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--sdas-fg-dim);
+}
+.sdas-new-dot[data-v-6c26e0f7] {
+  color: #e53935;
+}
+
+/*
+  筛选栏：行结构（flex / justify-start / align-center / mr-5）与标签（VLabel）的类名
+  全部沿用探索页；这里只补行间距与 chip 上的计数角标。
+*/
+.sdas-filters[data-v-6c26e0f7] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 展开的演员作品墙顶条（与筛选栏同宽度节奏） */
+.sdas-expanded-bar[data-v-6c26e0f7] {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  margin-bottom: 2px;
+}
+
+/*
+  可展开的三行（版权方 / 类型 / 演员）用 column 模式的 chip 组：chips 换行排布，
+  没有滑动箭头。组要占满行内剩余宽度，chips 才会按容器宽换行。
+*/
+
+/* 筛选栏内非网格行的 chip（年份 / 排序）统一边距，起点与网格行一致 */
+
+/* 标签列定宽：「版权方」3 个字、其余 2 个字 —— 定宽后各行 chips 的起点才竖向对齐 */
+.sdas-row-label[data-v-6c26e0f7] {
+  flex: 0 0 3.5em;
+}
+
+/* 「只看未入库」开关：贴齐 chip 行高，别把筛选区撑高 */
+.sdas-filters .sdas-checkbox[data-v-6c26e0f7] {
+  flex: none;
+  margin-top: -2px;
+}
+
+/*
+  「版权方 / 类型 / 演员」三行用**等宽格子**铺 chip：一行 N 个等宽格子、整齐换行；
+  长名字在格内省略，完整名走 chip 的 title 悬停提示。格子间距 8px：
+  行高 = 32(chip) + 8(gap) = 40px，与折叠态的裁切线（.sdas-clip）正好咬合。
+*/
+
+/* 格内省略：VChip 的内容包一层 .v-chip__content（宿主产物里已证实存在） */
+
+/* 折叠态：整排渲染但高度裁到一行（第二排正好从 40px 起，被裁掉）；展开后摘掉裁切 */
+.sdas-filters .sdas-clip[data-v-6c26e0f7] {
+  max-height: 40px;
+  overflow: hidden;
+}
+.sdas-chip-count[data-v-6c26e0f7] {
+  margin-left: 5px;
+  font-size: 11px;
+  opacity: 0.6;
+  letter-spacing: 0;
+}
+.sdas-chip-dot[data-v-6c26e0f7] {
+  margin-left: 4px;
+  color: #fb8c00;
+  font-weight: 700;
+}
+.sdas-search[data-v-6c26e0f7] {
+  width: 14rem;
+  flex: 0 0 auto;
+}
+
+/* 行尾的「展开 / 收起」按钮：必须留在 chip 组外面，且不被挤压 */
+.sdas-row-toggle[data-v-6c26e0f7] {
+  flex: 0 0 auto;
+  margin-left: 4px;
+}
+.sdas-search-hint[data-v-6c26e0f7] {
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+/* 卡片网格：列数 / 间距由 gridStyle 现算（与 ProgressiveCardGrid 同式） */
+.sdas-grid[data-v-6c26e0f7] {
+  display: grid;
+}
+.sdas-item[data-v-6c26e0f7] {
+  min-width: 0;
+}
+.sdas-hover-area[data-v-6c26e0f7] {
+  inline-size: 100%;
+}
+.sdas-card[data-v-6c26e0f7] {
+  cursor: pointer;
+}
+
+/* 海报骨架：与宿主 .media-card-placeholder 同一口径 */
+.sdas-poster-skeleton[data-v-6c26e0f7] {
+  inline-size: 100%;
+  block-size: 100%;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.sdas-poster-empty[data-v-6c26e0f7] {
+  aspect-ratio: 2 / 3;
+  inline-size: 100%;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+/* 悬停浮层里的文字（对应宿主 .media-card-title / .media-card-overview） */
+.sdas-card-title[data-v-6c26e0f7] {
+  font-size: 1.125rem;
+  line-height: 1.25rem;
+}
+.sdas-card-overview[data-v-6c26e0f7] {
+  font-size: 0.875rem;
+  line-height: 1.125rem;
+  opacity: 0.92;
+}
+
+/* 滚动加载哨兵 */
+.sdas-sentinel[data-v-6c26e0f7] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  font-size: 12px;
+  color: var(--sdas-fg-dim);
+}
+
+/* 空态 */
+.sdas-empty[data-v-6c26e0f7] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 56px 16px;
+  color: var(--sdas-fg-dim);
+  text-align: center;
+}
+.sdas-empty-title[data-v-6c26e0f7] {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--sdas-fg);
+}
+.sdas-empty-hint[data-v-6c26e0f7] {
+  font-size: 13px;
+  max-width: 460px;
+}
+
+/* 自绘提示条 */
+.sdas-toast[data-v-6c26e0f7] {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  z-index: 3000;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.82);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.sdas-toast.is-error[data-v-6c26e0f7] {
+  background: #c62828;
+}
+.sdas-fade-enter-active[data-v-6c26e0f7],
+.sdas-fade-leave-active[data-v-6c26e0f7] {
+  transition: opacity 0.2s ease;
+}
+.sdas-fade-enter-from[data-v-6c26e0f7],
+.sdas-fade-leave-to[data-v-6c26e0f7] {
+  opacity: 0;
+}
+
+/* 搜索页的量宽哨兵：零高占满一行，两个结果网格的列宽都从它量 */
+.sdas-measure[data-v-6c26e0f7] {
+  inline-size: 100%;
+  block-size: 0;
+}
+
+/* 搜索页里某一类结果为空的小提示（另一类有结果时才单独露出来） */
+.sdas-search-miss[data-v-6c26e0f7] {
+  opacity: 0.8;
+}

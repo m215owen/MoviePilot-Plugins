@@ -41,8 +41,6 @@ const federationOptions = {
     './Dashboard': './src/Dashboard.vue',
     // 主界面侧栏全页（nav_key = main）
     './AppPage': './src/AppPage.vue',
-    // 多入口全页：nav_key = settings 时按名优先加载
-    './AppPageSettings': './src/AppPageSettings.vue',
   },
   shared: {
     // 只共享 vue：UI 组件库由主程序全局注册，联邦 remote 不需要（也不应）打包它，

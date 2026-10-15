@@ -2,22 +2,22 @@
   <!--
     主界面侧栏全页（联邦暴露名 ./AppPage，nav_key = main）。
 
-    宿主会在主界面左侧导航里挂一个入口，点击后加载本组件。面板本身与插件详情页完全同构，
-    因此这里做成薄壳直接复用 Page，只额外开启整页留白（full）。
+    宿主会在侧栏「订阅」分组里挂一个「短剧演员」入口，点开即加载本组件。
+    界面本体与插件详情页共用 ActorWall，这里只负责把宿主注入的
+    `native-subscribe`（系统订阅入口）透传下去，并开启整页留白。
   -->
-  <Panel
+  <ActorWall
     :api="props.api"
     :config="props.config"
     :plugin-id="props.pluginId"
-    :nav-key="props.navKey"
-    mode="main"
+    :native-subscribe="props.nativeSubscribe"
     full
   />
 </template>
 
 <script setup lang="ts">
-import Panel from './Page.vue'
-import type { PluginApi, PluginConfig } from './types'
+import ActorWall from './ActorWall.vue'
+import type { NativeSubscribe, PluginApi, PluginConfig } from './types'
 
 const props = defineProps<{
   /** 宿主注入的 axios 实例 */
@@ -26,7 +26,7 @@ const props = defineProps<{
   config?: Partial<PluginConfig>
   /** 当前插件实例 ID */
   pluginId?: string
-  /** 当前侧栏入口的 nav_key（main / settings…） */
-  navKey?: string
+  /** 宿主注入的原生订阅入口（kebab: native-subscribe） */
+  nativeSubscribe?: NativeSubscribe
 }>()
 </script>

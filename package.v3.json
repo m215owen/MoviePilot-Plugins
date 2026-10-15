@@ -23,6 +23,7 @@
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/DoubanActorSubscribe.png",
     "author": "m215owen",
     "level": 1,
+    "release": true,
     "system_version": ">=3.0.0",
     "history": {
       "v1.15.0": "发现源整体从豆瓣换成 TMDB：演员解析改走 TMDB 人物搜索（也可直接填 TMDB 人物 ID 或主页链接跳过搜索），作品来自 combined_credits（演员本人参演，一并对齐原名/年份/评分/海报）；订阅身份改为 media_source=themoviedb。凭据沿用宿主「系统设置」里的 TMDB_API_KEY，插件侧不再需要任何登录态 —— 豆瓣的 Cookie / CookieCloud 配置、签名、限流重试与 24 小时搜索冷却整套逻辑已删除，再不会出现「额度用尽、登录态失效」导致的解析失败。作品上限由 10 放宽到 60（默认 20）。升级会自动迁移：旧豆瓣快照、身份缓存、忽略记录与自动订阅去重表一次性作废并重抓一遍，但「演员什么时候加入订阅列表」会原样留住（不会把老演员一夜照标成「新演员」）；同时清掉解析缓存里历史遗留的空壳条目。⚠️ 插件 ID 与显示名以外的目录名、联邦名、远程命令等一律保持不变，已保存的配置与订阅不受影响；仅显示名改为「TMDB演员订阅」。",
@@ -45,15 +46,16 @@
   },
   "ShortDramaActorSubscribe": {
     "name": "短剧演员订阅",
-    "description": "跟着喜欢的演员追短剧：合并 TMDB 与豆瓣的演员作品列表，用剧名直接在站点搜索并按「做种数→体积→分辨率」择优下载，凭账本去重、全程不依赖宿主识别器，长尾短剧也能追；入库交给外部整理器（需要时可在插件内开启自带整理）。",
+    "description": "跟着喜欢的演员追短剧：演员与作品数据全部来自短剧百科数据源（ShortDramaBaikeSource，经跨插件模块方法获取，本插件不做任何其它来源的抓取），按演员名查找并只认同名精确命中；拿到作品后用剧名直接在站点搜索并按「做种数→体积→分辨率」择优下载，凭账本去重、全程不依赖宿主识别器，长尾短剧也能追；入库交给外部整理器（需要时可在插件内开启自带整理）。",
     "labels": "订阅,短剧,演员",
     "version": "1.0.0",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/ShortDramaActorSubscribe.png",
     "author": "m215owen",
     "level": 1,
+    "release": true,
     "system_version": ">=3.0.0",
     "history": {
-      "v1.0.0": "首次发布：配置演员（支持 TMDB / 豆瓣名称搜索或直接填 ID）→ 定时合并两源作品列表 → 用剧名在站点搜索（可优先站点「短剧」分类）→ 按「做种数→体积→分辨率」择优一条下载 → 账本去重（剧名+年份，不含集数）→ 自建整理入库（查账本定位文件，不靠识别器）并生成最小 NFO；支持下载器选择、下载目录/媒体库目录与搬运方式（链接/复制/移动）配置、完成通知与智能体工具查询。侧栏在「订阅」分组里提供一个「短剧」入口，与 电影订阅 / 电视剧订阅 同形（同组、同权限、同族图标）。"
+      "v1.0.0": "首次发布：配置演员（按演员名在短剧百科查找，只认同名精确命中，也可直接填百科演员 ID）→ 定时取回该演员的全部作品（数据唯一来源为短剧百科数据源，经跨插件模块方法获取；缓存百科 ID 后按 ID 直取）→ 用剧名在站点搜索（可优先站点「短剧」分类）→ 按「做种数→体积→分辨率」择优一条下载 → 账本去重（剧名+年份，不含集数）→ 自建整理入库（查账本定位文件，不靠识别器）并生成最小 NFO；支持下载器选择、下载目录/媒体库目录与搬运方式（链接/复制/移动）配置、完成通知与智能体工具查询。侧栏在「订阅」分组里提供一个「短剧」入口，与 电影订阅 / 电视剧订阅 同形（同组、同权限、同族图标）。"
     }
   },
   "SubscribeBatchEditor": {
@@ -81,6 +83,7 @@
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/ShortDramaBaikeSource.png",
     "author": "m215owen",
     "level": 1,
+    "release": true,
     "system_version": ">=3.0.0",
     "history": {
       "v1.0.0": "首版发布（插件仍在测试期，版本号定为首版，不跟随内部迭代次数往上堆）。把「短剧百科」(duanjubaike.org) 注册为 MoviePilot 的**一等媒体数据源**（与 TMDB / 豆瓣 / Bangumi 同级），为 TMDB、豆瓣上没有条目的短剧补上片名检索、详情识别与演员数据。① **发现**：站内检索被 Cloudflare 挑战挡住（服务端直连恒 403，浏览器仿真也过不去），改为**站外索引** —— 把 `site:duanjubaike.org <关键词>` 交给多引擎搜索（ddgs，后端可选，相邻两次至少隔 3 秒），引擎返回的每行都带完整 URL，按 `/drama/<id>` 与 `/actor/<id>` 分流成作品与演员两类，图集页 / 榜单页 / 外域结果一律剔除。② **沉淀**：URL 存进**插件自有数据库**（PostgreSQL 下是宿主库里的独立 schema，SQLite 下是插件数据目录的 plugin.db），库里**只存 URL、不存解析结果**；取数**库优先**（命中即零引擎请求），解析作品页顺带沉淀演员链接、解析演员页顺带沉淀作品链接（`follow_links` 可关），URL 库会自己长大；一个页面只留一条记录（同一个 ID 走了两条发现路径会自动合并），**只有与搜索词完全相等的剧名才建库**（宁可漏不可错）。③ **解析**：页面实时抓取，JSON-LD 优先、HTML 兜底补齐 —— 作品取评分 / 热度 / 播放 / 收藏 / 集数 / 全集时长（另附按集数折算的 `episode_minutes`）/ 首播 / 类型 / 出品方 / 真人-AI 角标 / 剧照 / 演员阵容含角色 / 同页推荐；演员页另有职务 / 性别 / 国籍 / 简介 / 全部作品 / 合作演员。④ **三处实测驱动的修正**：地址一律归一化成 `/zh-Hans`（引擎会给无前缀或 `/zh-Hant` 地址，站点 301 到繁体页后演员作品**静默解析出 0 部**、热度恒为 null）；繁体标题的候选补抓一次简体页换真标题（否则按简体关键词打分恒为 0 被丢弃）；同名多版本（AI 版 / 真人版标题一字不差）并列时逐条比字段完整度、取数据全的那条。⑤ **对外提供服务**：宿主模块分发（`search_actors` / `actor_works`）与 HTTP 纯 JSON 接口（`/lookup`、`/recognize`、`/actor`、`/urls`、`/urls/clear`、`/probe`、`/status`、`/config`），全部 `auth: \"bear\"`；宿主数据源接口另有 get_media_source / search_medias / recognize_media / obtain_images / get_module。⑥ **面板**是 Vue 联邦前端（宿主的 Vuetify JSON 页面承载不了搜索框），只有一个输入框（片名与演员名都收，`GET /lookup` 一次检索出两块结果），另有 URL 库查看器（容量统计 + 最近入库 + 按关键词/类型查 + 清空库带二次确认）与每条结果的「原始数据」展开。⑦ 配置 **9 项**（enabled / domain / search_in_global / timeout / cache_ttl / web_index_search / web_index_backend / proxy / follow_links）；插件**不注册任何后台任务**、不含任何本地索引或请求闸门。⑧ 排查上把几类**静默故障**（演员作品 0 部、引擎后端报错、URL 入库失败、撞风控、解析不出标题）都补了明确日志。"
