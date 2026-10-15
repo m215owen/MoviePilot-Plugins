@@ -34,7 +34,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 - 每张卡片（作品 / 演员档案 / 作品墙里的单部作品）都有 **「原始数据」** 按钮，
   展开就是该条目**插件处理后的完整 JSON** —— 卡片是给人看的，展开是给你核对字段的。
 - 每块只有 1 条候选时自动取详情，不用多点一次。
-- 搜索结果里的 `media_id`（`org:<作品ID>`）可以直接喂给 `/recognize`，也就是别的插件能直接复用。
+- 搜索结果里的 `media_id`（`duanju:<作品ID>`）可以直接喂给 `/recognize`，也就是别的插件能直接复用。
 
 > ⚠️ **`/lookup` 必须只打一次引擎。** 片名与演员名共用同一条站外索引，而引擎侧有
 > 3 秒的最小间隔 —— 分头查两次，第二次会被直接跳过，结果就是两块里**恒有一块是空的**。
@@ -53,7 +53,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | --- | --- | --- |
 | 声明数据源 | `get_media_source()` | 在识别 / 刮削 / 搜索界面的「媒体来源」里出现「短剧百科」 |
 | 片名检索 | `search_medias` | 返回候选 `MediaInfo`，宿主搜索框、订阅都能用 |
-| 详情识别 | `recognize_media` | 按 `media_id`（`org:<id>`）或片名取完整记录 |
+| 详情识别 | `recognize_media` | 按 `media_id`（`duanju:<id>`，兼容旧前缀 `org:`）或片名取完整记录 |
 | 补图 | `obtain_images` | 缺海报时按身份补抓，并把海报兜底填到背景图 |
 | **演员档案** | `search_actors` / `actor_works` | 演员名 → 候选演员；演员 → **全部作品**（实测 21 部一次全渲染、不分页） |
 | **URL 库** | `get_database_models()` | 插件自有数据库里存「关键词 → 页面 URL」，取数**库优先** |
@@ -63,11 +63,11 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 
 统一媒体身份：
 
-- 作品 `media_source = "duanjubaike"`，`media_id = "org:<id>"`（裸数字 ID 等价）；
+- 作品 `media_source = "duanjubaike"`，`media_id = "duanju:<id>"`（裸数字 ID 等价；**旧前缀 `org:` 仍接受**，宿主库里按旧前缀存下来的订阅不会失效）；
 - 演员 `media_id` 形如 `actor:<id>`（裸数字也接受）—— 演员**不是**媒体条目，
   这个前缀只是让调用方一眼分清「演员 ID 还是作品 ID」。
 
-> ⚠️ ID 前缀是**白名单**：`org:` 与 `actor:` 之外的前缀（例如历史形态的
+> ⚠️ ID 前缀是**白名单**：`duanju:` / `org:`（旧）/ `actor:` 之外的前缀（例如历史形态的
 > `net:duanju:123`）一律判空，尾巴不是纯数字也判空 —— 免得拿一个不属于本站的值
 > 去拼地址、白发一次必然 404 的请求。
 
@@ -258,7 +258,7 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
     "bio": "魏依珂，中国内地女演员。代表作《一眼见到你》、《将心锁玉》等。",
     "url": "https://duanjubaike.org/zh-Hans/actor/371",
     "works": [
-      {"media_id": "org:45982", "native_id": "45982", "title": "女足替补的滚烫夏天",
+      {"media_id": "duanju:45982", "native_id": "45982", "title": "女足替补的滚烫夏天",
        "poster": "https://cdn.duanjubaike.org/cover/2026/09/…jpg?width=400",
        "url": "https://duanjubaike.org/zh-Hans/drama/45982", "kind": "真人短剧",
        "episode_count": 41, "tags": ["逆袭"], "heat": 3540000.0, "play_count": 996.0}
@@ -289,7 +289,7 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
 ## 「点开作品」后的详情页能显示什么（重要）
 
 从宿主的搜索框 / 媒体页点开一部作品，前端会跳到
-`/media?media_source=duanjubaike&media_id=org:<id>`，
+`/media?media_source=duanjubaike&media_id=duanju:<id>`，
 再由宿主调 `GET /api/v1/media/{media_id}?media_source=…&type_name=…` →
 `recognize_media` 取数。前端产物 `media-<hash>.js` 逐块核对过（v3.1.5）：
 
@@ -304,7 +304,7 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
 | 推荐 / 相似（`{来源}/recommend|similar`） | 同上；**相似仅 TMDB** | ❌ 同上 |
 | 分季分集 / 剧集组（`media/groups/{tmdb_id}`） | `type=电视剧 && tmdb_id`，函数体内再要求 `source=themoviedb` | ❌ 同上 |
 | 来源链接 chips（TMDB/豆瓣/IMDb/TheTvDb/Bangumi/AniList 各一个） | 六个独立条件，**没有 homepage 通用链接** | ❌ 同上 |
-| `tagline`（简介标题正上方那行） | 无条件，但**本插件不用**（2026-10-15 用户明确不要） | ❌ 不写 |
+| `tagline`（简介标题正上方那行） | 无条件 ← 详情页里唯一的自由文本位 | ✅ 放**作品在站点的原始地址**（前端渲染成纯文本，不是可点链接） |
 
 也就是说：**右侧整块信息面板（评分 / 状态 / 上映日期 / 出品方）与演职员区，前端只认四个来源 ID**，
 自定义来源没有位置。**别伪造 `tmdb_id`** —— 那只会把页面连到 TMDB 上另一部剧。
@@ -345,7 +345,7 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
   分集内容由宿主按 ID 自己去 TMDB 取；
 - **负结果也缓存**（24h），失败只记 debug，任何异常都不影响识别主流程；插件停止时清缓存。
 
-> ⚠️ 主身份**不变**：`media_source` 仍是 `duanjubaike`、`media_id` 仍是 `org:<id>`，
+> ⚠️ 主身份**不变**：`media_source` 仍是 `duanjubaike`、`media_id` 仍是 `duanju:<id>`，
 > `tmdb_id` 只是补上的**同一部作品**的 TMDB 身份（与宿主内置的 豆瓣↔TMDB 身份投影同性质）。
 
 ## 供其它插件调用
@@ -362,7 +362,7 @@ plugin_catalog=self.pluginmanager, …)`），而每个插件都是 `ChainBase` 
 ```python
 # 在另一个插件里（self 是任意插件实例 / 任意 Chain）
 infos  = self.run_module("search_medias", meta=meta, media_source="duanjubaike")
-info   = self.run_module("recognize_media", media_source="duanjubaike", media_id="org:40105")
+info   = self.run_module("recognize_media", media_source="duanjubaike", media_id="duanju:40105")
 img    = self.run_module("obtain_images", mediainfo=info)
 actors = self.run_module("search_actors", name="魏依珂")
 works  = self.run_module("actor_works", actor_id="371")
@@ -380,7 +380,7 @@ works  = self.run_module("actor_works", actor_id="371")
 
 ```bash
 # 面板用登录态调，脚本用 X-API-KEY 调 —— 同一批接口，鉴权声明是 auth: "bear"
-GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?media_id=org:40105
+GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?media_id=duanju:40105
 GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?keyword=万妖图录传&year=2026
 GET  /api/v1/plugin/ShortDramaBaikeSource/actor?actor_id=371
 GET  /api/v1/plugin/ShortDramaBaikeSource/actor?name=魏依珂
@@ -400,7 +400,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
   "success": true,
   "record": {
     "media_source": "duanjubaike", "origin": "detail",
-    "media_id": "org:61818", "native_id": "61818",
+    "media_id": "duanju:61818", "native_id": "61818",
     "title": "养了十二年的石头会喊爸了", "year": "2026",
     "poster": "https://cdn.duanjubaike.org/cover/…jpg?width=400",
     "episode_count": 106, "duration_minutes": 121,
@@ -409,7 +409,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
     "heat": 3540000, "play_count": 996,
     "url": "https://duanjubaike.org/zh-Hans/drama/61818",
     "actors": [{"id": "2014", "name": "刘清心", "character": "苏晚", "profile_path": "…", "kind": "主演"}],
-    "related": [{"media_id": "org:53935", "title": "东家落难，保姆王妈救场翻盘", "kind": "AI短剧",
+    "related": [{"media_id": "duanju:53935", "title": "东家落难，保姆王妈救场翻盘", "kind": "AI短剧",
                  "episode_count": 50, "heat": 40710000, "rating": "8.1"}]
   }
 }
@@ -425,7 +425,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 ```json
 {
   "success": true, "message": "", "keyword": "魏依珂", "year": "",
-  "titles": [{"media_id": "org:45982", "native_id": "45982", "title": "女足替补的滚烫夏天",
+  "titles": [{"media_id": "duanju:45982", "native_id": "45982", "title": "女足替补的滚烫夏天",
               "url": "https://duanjubaike.org/zh-Hans/drama/45982", "from": "库", "score": 100}],
   "actors": [{"actor_id": "371", "media_id": "actor:371", "name": "魏依珂",
               "url": "https://duanjubaike.org/zh-Hans/actor/371", "from": "库", "score": 100}]

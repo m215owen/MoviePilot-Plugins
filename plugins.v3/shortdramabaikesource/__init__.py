@@ -76,6 +76,7 @@ from .constants import (
     LANG_PATH,
     MAX_ACTOR_CANDIDATES,
     MAX_CANDIDATES,
+    LEGACY_MEDIA_ID_PREFIXES,
     MEDIA_ID_PREFIX,
     MEDIA_SOURCE_ALIASES,
     MEDIA_SOURCE_KEY,
@@ -278,7 +279,7 @@ class ShortDramaBaikeSource(_PluginBase):
         任何 ``ChainBase`` 子类（也就是别的插件）都能直接调到：
 
             infos = self.run_module("search_medias", meta=meta, media_source="duanjubaike")
-            info = self.run_module("recognize_media", media_source="duanjubaike", media_id="org:45982")
+            info = self.run_module("recognize_media", media_source="duanjubaike", media_id="duanju:45982")
             works = self.run_module("actor_works", actor_id="371")
             actors = self.run_module("search_actors", name="魏依珂")
 
@@ -663,7 +664,7 @@ class ShortDramaBaikeSource(_PluginBase):
         """
         native_id = _clean(native_id)
         if not native_id.isdigit():
-            # 站点作品 ID 恒为裸数字；别拿 ``org:abc`` 这类值去拼一个必然 404 的地址
+            # 站点作品 ID 恒为裸数字；别拿 ``duanju:abc`` 这类值去拼一个必然 404 的地址
             return None
         cached = self._cache_get(f"detail:{native_id}")
         if cached is not None:
@@ -686,6 +687,10 @@ class ShortDramaBaikeSource(_PluginBase):
                 f"（正文 {len(html)} 字节，解析出 {len(record)} 个字段）"
             )
             return None
+        # TMDB 真实身份：严格匹配命中就写进 record（面板「原始数据」能看见），
+        # 详情页那几块只认 tmdb_id 的区块也会跟着亮 —— 必须在写缓存**之前**做，
+        # 否则缓存里那份没有它，面板展开的原始数据就会缺这一项
+        self._tmdb_identity(record)
         self._cache_set(f"detail:{native_id}", record)
         logger.debug(
             f"{PLUGIN_NAME} 作品 {native_id}《{record.get('title')}》解析完成："
@@ -778,7 +783,7 @@ class ShortDramaBaikeSource(_PluginBase):
         year: str = "",
         url: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """按 ``media_id``（``org:<id>``）或片名取一条作品记录。"""
+        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``）或片名取一条作品记录。"""
         native_id = self._native_id(media_id)
         if native_id:
             target = url or self._url_for_native("work", native_id)
@@ -895,14 +900,25 @@ class ShortDramaBaikeSource(_PluginBase):
         """
         if not record or self._tmdb is None:
             return {}
+        cached = record.get("tmdb_identity")
+        if isinstance(cached, dict):
+            return dict(cached)
         try:
-            return self._tmdb.enrich(
+            extra = self._tmdb.enrich(
                 _clean(record.get("title")),
                 record.get("year") or record.get("release_date"),
             )
         except Exception as err:  # pragma: no cover - 兜底
             logger.debug(f"{PLUGIN_NAME} TMDB 身份补充失败：{type(err).__name__}: {err}")
             return {}
+        if extra:
+            # 落进 record：面板的「原始数据」与跨插件载荷都能看到 —— ``tmdb_id`` 在
+            # PUBLIC_RECORD_FIELDS 里（对外可见），``tmdb_identity`` 是内部结构（含
+            # season_info，不进对外载荷，只给 MediaInfo 用）
+            record["tmdb_identity"] = extra
+            if extra.get("tmdb_id"):
+                record["tmdb_id"] = extra["tmdb_id"]
+        return extra
 
     # ── 模块接口：识别（宿主静态合同）──────────────────────────────
 
@@ -913,7 +929,7 @@ class ShortDramaBaikeSource(_PluginBase):
         meta: Any = None,
         **kwargs: Any,
     ) -> Any:
-        """按 ``media_id``（``org:<id>``）或片名识别一部短剧。
+        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``）或片名识别一部短剧。
 
         ⚠️ ``media_source`` 不是本来源时**必须返回 None** —— 宿主默认识别源是 TMDB，
         插件绝不能把别的来源的识别请求接过来。
@@ -1699,18 +1715,22 @@ class ShortDramaBaikeSource(_PluginBase):
 
     @staticmethod
     def _native_id(media_id: Any) -> str:
-        """``org:40105`` / ``40105`` → ``40105``；别的前缀一律不认。
+        """``duanju:40105`` / ``40105`` → ``40105``；别的前缀一律不认。
 
-        ⚠️ 前缀必须**白名单**：宿主或别的插件可能把历史形态的复合 ID（``net:duanju:123``）
+        ⚠️ 前缀必须是**白名单**：宿主或别的插件可能把历史形态的复合 ID（``net:duanju:123``）
         塞进来，照单全收会让一个不属于本站的 ID 悄悄变成「本插件的作品 123」，
         白白发一次无关请求。非数字的尾巴同样判空 —— 站点 ID 恒为裸数字。
+
+        ⚠️ ``org:`` 是**历史前缀**（早期版本用过），宿主库里可能还留着按它存的订阅与识别
+        记录 —— 继续接受，新产出一律用 :data:`MEDIA_ID_PREFIX`。
         """
         text = _clean(media_id)
         if not text:
             return ""
         head, sep, tail = text.partition(":")
         if sep:
-            if head.strip().lower() != MEDIA_ID_PREFIX:
+            prefix = head.strip().lower()
+            if prefix != MEDIA_ID_PREFIX and prefix not in LEGACY_MEDIA_ID_PREFIXES:
                 return ""
             text = _clean(tail)
         return text if text.isdigit() else ""

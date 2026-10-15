@@ -38,8 +38,12 @@ ACTOR_PATH = "/zh-Hans/actor/{id}"
 # 所以地址在**抓取与入库前**一律归一化到这个前缀（见 ``parser.canonical_page_url``）。
 LANG_PATH = "/zh-Hans"
 
-# 统一媒体 ID 前缀（media_id 形如 ``org:40105``）。
-MEDIA_ID_PREFIX = "org"
+# 统一媒体 ID 前缀（media_id 形如 ``duanju:40105``）。
+# ⚠️ 历史上用过 ``org`` —— 宿主库里/别的插件里可能还留着按旧前缀存下来的身份
+# （订阅、识别缓存、跨插件调用参数），所以 ``_native_id`` **同时接受旧前缀**，
+# 见 :data:`LEGACY_MEDIA_ID_PREFIXES`；新产出一律用新前缀。
+MEDIA_ID_PREFIX = "duanju"
+LEGACY_MEDIA_ID_PREFIXES: Tuple[str, ...] = ("org",)
 # 演员 ID 前缀（形如 ``actor:371``）。演员**不是**媒体条目，不给宿主路由用，
 # 只是让跨插件调用方能一眼分清「这是演员 ID 还是作品 ID」。
 ACTOR_ID_PREFIX = "actor"
@@ -76,7 +80,7 @@ DISCOVER_TITLE_ENRICH_LIMIT = 3
 # 补过的不会重复请求）。面板上是**按需**补（点哪部补哪部），不走这个上限。
 ACTOR_WORKS_ENRICH_LIMIT = 10
 # 自检（/probe）在「检索没命中」时用来兜底的详情样本：实测存在且字段完整的作品
-PROBE_SAMPLE_MEDIA_ID = "org:45982"
+PROBE_SAMPLE_MEDIA_ID = "duanju:45982"
 
 # ⚠️ 宿主详情页（``/media``）里，评分星条 / 状态 / 上映日期 / 出品方 / 演职员区**全部**挂在
 # ``tmdb_id``/``douban_id``/``bangumi_id``/``anilist_id`` 四个分支上（前端 ``media-*.js``

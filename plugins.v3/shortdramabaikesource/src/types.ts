@@ -46,6 +46,11 @@ export interface MediaRecord {
   url?: string
   /** 页面语言（`zh-Hans` / `zh-Hant`） */
   in_language?: string
+  /**
+   * TMDB 真实身份（严格匹配到同名 + 同年的作品才有）。
+   * 宿主详情页的评分面板 / 演职员 / 推荐 / 分季全都挂在这个 ID 上。
+   */
+  tmdb_id?: number
   actors?: CastMember[]
   /** 同页「推荐短剧」区块（字段口径与本记录一致） */
   related?: MediaRecord[]

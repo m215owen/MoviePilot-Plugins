@@ -107,6 +107,10 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
         "production_companies": [{"name": studio}] if studio else [],
         "status": _clean(item.get("status")) or None,
         "homepage": _clean(item.get("url")) or None,
+        # ``tagline`` 是详情页里**唯一无条件渲染的自由文本位**（简介标题正上方），
+        # 其余能放链接的地方（chip / homepage 行）前端都写死了来源，插件的站点链接进不去
+        # ⇒ 这里放**作品在站点上的原始地址**（宿主不把它渲染成可点链接，只是纯文本）。
+        "tagline": _clean(item.get("url")) or None,
     }
     # TMDB 真实身份（:mod:`tmdb` 严格匹配过才给）：宿主详情页的评分面板 / 演职员 / 推荐 /
     # 分季全都挂在这个 ID 上。取不到就没有这个键，行为与从前完全一致。
@@ -202,6 +206,8 @@ PUBLIC_RECORD_FIELDS = (
     "studio",
     "url",
     "in_language",
+    # TMDB 真实身份（严格匹配成功才有）：面板的「原始数据」与跨插件 JSON 都要看得见
+    "tmdb_id",
 )
 # 作品记录里「演员」条目的字段（与演员档案的 PUBLIC_ACTOR_FIELDS 是两回事）。
 # ⚠️ 字段名必须与 ``_org_cast_from_json_ld`` / ``_org_cast_from_html`` 的产出逐字一致
