@@ -159,9 +159,10 @@ def extract_urls(
     301 到繁体页，繁体页里作品链接与统计标签的写法让解析**静默出 0 部作品 / 热度为 null**。
 
     同时给每行打一个 ``simplified`` 标记（**按引擎给的原地址判断**，不是归一化之后的）：
-    只有 ``/zh-Hans/…`` 那行的标题才是简体，繁体 / 无前缀那行的标题是繁体 —— 同一部剧
-    在引擎里常常一行简体一行繁体，繁体那行按简体关键词打分恒为 0，会被当成无关候选丢掉。
-    调用方（:meth:`ShortDramaBaikeSource._discover`）据此决定要不要补抓一次简体页换标题。
+    只有 ``/zh-Hans/…`` 那行的标题才是简体，繁体 / 无前缀那行的标题是繁体 —— 繁体标题
+    按简体关键词打分恒为 0，会被当成无关候选丢掉。**同一部剧的繁体页与简体页是同一个
+    ID、只是路径前缀不同**（``/zh-Hant/drama/N`` ↔ ``/zh-Hans/drama/N``），``url`` 入库时
+    已归一化成简体地址，所以标题不需要也不应该为它出网补救。
 
     :param rows: :meth:`WebIndex.search` 的返回值
     :param host: 站点主机名（用于剔除外域结果）
@@ -200,6 +201,6 @@ def extract_urls(
         f"{PLUGIN_NAME} 站外索引结果分类：作品 {len(works)} / 演员 {len(actors)}"
         f"（可用 {usable} 条，其中重复 {usable - len(works) - len(actors)} 条）"
         f"｜繁体或无前缀地址 "
-        f"{sum(1 for row in works + actors if not row['simplified'])} 条（标题待补抓）"
+        f"{sum(1 for row in works + actors if not row['simplified'])} 条（标题按简体打分恒 0，直接不参与匹配）"
     )
     return works, actors

@@ -107,7 +107,6 @@ from .constants import (
     DEFAULT_TIMEOUT,
     DEFAULT_WEB_INDEX_BACKEND,
     DETAIL_PATH,
-    DISCOVER_TITLE_ENRICH_LIMIT,
     ENRICH_WORKERS,
     EXACT_TITLE_SCORE,
     IMAGE_DOMAINS,
@@ -695,7 +694,6 @@ class ShortDramaBaikeSource(_PluginBase):
         self._search_hits[key] = True
         raw_works = raw_works[:MAX_CANDIDATES]
         raw_actors = raw_actors[:MAX_ACTOR_CANDIDATES]
-        self._enrich_labels(keyword, raw_works, raw_actors)
         entries: List[Dict[str, Any]] = []
         stored = 0
         for row in raw_works:
@@ -746,60 +744,6 @@ class ShortDramaBaikeSource(_PluginBase):
             for row in raw_actors
         ]
         return works, actors
-
-    def _enrich_labels(
-        self, keyword: str, works: List[Dict[str, Any]], actors: List[Dict[str, Any]]
-    ) -> None:
-        """给「标题不可信」的候选补抓一次简体页，把标题换成页面自己给的那个（原地改）。
-
-        引擎给的是搜索结果标题，语言跟着它命中的那份页面走：实测同一部剧会有
-        ``/zh-Hans/drama/40354``（简体标题）与 ``/zh-Hant/drama/40445``（繁体标题）两行，
-        繁体那行按简体关键词打分**恒为 0** ⇒ 被当无关候选丢掉，面板上看不到它，
-        用户也就无从知道「这部剧还有一版」。补抓一次简体页拿真标题就解决了，顺带把详情
-        写进 TTL 缓存（点「识别」不再出网）。
-
-        两道闸门控制代价（一次检索最多多花 ``DISCOVER_TITLE_ENRICH_LIMIT`` 个请求）：
-
-        1. 只补**非 ``/zh-Hans`` 地址**（:func:`parser.href_points_to_simplified`）——
-           简体地址那行的标题本来就是简体，不用换；
-        2. 只补「标题像是这个关键词的繁体写法」的（:meth:`_may_be_traditional`）——
-           无关候选为它多抓一次页面不值得。
-        """
-        budget = DISCOVER_TITLE_ENRICH_LIMIT
-        if budget <= 0:
-            return
-        query = _clean(keyword)
-        for kind, rows in (("work", works), ("actor", actors)):
-            for row in rows:
-                if budget <= 0:
-                    return
-                if row.get("simplified") or not row.get("native_id"):
-                    continue
-                if not self._may_be_traditional(_clean(str(row.get("label") or "")), query):
-                    continue
-                budget -= 1
-                native_id = _clean(str(row.get("native_id") or ""))
-                url = _clean(str(row.get("url") or ""))
-                if kind == "work":
-                    label = _clean(((self._fetch_detail(native_id, url) or {})).get("title") or "")
-                else:
-                    label = _clean(((self._fetch_actor(native_id, url) or {})).get("name") or "")
-                if label and label != _clean(str(row.get("label") or "")):
-                    logger.info(
-                        f"{PLUGIN_NAME} 候选 {kind}:{native_id} 标题『{row.get('label')}』"
-                        f"补抓简体页后换成『{label}』"
-                    )
-                    row["label"] = label
-
-    @staticmethod
-    def _may_be_traditional(label: str, query: str) -> bool:
-        """这条标题有没有可能是同一个名字的**繁体**写法。
-
-        简繁是**逐字转写**，字数必然一样 —— 字数不同的候选不可能是同一个名字换套字，
-        不必为它去抓页面。实测那对重复条目正好同为 9 字（``相亲对象是迟来的心动`` /
-        ``相親對象是遲來的心動``）。
-        """
-        return bool(label) and bool(query) and label != query and len(label) == len(query)
 
     def _url_for_native(self, kind: str, native_id: str) -> str:
         """按站点 ID 取库里记着的 URL；没有就返回空串（调用方兜底拼一个）。"""
