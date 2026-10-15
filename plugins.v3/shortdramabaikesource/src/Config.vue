@@ -107,6 +107,34 @@
 
     <v-divider class="my-3" />
 
+    <!-- ── 识别 ── -->
+    <div class="text-subtitle-2 mb-2">
+      <v-icon icon="mdi-magnify-scan" size="18" class="mr-1" />
+      识别
+    </div>
+    <v-row dense>
+      <v-col cols="12" sm="6" md="4">
+        <v-switch
+          v-model="local.identify_fallback"
+          label="来源不是本插件且 ID 留空时也查本库"
+          color="primary"
+          hide-details
+        />
+      </v-col>
+    </v-row>
+    <div class="text-caption sdbs-dim mt-1">
+      整理的媒体 ID 框写着「留空自动识别」，但那条路走的是宿主的<b>系统识别来源</b>
+      （默认 TMDB），跟你在对话框里选的数据源无关：宿主要求「数据源 + ID」成对，
+      ID 一留空，前端就把数据源一起丢掉，宿主再把空来源<b>回填成 TMDB</b> ——
+      选了「短剧百科」却留空 ID，最后还是 TMDB 去查，短剧自然查不到。<br />
+      打开本项后，<b>来源不是本插件、ID 又留空</b>的识别（手动整理、扫描、订阅）会先拿
+      片名在 <b>本地 URL 库</b>里找一部<b>完全同名</b>的短剧：命中就按短剧收，未命中立刻
+      让位给原来源 —— 与「留空自动识别」的预期一致。<b>只查库，不触发站外检索</b>，
+      所以不会拖慢整理。库里没有的片名，行为与开关关闭时完全相同。
+    </div>
+
+    <v-divider class="my-3" />
+
     <!-- ── URL 库（插件自有数据库） ── -->
     <div class="text-subtitle-2 mb-2">
       <v-icon icon="mdi-database-outline" size="18" class="mr-1" />
@@ -187,6 +215,7 @@ const DEFAULTS: PluginConfig = {
   web_index_backend: 'auto',
   proxy: false,
   follow_links: true,
+  identify_fallback: true,
 }
 
 const FALLBACK_BACKENDS = ['auto', 'duckduckgo', 'yandex', 'google', 'brave', 'mojeek']

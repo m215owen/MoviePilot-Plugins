@@ -195,34 +195,74 @@ NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqu
 ## 识别入口：什么时候轮得到本插件（`media_source` 口径）
 
 宿主识别一部媒体时**用哪个来源**由请求里的 `media_source` 决定，本插件与内置来源
-（themoviedb / douban / bangumi / anilist / imdb）用的是**同一套规则**：
+（themoviedb / douban / bangumi / anilist / imdb）用的是**同一套规则**，但真机实测有两处
+必须知道的细节（见下）。四个入口：
 
 | 场景 | 请求里的 `media_source` | 谁识别 |
 | --- | --- | --- |
-| 媒体详情页 / 搜索里点名「短剧百科」 | `duanjubaike` | ✅ 本插件 |
-| 整理、扫描、订阅刷新（**没点名来源**） | `None` | 看系统设置「媒体识别来源」（`RECOGNIZE_SOURCE`）：设成「短剧百科」才轮到本插件，否则走 TMDB |
-| 点名的其它来源（豆瓣 / TMDB / TVDB …） | 别的值 | ❌ 一律返回 `None`，绝不抢别的来源 |
+| 媒体详情页 / 搜索里点名「短剧百科」 | `duanjubaike` | ✅ 本插件（可查引擎） |
+| 整理 / 扫描 / 订阅刷新，系统「媒体识别来源」= 短剧百科 | `None` | ✅ 本插件（可查引擎） |
+| 点名别的来源，但 ID 写了 `duanju:<id>` / `org:<id>` | 别的值 | ✅ 本插件 —— **前缀本身就是身份声明** |
+| 点名别的来源，ID 是裸数字 | 别的值 | ❌ 返回 `None`（`603` 是 TMDB 的编号，不能抢） |
+| 点名别的来源（含宿主回填的 TMDB）、**ID 留空** | 别的值 | ✅ **库兜底**（见下）：库里**有**完全同名短剧就认，**没有**立刻让位 |
 
-⚠️ **`None` 必须按设置自证身份**，不能无条件接手。宿主原生识别是
+⚠️ **`None` 不能无条件接手**。宿主原生识别是
 `run_module`「**运行包含该方法的所有模块**」（`chain/base.py`），而 `recognize_media`
 的模块契约是 `plugin_short_circuit=True` —— **插件模块先跑、结果非空就短路**，
-宿主模块（TMDB 等）根本不会被调用。所以：
+宿主模块（TMDB 等）根本不会被调用。所以**无条件接手**会把 TMDB 的识别全抢过来
+（同名电影被错判成短剧）；而**恒不接手**又会让整理 / 扫描 / 订阅永远只走 TMDB，
+短剧必然识别不到。
 
-* **无条件接手 `None`** ⇒ 把 TMDB 的识别全抢过来（同名电影会被错判成短剧）；
-* **恒不接手 `None`** ⇒ 整理 / 扫描 / 订阅**永远只走 TMDB**，短剧必然识别不到。
-  真机症状：日志里只有「辅助识别未识别到 … 尝试使用原生识别」＋「TMDB 未匹配」，
-  **插件零日志** —— 它就在 `_is_our_source(media_source)` 那一行静默返回了 `None`。
+内置来源的正确写法是 `media_source or get_runtime_setting("RECOGNIZE_SOURCE")`；
+本插件在此之上多给了**一层不出网的库兜底**，理由见下一节。
 
-正确写法与内置来源逐字一致：
+### 「留空自动识别」的实际落点（`identify_fallback`，默认开）
 
-```python
-media_source or get_runtime_setting("RECOGNIZE_SOURCE")   # 内置来源的统一写法
-```
+整理对话框的媒体 ID 输入框写着**「留空自动识别」**（`dialog.reorganize.mediaIdHint`），
+但那条路走的是**系统识别来源**，跟你在这个对话框里选的数据源**无关**：
 
-系统设置默认为 `themoviedb` ⇒ **行为与从前完全一致**（插件不接手，零影响）；
-把它切成「短剧百科」（设置页的选项由 `GET /api/v1/media/source` 动态构造，
-插件来源本来就在列表里）后，**不带显式来源的识别**才会落到本插件。
-代价要心里有数：切换是**全局**的，TMDB 会同时不再接单，非短剧内容会识别不到。
+1. 宿主的媒体身份是**成对**的 —— 前端只要「媒体 ID」为空，就会把「数据源」一起丢掉
+   （`ReorganizeDialog` 的 `pr()` 里 `media_source: void 0`）：后端
+   `OptionalMediaIdentityMixin._validate_optional_media_identity` 会直接拒绝半对身份
+   （`media_source 和 media_id 必须同时提供`），前端不丢就是 422；
+2. 请求于是变成「没有来源」，而 `chain/media/recognition.py`
+   **又会把它回填成系统主视频源**（出厂 `themoviedb`）：
+
+   ```python
+   if not media_source and isinstance(meta, MetaBase):
+       video_kwargs["media_source"] = self._video_primary_source
+   ```
+
+   真机日志（本插件自己的日志文件，见「日志在哪」）：
+
+   ```text
+   [诊断入口] enabled=True media_source=<MediaSource.TMDB: 'themoviedb'> media_id=None meta=MetaVideo
+   ```
+
+3. 所以**选了「短剧百科」却留空 ID**，请求到这里时**带着 TMDB 的身份** —— 宿主的
+   兜底口子判的因此是「**不是本插件 + 没有 ID**」，而不是「`media_source is None`」，
+   否则这段代码永远不会被执行。
+
+打开 `identify_fallback` 后，这类识别会先拿片名到**本地 URL 库**里找一部同名短剧：
+
+* **命中且片名完全一致** ⇒ 本插件认下（`duanju:<id>`）；
+* **未命中 / 只是近似片名** ⇒ 立刻 `return None`，TMDB 照常接手，行为与开关关闭时
+  **完全一致**；
+* **只查库，绝不触发站外检索**（引擎单次 10~70s，挂在所有无从属的识别请求上会拖垮
+  整理与扫描）。库里没缓存的详情会抓一次详情页（有 TTL 缓存，7 天内零请求）。
+
+⚠️ 兜底抢的是**别人**（默认 TMDB）的识别机会，所以只认 `EXACT_TITLE_SCORE`（完全同名）：
+「我的闪婚老公是豪门」不会被「闪婚老公是豪门」顶掉。代价仍是**同名**的影视会被判成短剧，
+不想要这层兜底就关掉它。
+
+### 日志在哪
+
+宿主的日志路由此处不一样，**插件日志不会进 `moviepilot.log`**：
+`app/runtime/log.py` 的 `LoggerManager._get_caller()` 会把
+`app.plugins.<id>` 的日志单独路由到 **`/config/logs/plugins/<id>.log`**
+（本插件 = `/config/logs/plugins/shortdramabaikesource.log`）。
+在 `moviepilot.log` 里只能看到 `dispatcher.py - 请求插件 短剧百科数据源 执行：recognize_media ...`
+这类**宿主发起**的行 —— 拿这个文件判断插件行为会得出错误结论。
 
 ## 检索：库优先，库空了才打引擎
 
@@ -824,9 +864,11 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | `web_index_search` | 开 | **站外索引检索**：库里没有时才 `site:` 限定检索片名 / 演员名，从收录的 URL 取 ID |
 | `web_index_backend` | `auto` | 检索后端（`auto` / `duckduckgo` / `yandex` / `google` / `brave` / `mojeek`） |
 | `follow_links` | 开 | **URL 库自己长大**：解析详情页 / 演员页时顺手把页面里的演员 URL、作品 URL 也入库 |
+| `identify_fallback` | 开 | **库兜底**：点名的来源**不是本插件**、ID 又留空时（整理对话框里「选了数据源但 ID 留空」就是这种请求，宿主会把来源回填成 TMDB），先拿片名在 URL 库里找**完全同名**的短剧，命中就认、没命中立刻让位。**只查库，不出网检索**。关掉则退化成「不是本插件的来源一律不接手」 |
 | `proxy` | 关 | 出站请求是否走系统代理 |
 
-共 9 项（v2.2.1 删掉了 `detail_facts` 摘要行开关；v2.0.0 新增 `follow_links`；v1.8.0 删掉了榜单范围、榜单刷新间隔、探索页详情回填三项）。
+共 10 项（v2.2.2 新增 `identify_fallback`；v2.2.1 删掉了 `detail_facts` 摘要行开关；
+v2.0.0 新增 `follow_links`；v1.8.0 删掉了榜单范围、榜单刷新间隔、探索页详情回填三项）。
 保存是**逐键合并**的：payload 里缺的键沿用当前生效值，只翻一个开关不会把其它配置冲回默认。
 
 > **没有后台任务。** `get_service()` 恒返回空列表 —— 没有榜单要刷、没有索引要建，

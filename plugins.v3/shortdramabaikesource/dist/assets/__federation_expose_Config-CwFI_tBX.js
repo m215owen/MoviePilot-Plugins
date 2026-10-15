@@ -113,15 +113,16 @@ const _hoisted_1 = { class: "d-flex align-center mb-3" };
 const _hoisted_2 = { class: "text-subtitle-2 mb-2" };
 const _hoisted_3 = { class: "text-subtitle-2 mb-2" };
 const _hoisted_4 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_5 = {
+const _hoisted_5 = { class: "text-subtitle-2 mb-2" };
+const _hoisted_6 = {
   key: 1,
   class: "text-caption sdbs-dim mb-2"
 };
-const _hoisted_6 = {
+const _hoisted_7 = {
   class: "d-flex align-center flex-wrap",
   style: { "gap": "8px" }
 };
-const _hoisted_7 = { class: "text-caption sdbs-dim" };
+const _hoisted_8 = { class: "text-caption sdbs-dim" };
 const {onMounted,ref} = await importShared('vue');
 const _sfc_main = /* @__PURE__ */ _defineComponent({
   __name: "Config",
@@ -142,7 +143,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       web_index_search: true,
       web_index_backend: "auto",
       proxy: false,
-      follow_links: true
+      follow_links: true,
+      identify_fallback: true
     };
     const FALLBACK_BACKENDS = ["auto", "duckduckgo", "yandex", "google", "brave", "mojeek"];
     const local = ref({ ...DEFAULTS, ...props.initialConfig || {} });
@@ -257,7 +259,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               icon: "mdi-television-classic",
               class: "mr-2"
             }),
-            _cache[10] || (_cache[10] = _createElementVNode("h3", { class: "ma-0" }, "短剧百科数据源 · 设置", -1)),
+            _cache[11] || (_cache[11] = _createElementVNode("h3", { class: "ma-0" }, "短剧百科数据源 · 设置", -1)),
             _createVNode(_component_v_spacer),
             _createVNode(_component_v_btn, {
               icon: "mdi-close",
@@ -273,7 +275,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             density: "compact",
             class: "mb-3"
           }, {
-            default: _withCtx(() => [..._cache[11] || (_cache[11] = [
+            default: _withCtx(() => [..._cache[12] || (_cache[12] = [
               _createTextVNode(" 本插件把 ", -1),
               _createElementVNode("b", null, "duanjubaike.org", -1),
               _createTextVNode(" 注册成 MoviePilot 的一等媒体数据源（与 TMDB / 豆瓣同级）， 补齐 TMDB、豆瓣上没有条目的短剧。站内检索被 Cloudflare 挡住、目录页已弃用， 片名与演员名 → ID 都走", -1),
@@ -350,7 +352,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               size: "18",
               class: "mr-1"
             }),
-            _cache[12] || (_cache[12] = _createTextVNode(" 站点与请求 ", -1))
+            _cache[13] || (_cache[13] = _createTextVNode(" 站点与请求 ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -414,7 +416,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }),
-          _cache[17] || (_cache[17] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createTextVNode(" 详情页内容基本不变，缓存默认 7 天。插件"),
             _createElementVNode("b", null, "没有后台任务"),
             _createTextVNode("：缓存只在被查询时按需重建。 ")
@@ -426,7 +428,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               size: "18",
               class: "mr-1"
             }),
-            _cache[13] || (_cache[13] = _createTextVNode(" 站外索引（片名 / 演员名 → 站点 ID 的唯一通道） ", -1))
+            _cache[14] || (_cache[14] = _createTextVNode(" 站外索引（片名 / 演员名 → 站点 ID 的唯一通道） ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -467,7 +469,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }),
-          _cache[18] || (_cache[18] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createTextVNode(" 实测 "),
             _createElementVNode("code", null, "auto"),
             _createTextVNode(" 与 "),
@@ -477,11 +479,58 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           _createVNode(_component_v_divider, { class: "my-3" }),
           _createElementVNode("div", _hoisted_4, [
             _createVNode(_component_v_icon, {
+              icon: "mdi-magnify-scan",
+              size: "18",
+              class: "mr-1"
+            }),
+            _cache[15] || (_cache[15] = _createTextVNode(" 识别 ", -1))
+          ]),
+          _createVNode(_component_v_row, { dense: "" }, {
+            default: _withCtx(() => [
+              _createVNode(_component_v_col, {
+                cols: "12",
+                sm: "6",
+                md: "4"
+              }, {
+                default: _withCtx(() => [
+                  _createVNode(_component_v_switch, {
+                    modelValue: local.value.identify_fallback,
+                    "onUpdate:modelValue": _cache[9] || (_cache[9] = ($event) => local.value.identify_fallback = $event),
+                    label: "来源不是本插件且 ID 留空时也查本库",
+                    color: "primary",
+                    "hide-details": ""
+                  }, null, 8, ["modelValue"])
+                ]),
+                _: 1
+              })
+            ]),
+            _: 1
+          }),
+          _cache[21] || (_cache[21] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+            _createTextVNode(" 整理的媒体 ID 框写着「留空自动识别」，但那条路走的是宿主的"),
+            _createElementVNode("b", null, "系统识别来源"),
+            _createTextVNode(" （默认 TMDB），跟你在对话框里选的数据源无关：宿主要求「数据源 + ID」成对， ID 一留空，前端就把数据源一起丢掉，宿主再把空来源"),
+            _createElementVNode("b", null, "回填成 TMDB"),
+            _createTextVNode(" —— 选了「短剧百科」却留空 ID，最后还是 TMDB 去查，短剧自然查不到。"),
+            _createElementVNode("br"),
+            _createTextVNode(" 打开本项后，"),
+            _createElementVNode("b", null, "来源不是本插件、ID 又留空"),
+            _createTextVNode("的识别（手动整理、扫描、订阅）会先拿 片名在 "),
+            _createElementVNode("b", null, "本地 URL 库"),
+            _createTextVNode("里找一部"),
+            _createElementVNode("b", null, "完全同名"),
+            _createTextVNode("的短剧：命中就按短剧收，未命中立刻 让位给原来源 —— 与「留空自动识别」的预期一致。"),
+            _createElementVNode("b", null, "只查库，不触发站外检索"),
+            _createTextVNode("， 所以不会拖慢整理。库里没有的片名，行为与开关关闭时完全相同。 ")
+          ], -1)),
+          _createVNode(_component_v_divider, { class: "my-3" }),
+          _createElementVNode("div", _hoisted_5, [
+            _createVNode(_component_v_icon, {
               icon: "mdi-database-outline",
               size: "18",
               class: "mr-1"
             }),
-            _cache[14] || (_cache[14] = _createTextVNode(" URL 库（插件自有数据库） ", -1))
+            _cache[16] || (_cache[16] = _createTextVNode(" URL 库（插件自有数据库） ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -493,7 +542,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 default: _withCtx(() => [
                   _createVNode(_component_v_switch, {
                     modelValue: local.value.follow_links,
-                    "onUpdate:modelValue": _cache[9] || (_cache[9] = ($event) => local.value.follow_links = $event),
+                    "onUpdate:modelValue": _cache[10] || (_cache[10] = ($event) => local.value.follow_links = $event),
                     label: "顺带沉淀页面里的链接",
                     color: "primary",
                     "hide-details": ""
@@ -504,7 +553,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }),
-          _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createTextVNode(" 库里只存「关键词 → 页面 URL」，"),
             _createElementVNode("b", null, "不存解析结果"),
             _createTextVNode("：站点内容随时在变，页面永远实时解析。 取数优先查库（命中即零引擎请求），库里没有才检索一次并把作品与演员两类 URL 一起入库。 开启本项后，解析作品页时顺带把演员链接写进库、解析演员页时顺带把作品链接写进库 —— 所以搜过一部剧，之后再搜它里面的演员名也是零引擎请求。 PostgreSQL 实例下这些表落在宿主库的独立 schema，SQLite 实例下落在插件数据目录的 "),
@@ -512,7 +561,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createTextVNode("，两种情况下都跟着宿主一起备份。 ")
           ], -1)),
           _createVNode(_component_v_divider, { class: "my-3" }),
-          statusText.value ? (_openBlock(), _createElementBlock("div", _hoisted_5, [
+          statusText.value ? (_openBlock(), _createElementBlock("div", _hoisted_6, [
             _createVNode(_component_v_icon, {
               icon: "mdi-information-outline",
               size: "14",
@@ -520,7 +569,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             }),
             _createTextVNode(_toDisplayString(statusText.value), 1)
           ])) : _createCommentVNode("", true),
-          _createElementVNode("div", _hoisted_6, [
+          _createElementVNode("div", _hoisted_7, [
             _createVNode(_component_v_btn, {
               color: "primary",
               variant: "tonal",
@@ -528,7 +577,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               "prepend-icon": "mdi-content-save-outline",
               onClick: doSave
             }, {
-              default: _withCtx(() => [..._cache[15] || (_cache[15] = [
+              default: _withCtx(() => [..._cache[17] || (_cache[17] = [
                 _createTextVNode(" 保存 ", -1)
               ])]),
               _: 1
@@ -538,13 +587,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               disabled: saving.value,
               onClick: resetToLoaded
             }, {
-              default: _withCtx(() => [..._cache[16] || (_cache[16] = [
+              default: _withCtx(() => [..._cache[18] || (_cache[18] = [
                 _createTextVNode("还原", -1)
               ])]),
               _: 1
             }, 8, ["disabled"]),
             _createVNode(_component_v_spacer),
-            _createElementVNode("span", _hoisted_7, _toDisplayString(hint.value), 1)
+            _createElementVNode("span", _hoisted_8, _toDisplayString(hint.value), 1)
           ])
         ]),
         _: 1
@@ -561,6 +610,6 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-09777b80"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-77a6f817"]]);
 
 export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };

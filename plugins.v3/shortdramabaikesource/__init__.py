@@ -193,6 +193,12 @@ class ShortDramaBaikeSource(_PluginBase):
     _proxy: bool = False
     # 解析页面时顺带把页面里的演员 / 作品链接写进 URL 库
     _follow_links: bool = True
+    # 未点名本插件、也没给 ID 时，也拿片名在**本地 URL 库**里找一部完全同名的短剧
+    # （命中即用，未命中让位给宿主原来源，默认 TMDB）。
+    # ⚠️ 实测宿主会把它自己的系统主视频源**回填**进空 ``media_source``
+    # （``chain/media/recognition.py``），所以「只选数据源、ID 留空」的请求到这里时
+    # 身份是 TMDB 而不是 None —— 兜底判的是「不是本插件 + 没有 ID」，不是 None。
+    _identify_fallback: bool = True
 
     # ── 运行时状态（init_plugin 逐个重建，保证实例之间不串味） ──
     _cache: Dict[str, Tuple[float, Any]] = {}
@@ -228,6 +234,7 @@ class ShortDramaBaikeSource(_PluginBase):
         )
         self._proxy = bool(config.get("proxy"))
         self._follow_links = self._as_bool(config.get("follow_links"), True)
+        self._identify_fallback = self._as_bool(config.get("identify_fallback"), True)
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定（它们是类属性）。
         self._cache = {}
@@ -248,6 +255,7 @@ class ShortDramaBaikeSource(_PluginBase):
             f"｜URL 库={stats.get('total', 0)} 条"
             f"（作品 {stats.get('work', 0)} / 演员 {stats.get('actor', 0)}）"
             f"｜顺带入库={'开' if self._follow_links else '关'}"
+            f"｜无来源兜底={'开' if self._identify_fallback else '关'}"
             f"｜缓存={'关' if self._cache_ttl <= 0 else f'{self._cache_ttl}s'}"
             + (f"｜去重合并 {merged} 条重复记录" if merged else "")
         )
@@ -455,7 +463,7 @@ class ShortDramaBaikeSource(_PluginBase):
 
     # ── URL 解析（库优先 → 引擎发现 → 入库） ─────────────────────
 
-    def _resolve(self, keyword: str, force: bool = False) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def _resolve(self, keyword: str, force: bool = False, allow_search: bool = True) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """把一个关键词解析成两类 URL 记录（作品 / 演员）。
 
         **库优先**：库里命中就直接用（零引擎请求）。库里某类为空、且这个关键词最近没
@@ -465,6 +473,9 @@ class ShortDramaBaikeSource(_PluginBase):
         一个页面只留一条记录，那条的键落在哪儿取决于它先被哪条路发现，三个字段都认才对
         得上「库优先」这个承诺。
 
+        :param allow_search: ``False`` 时**只查本地库**，库里没有就返回空 —— 给「无身份
+            识别」用（:meth:`recognize_media`）。引擎单次要 10~70s，把出网检索挂在每个
+            没有来源的识别请求上会拖垮整理与扫描。
         :return: ``(works, actors)``，每项含 ``url`` / ``label`` / ``native_id`` / ``from``
         """
         query = _clean(keyword)
@@ -486,6 +497,12 @@ class ShortDramaBaikeSource(_PluginBase):
             logger.info(
                 f"{PLUGIN_NAME}「{query}」URL 库命中：作品 {len(works)} / "
                 f"演员 {len(actors)}（零引擎请求）"
+            )
+            return works, actors
+        if not allow_search:
+            logger.debug(
+                f"{PLUGIN_NAME}「{query}」未指定来源，只查本地库："
+                f"作品 {len(works)} / 演员 {len(actors)}（不出网检索）"
             )
             return works, actors
         if not force and not self._should_search(key):
@@ -846,8 +863,13 @@ class ShortDramaBaikeSource(_PluginBase):
         keyword: str = "",
         year: str = "",
         url: str = "",
+        allow_search: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``）或片名取一条作品记录。"""
+        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``）或片名取一条作品记录。
+
+        ``allow_search=False`` 时**只认本地 URL 库**（按 ID 取详情不受影响，那本来就是
+        库内寻址），库外一概不问 —— 见 :meth:`_resolve` 的同名参数。
+        """
         native_id = self._native_id(media_id)
         if native_id:
             target = url or self._url_for_native("work", native_id)
@@ -855,7 +877,7 @@ class ShortDramaBaikeSource(_PluginBase):
         query = _clean(keyword)
         if not query:
             return None
-        works, _ = self._resolve(query)
+        works, _ = self._resolve(query, allow_search=allow_search)
         if not works:
             return None
         return self._fetch_best_detail(works, query, _clean(year) or None)
@@ -1046,37 +1068,99 @@ class ShortDramaBaikeSource(_PluginBase):
         meta: Any = None,
         **kwargs: Any,
     ) -> Any:
-        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``）或片名识别一部短剧。
+        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``与裸数字）或片名识别一部短剧。
 
-        ⚠️ ``media_source`` 不是本来源时**必须返回 None** —— 宿主默认识别源是 TMDB，
-        插件绝不能把别的来源的识别请求接过来。
+        四条入口的判据，全部以宿主实参为准（``MediaSource`` 枚举，不是字符串）：
+
+        1. **来源指向本插件**（``media_source == duanjubaike``，或 ``None`` 且系统
+           「媒体识别来源」是本插件）⇒ 正常识别，**可查引擎**；
+        2. **ID 自带本插件前缀**（``duanju:`` / 历史 ``org:``）⇒ 认领，同样可查引擎 ——
+           前缀本身就是身份声明，跟表单里选的来源无关；
+        3. **别的来源 + 不带前缀的 ID** ⇒ **立刻返回 None**。那是别人的身份（``603`` 是
+           TMDB 的编号），抢过来只会毁掉用户明确指定的那次识别；
+        4. **别的来源 + 没有 ID** ⇒ 走**库兜底**（见下），由 ``identify_fallback`` 控制。
+
+        **库兜底**：只在**本地 URL 库**里找一部同名短剧，命中就用、未命中立刻
+        ``return None`` 把机会还给宿主原来源。两点约束：
+
+        1. **绝不出网检索** —— 引擎单次 10~70s，挂在所有无从属的识别请求上会拖垮整理
+           与扫描（见 :meth:`_resolve` 的 ``allow_search``）；
+        2. **只要完全同名的**（``EXACT_TITLE_SCORE``）—— 兜底抢的是别人（默认 TMDB）的
+           识别机会，宁可漏也不能错。
+
+        ⚠️ 为什么需要第 4 条：宿主 ``OptionalMediaIdentityMixin`` 要求 ``media_source`` 与
+        ``media_id`` **成对**，前端因此在 ID 留空时把来源一起丢掉；而
+        ``chain/media/recognition.py`` 又会把空的 ``media_source`` **回填成系统主视频源**。
+        实测日志（真机）：
+
+        .. code-block:: text
+
+            [诊断入口] enabled=True media_source=<MediaSource.TMDB: 'themoviedb'> media_id=None
+            meta=MetaVideo
+
+        也就是说「对话框里选了本插件、ID 留空」的请求到这里时**带着 TMDB 的身份** ——
+        没有库兜底就永远轮不到本插件。详见 README 的「留空自动识别」一节。
         """
-        if not self._enabled or not self._is_our_source(media_source):
+        if not self._enabled:
+            return None
+        named = _clean(media_id)
+        # ``from_store`` ⇒ 只查本地库、不出网，且只认完全同名
+        from_store = False
+        # ``_is_our_source(None)`` 判的是「系统『媒体识别来源』是不是本插件」，
+        # 显式来源与 None 因此可以用同一个调用覆盖
+        if self._is_our_source(media_source):
+            origin = "系统来源" if media_source is None else "点名"
+        elif self._has_our_prefix(named):
+            # ID 自带本插件前缀（``duanju:`` / 历史 ``org:``）= 身份声明，与「点名的来源」
+            # 无关 —— 用户把 ``duanju:60017`` 填进一个标着 TMDB 的表单里，意思很明确
+            origin = "点名"
+        elif self._identify_fallback and not named:
+            origin, from_store = "库兜底", True
+        else:
             return None
         keywords = self._meta_keywords(meta) if meta is not None else []
         record = None
-        if _clean(media_id):
-            record = self._resolve_item(media_id=_clean(media_id))
+        if named:
+            record = self._resolve_item(media_id=named)
         if record is None:
             # 与宿主 TMDB 源同款：候选名挨个试，**第一个有结果就停**
             # （``themoviedb/__init__.py`` 的 ``SEARCH_NAME`` 循环）
             for keyword in keywords:
-                record = self._resolve_item(
+                candidate = self._resolve_item(
                     keyword=keyword,
                     year=_clean(getattr(meta, "year", "")),
+                    allow_search=not from_store,
                 )
-                if record is not None:
-                    break
+                if candidate is None:
+                    continue
+                if from_store and (
+                    _match_title(_clean(str(candidate.get("title") or "")), keyword)
+                    < EXACT_TITLE_SCORE
+                ):
+                    logger.debug(
+                        f"{PLUGIN_NAME} 库兜底放过「{keyword}」：命中 "
+                        f"《{candidate.get('title')}》但片名不完全一致"
+                    )
+                    continue
+                record = candidate
+                break
         if record is None:
             logger.debug(
-                f"{PLUGIN_NAME} 识别未命中：media_id={_clean(media_id) or '-'}"
+                f"{PLUGIN_NAME} 识别未命中（{origin}）：media_id={named or '-'}"
                 f" 片名={'/'.join(keywords) or '-'}"
             )
             return None
         logger.debug(
-            f"{PLUGIN_NAME} 识别命中：{record.get('media_id')}《{record.get('title')}》"
+            f"{PLUGIN_NAME} 识别命中（{origin}）：{record.get('media_id')}《{record.get('title')}》"
             f"（完整度 {self._richness(record)}）"
         )
+        if from_store:
+            # INFO 级：这条会在「选了别的数据源但 ID 留空」的整理 / 扫描里出现，是
+            # 「为什么这部短剧突然能识别了」的唯一线索，默认日志级别（INFO）必须看得见
+            logger.info(
+                f"{PLUGIN_NAME} 库兜底命中：{record.get('media_id')}"
+                f"《{record.get('title')}》（未出网检索，来源 {media_source!r}）"
+            )
         return build_media_info(record, self._tmdb_identity(record))
 
     async def async_recognize_media(self, *args: Any, **kwargs: Any) -> Any:
@@ -1662,6 +1746,7 @@ class ShortDramaBaikeSource(_PluginBase):
                 "backend": self._web_index_backend,
             },
             "follow_links": self._follow_links,
+            "identify_fallback": self._identify_fallback,
             "actor": {
                 "enabled": bool(self._enabled and self._web_index_search and self._web_index.available),
                 "max_candidates": MAX_ACTOR_CANDIDATES,
@@ -1705,6 +1790,7 @@ class ShortDramaBaikeSource(_PluginBase):
             ),
             "proxy": bool(merged.get("proxy")),
             "follow_links": self._as_bool(merged.get("follow_links"), True),
+            "identify_fallback": self._as_bool(merged.get("identify_fallback"), True),
         }
         self.update_config(normalized)
         self.init_plugin(normalized)
@@ -1714,6 +1800,7 @@ class ShortDramaBaikeSource(_PluginBase):
             f"{PLUGIN_NAME} 配置已更新：启用={normalized['enabled']} "
             f"域名={normalized['domain']} 站外索引={normalized['web_index_backend']}"
             f"｜顺带入库={normalized['follow_links']}"
+            f"｜无来源兜底={normalized['identify_fallback']}"
         )
         return {"success": True, "config": normalized}
 
@@ -1783,6 +1870,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_backend": DEFAULT_WEB_INDEX_BACKEND,
             "proxy": False,
             "follow_links": True,
+            "identify_fallback": True,
         }
 
     def _current_config(self) -> Dict[str, Any]:
@@ -1797,6 +1885,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_backend": self._web_index_backend,
             "proxy": bool(self._proxy),
             "follow_links": bool(self._follow_links),
+            "identify_fallback": bool(self._identify_fallback),
         }
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -1909,6 +1998,20 @@ class ShortDramaBaikeSource(_PluginBase):
                 return ""
             text = _clean(tail)
         return text if text.isdigit() else ""
+
+    @staticmethod
+    def _has_our_prefix(media_id: Any) -> bool:
+        """``media_id`` 是否**自带**本插件前缀（``duanju:`` / 历史 ``org:``）。
+
+        与 :meth:`_native_id` 的区别：裸数字在那边是合法 ID，在这里**不算**声明 ——
+        ``603`` 既可能是本插件的作品号，也可能是 TMDB 的编号，只有带了前缀才无歧义。
+        :meth:`recognize_media` 用它决定「点名的来源是别人，但 ID 明确是本插件的」该不该接手。
+        """
+        head, sep, _ = _clean(media_id).partition(":")
+        if not sep:
+            return False
+        prefix = head.strip().lower()
+        return prefix == MEDIA_ID_PREFIX or prefix in LEGACY_MEDIA_ID_PREFIXES
 
     @staticmethod
     def _actor_native_id(actor_id: Any) -> str:
