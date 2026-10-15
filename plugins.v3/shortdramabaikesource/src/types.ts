@@ -227,12 +227,10 @@ export interface StatusPayload {
   store?: { total?: number; work?: number; actor?: number; keywords?: number; last_seen_at?: number }
   web_index?: { available?: boolean; enabled?: boolean; backend?: string }
   follow_links?: boolean
-  /** 未指定来源时是否也拿片名查本地 URL 库（命中即用，未命中让位给 TMDB） */
-  identify_fallback?: boolean
   actor?: { enabled?: boolean; max_candidates?: number }
 }
 
-/** 配置模型（键与后端 `_default_config` 一致，共 10 项） */
+/** 配置模型（键与后端 `_default_config` 一致，共 9 项） */
 export interface PluginConfig {
   enabled: boolean
   domain: string
@@ -244,15 +242,6 @@ export interface PluginConfig {
   proxy: boolean
   /** 解析页面时顺带把页面里的演员 / 作品链接写进 URL 库 */
   follow_links: boolean
-  /**
-   * 未指定数据源（整理对话框里「媒体 ID 留空自动识别」）时，先拿片名在本地 URL 库里
-   * 找一部同名短剧：命中就用，未命中立刻让位给系统识别来源（默认 TMDB）。
-   * 只查库、不出网检索。
-   *
-   * **默认关闭** —— 官方数据源规范要求「来源不匹配即返回空」，开着等于在
-   * 「别的来源 + ID 留空」时接别人的身份，属于有意例外，故默认取不越权的一侧。
-   */
-  identify_fallback: boolean
 }
 
 /** `/config` GET 的可选项 */
