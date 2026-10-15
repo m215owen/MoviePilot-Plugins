@@ -40,6 +40,11 @@ URL 会**自己长大**：解析作品页时顺带把 ``actor[].url`` 入库，�
    ``media_source`` 不匹配时**必须返回 None**，绝不能劫持其它来源的识别。
    刮削出口（``metadata_nfo`` / ``metadata_img``）同理，只服务自己的来源，见 :mod:`scrape`。
 5. **图片域名要登记**：宿主图片代理只放行 ``SECURITY_IMAGE_DOMAINS`` 内的域名。
+6. **分类扩展字段是受协议门控的可选能力**：来源声明里的 ``classification_fields`` 要
+   先探测 ``app.sdk.classification`` 的协议版本，探不到就**降级**成普通来源声明；
+   识别结果再用 ``MediaInfo.classification_facts`` 回传事实。两件事都在
+   :mod:`classification`，对齐官方 ``docs/faq/19-register-media-source.md`` /
+   ``20-media-classification.md``。
 
 站点能力边界（2026-10-14 / 15 实测）
 ------------------------------------
@@ -59,7 +64,6 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.schemas.types import MediaType
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
 
@@ -72,10 +76,13 @@ try:  # pragma: no cover - 分支只取决于宿主版本
 except Exception:  # pragma: no cover
     zhconv_convert = None
 
+from .classification import classification_protocol_version, media_source_declaration
+# ⚠️ 这一批常量既是内部依赖，也是**包级导出**（单测与消费方按
+# ``app.plugins.shortdramabaikesource.<NAME>`` 取）：声明来源、比对身份都靠它们，
+# 所以即便本文件里没引用也不要删 —— ``MEDIA_SOURCE_LABEL`` 就是这类。
 from .constants import (
     ACTOR_ID_PREFIX,
     ACTOR_PATH,
-    CLASSIFICATION_FIELDS,
     DEFAULT_CACHE_TTL,
     DEFAULT_TIMEOUT,
     DEFAULT_WEB_INDEX_BACKEND,
@@ -116,7 +123,7 @@ from .payload import (
     build_media_info,
     build_public_actor,
     build_public_record,
-    media_source_value,
+    media_source_value,  # 包级导出：身份比对工具（见上一条注释）
 )
 from .scrape import build_images, build_nfo
 from .store import SiteUrl, UrlStore
@@ -254,6 +261,7 @@ class ShortDramaBaikeSource(_PluginBase):
             f"（作品 {stats.get('work', 0)} / 演员 {stats.get('actor', 0)}）"
             f"｜顺带入库={'开' if self._follow_links else '关'}"
             f"｜无来源兜底={'开' if self._identify_fallback else '关'}"
+            f"｜分类协议=v{classification_protocol_version()}"
             f"｜缓存={'关' if self._cache_ttl <= 0 else f'{self._cache_ttl}s'}"
             + (f"｜去重合并 {merged} 条重复记录" if merged else "")
         )
@@ -298,22 +306,15 @@ class ShortDramaBaikeSource(_PluginBase):
     def get_media_source(self) -> List[Dict[str, Any]]:
         """声明本插件提供的媒体数据源（短剧在 MoviePilot 里统一按电视剧处理）。
 
-        顺带声明 :data:`constants.CLASSIFICATION_FIELDS` 三个扩展分类字段 —— 宿主的
-        「媒体分类策略」只认插件自己声明过的 ``extensions.<来源>.<字段>``，而**分类
-        决定了整理时能不能匹配到媒体库目录**（详见那里的注释）。声明在插件加载时由
-        ``PluginClassificationRegistry`` 校验：字段 ID 不在本源命名空间、值类型与
-        操作符不匹配、媒体类型超出来源声明，都会让**整份声明**被拒。
+        返回**完整来源声明**：展示名、稳定来源标识、支持的媒体类型，外加三个扩展分类
+        字段 —— 宿主的「媒体分类策略」只认插件自己声明过的 ``extensions.<来源>.<字段>``，
+        而分类决定了整理时能不能匹配到媒体库目录。
+
+        构造与降级全部交给 :func:`classification.media_source_declaration`：按官方文档
+        先探测宿主协议版本，够就用 SDK 类型构造（构造期即校验），不够或构造失败就退回
+        不带扩展字段的普通声明 —— **可选能力绝不允许阻断来源注册与识别**。
         """
-        return [
-            {
-                "name": MEDIA_SOURCE_LABEL,
-                "media_source": media_source_value(),
-                "media_types": [MediaType.TV],
-                "classification_fields": [
-                    dict(field) for field in CLASSIFICATION_FIELDS
-                ],
-            }
-        ]
+        return media_source_declaration()
 
     def get_module(self) -> Dict[str, Any]:
         """把宿主模块方法名映射到本插件实现 —— **供其它插件调用的主通道**。

@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from .classification import build_classification_facts
 from .constants import (
-    CLASSIFICATION_FIELDS,
-    CLASSIFICATION_FIELD_PREFIX,
     MEDIA_SOURCE_KEY,
     PLUGIN_NAME,
 )
@@ -157,6 +156,17 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
         mediainfo.episode_run_time = [episode_minutes] if episode_minutes else []
     except Exception as err:  # pragma: no cover - 只读模型兜底
         logger.debug(f"{PLUGIN_NAME} 写入单集时长失败：{err}")
+    # 语言：官方文档要求来源**尽量**返回标准媒体信息，语言是其中之一
+    # （``docs/faq/20-media-classification.md`` §1）。站点详情页的 JSON-LD 给了
+    # ``inLanguage``（``zh-Hans``），归一成 ISO 639-1 后写进 ``original_language``
+    # —— 那正是宿主 ``media.language`` 分类事实的唯一取值来源
+    # （``domain/classification/facts.py``）。与单集时长同款：**构造后赋值**。
+    language = _language_code(item.get("in_language"))
+    if language:
+        try:
+            mediainfo.original_language = language
+        except Exception as err:  # pragma: no cover - 只读模型兜底
+            logger.debug(f"{PLUGIN_NAME} 写入语言失败：{err}")
     # 分季信息同样构造后赋值（详情页的「分季分集」区块按 season_info 渲染，缺了会只剩标题）
     for name in ("season_info", "number_of_seasons"):
         if extra.get(name) is None:
@@ -181,31 +191,6 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
     except Exception as err:  # pragma: no cover - 只读模型兜底
         logger.debug(f"{PLUGIN_NAME} 写入分类事实失败：{err}")
     return mediainfo
-
-
-def build_classification_facts(item: Dict[str, Any]) -> Dict[str, Any]:
-    """给宿主分类策略的扩展事实（键必须带 ``extensions.<来源>.`` 前缀）。
-
-    * ``is_short_drama``：恒为 ``True``。本站只收录短剧，规则拿它做「是本源识别出来的
-      就归短剧」的兜底条件 —— 宿主不允许用 ``identity.media_source`` 当条件（插件来源
-      上该字段被判「不可用」），这是唯一能稳定表达「来源=短剧百科」的事实。
-    * ``kind`` / ``tags``：站点真实字段（角标形态 / 题材标签），页面没给就不带，
-      便于以后按真人 / AI 或题材再细分目录。**不伪造**：缺就是缺。
-    """
-    declared = {str(field.get("id")) for field in CLASSIFICATION_FIELDS}
-    facts: Dict[str, Any] = {}
-    for key, value in (
-        ("is_short_drama", True),
-        ("kind", _clean(item.get("kind"))),
-        ("tags", [tag for tag in (item.get("tags") or []) if tag]),
-    ):
-        if not value:
-            continue
-        field_id = f"{CLASSIFICATION_FIELD_PREFIX}{key}"
-        # 只发声明过的字段：没登记的事实会被宿主判为「忽略插件分类事实」并刷警告
-        if field_id in declared:
-            facts[field_id] = value
-    return facts
 
 
 def _media_info_actors(item: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -301,6 +286,23 @@ def _episode_minutes(item: Dict[str, Any]) -> Optional[int]:
     if isinstance(episodes, int) and episodes > 0 and isinstance(total, int) and total > 0:
         return max(1, round(total / episodes))
     return None
+
+
+def _language_code(value: Any) -> Optional[str]:
+    """把站点的 ``inLanguage`` 归一成**主语言码**（``zh-Hans`` → ``zh``）。
+
+    宿主的 ``MediaInfo.original_language`` 与分类事实 ``media.language`` 用的是 ISO 639-1
+    （宿主语言表就是 ``{"zh": "汉语", …}``，见 ``domain/classification/vocabulary.py``），
+    原样塞 ``zh-Hans`` 进去会变成一个谁都不认识的取值，所以只取主标签。
+
+    ⚠️ 站点只声明**页面语言**（简体 / 繁体两套页面都是中文），这里**不推断方言、不推断
+    国家**：拿不到就返回 ``None``，绝不猜。
+    """
+    text = _clean(value)
+    if not text:
+        return None
+    main = text.replace("_", "-").split("-")[0].strip().lower()
+    return main or None
 
 
 def _schema_media_info() -> Any:

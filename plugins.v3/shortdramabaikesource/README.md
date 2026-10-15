@@ -55,6 +55,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | 片名检索 | `search_medias` | 返回候选 `MediaInfo`，宿主搜索框、订阅都能用 |
 | 详情识别 | `recognize_media` | 按 `media_id`（裸数字 `60017`；历史 `duanju:60017` / `org:60017` 照收）或片名取完整记录 |
 | 补图 | `obtain_images` | 缺海报时按身份补抓，并把海报兜底填到背景图 |
+| 标准媒体信息 | `MediaInfo` 字段 | 标题 / 年份 / **语言**（详情页 `inLanguage` 归一成 ISO 639-1，`zh-Hans` → `zh`）/ 风格 / 演员含角色 / 出品方 / 集数 / 单集时长 / 首播 / 海报与背景图；**国家或地区、内容分级站点没有 ⇒ 留空，不伪造** |
 | **演员档案** | `search_actors` / `actor_works` | 演员名 → 候选演员；演员 → **全部作品**（实测 21 部一次全渲染、不分页），**每条作品都已补成作品页记录** |
 | **URL 库** | `get_database_models()` | 插件自有数据库里存「关键词 → 页面 URL」，取数**库优先** |
 | **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 分季），换回宿主详情页的演职员 / 推荐 / 分季区块 |
@@ -78,6 +79,12 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 > | 分类命名空间 | `extensions.duanjubaike.*` | `extensions.duanju.*` |
 >
 > 前端 `MediaIdSelector` 选择器给出的、宿主详情页与 NFO 里落的，都是新形态。
+>
+> ⚠️ 官方文档（`docs/faq/19-register-media-source.md` §1）明确要求：`media_source`
+> **发布后不得因为显示名称、接口地址或插件版本变化而修改** —— 它是全局稳定的扩展标识，
+> 历史识别结果、订阅、整理记录全按它落库。上表那次 `duanjubaike` → `duanju` 是
+> **改造期的例外**，代价是永久背一张读兼容别名表（`MEDIA_SOURCE_ALIASES` +
+> `LEGACY_MEDIA_ID_PREFIXES`）。**今后不再改名。**
 
 > ⚠️ ID 前缀是**白名单**（只有历史前缀 `duanju:` / `org:` 与演员的 `actor:`），
 > 别的前缀（例如历史形态的 `net:123`）一律判空，尾巴不是纯数字也判空 ——
@@ -171,6 +178,37 @@ if rule.sources and normalized_media_source not in rule.sources:
 
 > 不想改分类策略也行：整理时在「目标路径」手填媒体库目录即可 —— 走的是
 > `plan_transfer` 的 `target_path` 分支，不经过分类匹配。
+
+### 协议适配（`classification.py`，按官方文档对齐）
+
+声明与事实都收口在 [`classification.py`](classification.py)，对齐官方
+`docs/faq/19-register-media-source.md` §4（声明来源分类字段）与
+`docs/faq/20-media-classification.md` §2，而不是散在 `__init__.py` 里手拼 dict：
+
+- **先探测协议再声明**：`app.sdk.classification` 的
+  `MEDIA_SOURCE_CLASSIFICATION_PROTOCOL_VERSION ≥ 1` 才附带 `classification_fields`；
+  模块导不进来 / 版本不够 / **构造抛错**，一律降级成「不带扩展字段的普通来源声明」。
+  可选能力**绝不允许把来源注册本身一起拖下水** —— 旧宿主上识别、搜索、跨插件调用照跑，
+  只是分类面板里看不到这三个字段。启动日志会打 `分类协议=v2`，排障一眼可见。
+- **用 SDK 类型构造**（`MediaSourceInfo` / `ClassificationFieldDefinition`）而不是手拼
+  dict：字段拼错、值类型与操作符不匹配会在**构造期**当场暴露，而不是等宿主校验时
+  **整份**拒绝（连恒真那条兜底字段一起丢）。
+- **值类型与操作符必须成对**（宿主 `domain/classification/fields.VALUE_TYPE_OPERATORS`）：
+  `boolean`→`is_true/is_false/exists/not_exists`、`string_list`→`contains_any/…`、
+  `string`→`equals/in/…`。三个字段都显式声明 `media_types: ["电视剧"]`。
+- **形态字段刻意不用 `enum`**：站点角标是抓来的，随时可能多出第三种（动态漫画 / 互动剧…）；
+  `enum` + 封闭目录会让宿主把目录外的新值当「值不符合声明」丢进警告 ⇒ 分类规则**静默
+  漏命中**。这里用开放 `string` + `options` 候选提示（`allow_custom_values` 保持默认 `True`）。
+- **事实只投影已解析字段**（文档硬要求：不得新增网络请求），送出前把标签归一成去空白
+  字符串，空值直接丢。
+- **没用旧 API**：分类只走 `app.sdk.classification`，不碰 `CategoryHelper` / `category.yaml`
+  （文档 §6 明确禁止，`CategoryHelper.save()` 现在恒拒绝写入）。
+
+官方**可选**能力里刻意没实现的两项（都不影响来源注册与分类）：
+`get_media_auxiliary_info`（给已有影视补别名 —— 本站没有权威别名来源，且宿主会把别名
+并进搜索关键词，泛词会捞回无关资源）与 `get_media_classification_facts`（协议 v2 的
+「补充缺失标准事实」—— 要求按精确外部 ID 证明是同一媒体，而本站作品在 TMDB 命中率极低、
+借不出外部 ID）。
 
 ## 刮削：NFO 与图片（`metadata_nfo` / `metadata_img`）
 
@@ -895,6 +933,46 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 
 > ⚠️ 破坏性接口不猜参数：`kind` 只能是 `work` / `actor`，请求体不是 JSON 对象就直接报错，
 > 不会退化成「整库清空」。空对象（或不带 body）才是整库清空 —— 面板上走二次确认。
+
+## 与官方「数据源开发文档」的逐条对照
+
+对照的是上游两份 FAQ（2026-10-15 全文核过）：
+
+- `docs/faq/19-register-media-source.md` —— 如何通过插件注册媒体数据源
+- `docs/faq/20-media-classification.md` —— 如何让媒体来源接入自动分类
+
+| 文档条款 | 本插件 | 说明 |
+| --- | --- | --- |
+| 19 §1 用 `MediaSourceInfo` 声明来源（名称 / 稳定标识 / 媒体类型） | ✅ | `duanju` + 电视剧；标识符合 `^[a-z][a-z0-9._-]{0,63}$` |
+| 19 §1 来源标识**发布后不改名** | ✅（今后） | 历史上改过一次（`duanjubaike` → `duanju`），代价是永久读兼容别名表，见「统一媒体身份」 |
+| 19 §2 `recognize_media` / `search_medias` / `obtain_images` / `metadata_nfo` / `metadata_img`（含 async 版） | ✅ | 参数名与宿主 `runtime/extensions/module/contracts.py` 的 `required_parameters` 逐字对齐 |
+| 19 §2 每个方法先判来源，不匹配返回 `None` / 空 | ⚠️ 一处例外 | 仅「库兜底」，见下 |
+| 19 §2 结果必须同时含 `media_source` + `media_id` | ✅ | 构造后**显式复位**（宿主 `__post_init__` 会归一化自定义来源，见 `payload.py`） |
+| 19 §2 不把来源自己的编号写进 `tmdbid` / `doubanid` | ✅ | 站点 ID 只进 `media_id`；`tmdb_id` 只在**严格匹配**（同名 + 年份一致且唯一）后填真 TMDB ID |
+| 19 §2 `get_media_auxiliary_info`（可选：给已有影视补别名） | 未实现 | 站点没有权威别名数据（详见「`MediaInfo.names` 必须留空」）；且宿主会把返回的别名并进搜索关键词 |
+| 19 §3 来源自动出现在搜索 / 刮削 / 重新识别等选择器 | ✅ | 宿主行为；`GET /api/v1/media/source` 已实测返回本来源 |
+| 19 §3 `ChainEventType.MediaRecognizeConvert`（可选：跨来源转换） | 未实现 | 本来源是识别**终点**（短剧直接进短剧库），没有「从别的来源转过来」的场景 |
+| 19 §4 声明扩展分类字段：协议探测 + SDK 类型 + 失败降级 | ✅ | 见「协议适配」小节 |
+| 19 §5 `get_media_classification_facts`（协议 v2 可选：补缺失标准事实） | 未实现 | 它要求按**精确外部 ID** 证明是同一媒体，而本站作品在 TMDB 命中率极低、借不出外部 ID |
+| 19 §6 不导入 `CategoryHelper`、不读写 `category.yaml` | ✅ | 分类只经 `app.sdk.classification` |
+| 20 §1 返回尽量完整的标准媒体信息 | ✅ | 标题 / 年份 / **语言** / 风格 / 演员 / 出品方 / 集数 / 单集时长 / 首播 / 海报背景 |
+| 20 §1 语言 / 国家或地区 / 内容分级 | ⚠️ 部分 | **语言**取自详情页 JSON-LD 的 `inLanguage`（`zh-Hans` → `zh`）；**国家或地区与内容分级站点没有** ⇒ 留空，不伪造 |
+| 20 §4 开发完成后检查清单（6 条） | ✅ | 逐条核过 |
+
+### 唯一有意的例外：库兜底（`identify_fallback`）
+
+19 §2 要求「不匹配本来源就返回 `None`」，而本插件的 `recognize_media` 有第 4 条入口：
+**别的来源 + ID 留空**时去本地 URL 库找一部**完全同名**的短剧（默认开，可在配置里关）。
+它不是无视文档，而是补宿主的表单缺口 —— 宿主 `OptionalMediaIdentityMixin` 要求
+`media_source` 与 `media_id` **成对**，前端因此在 ID 留空时把来源一起丢掉，而识别链又把
+空的来源**回填成系统主视频源**（实测 `media_source=<MediaSource.TMDB>`、`media_id=None`）
+⇒ 没有这条兜底，「选了短剧百科但没填 ID」永远轮不到本插件。它有三重约束保证不越界：
+
+1. **不抢已有身份**：宿主按 `FIRST_NON_EMPTY` 聚合，TMDB 等来源先跑；别人给出结果时
+   本插件根本没有机会返回。它只在**别人也没结果**时补位；
+2. **只认完全同名**（`_match_title` 满分）且**绝不出网检索**（引擎单次 10~70s，挂在
+   所有无从属的识别请求上会拖垮整理与扫描）；
+3. **可关**：配置项 `identify_fallback`。
 
 ## 数据来源与合规
 

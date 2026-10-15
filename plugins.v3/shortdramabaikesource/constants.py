@@ -2,7 +2,8 @@
 
 只放「多个模块都要用」的常量：插件元数据、数据源契约、URL 形态、默认值上限、
 搜索引擎参数。站点 DOM 的解析正则与解析函数在 :mod:`parser`，数据库模型在
-:mod:`store`，宿主的媒体模型映射在 :mod:`payload`。
+:mod:`store`，宿主的媒体模型映射在 :mod:`payload`，宿主**分类协议**的声明与事实
+在 :mod:`classification`（本模块只提供那份字段表当唯一事实来源）。
 """
 from __future__ import annotations
 
@@ -99,20 +100,18 @@ DISCOVER_TITLE_ENRICH_LIMIT = 3
 PROBE_SAMPLE_MEDIA_ID = "45982"
 
 # ── 分类扩展字段（宿主「媒体分类策略」用）──────────────────────────
-# 为什么要有这一段：宿主的目录匹配是**按分类**挑媒体库目录的
-# （``application/directory.py`` 的 ``media_match_rank``：目录固定了分类时，
-# 媒体的分类 ID 不一致就直接判不匹配）⇒ 分类不匹配 = 「未找到有效的媒体库目录」
-# = 整理失败。而宿主的分类规则**不能用来源身份做条件** —— 校验器要求条件字段在
-# 规则所选来源里「可用」，标准字段（``identity.media_source`` / ``media.*``）的能力
-# 表只登记了内置来源，插件来源一律是 unavailable，实测发布规则会被拒：
-#   ``字段 identity.media_source 在所选来源中均不可用：duanju``
-# 宿主留给插件的只有 ``extensions.<来源>.<字段>`` 命名空间（``MediaSourceInfo``
-# 的 ``classification_fields``，见 ``runtime/extensions/plugin/classification.py``）
-# ⇒ 想让「短剧百科识别出来的都归到短剧分类」，只能由插件自己声明并给出事实。
+# 这一段是**事实来源**：声明与事实两条路径都读它（白名单也是它）。
+# 为什么要声明扩展字段、协议怎么探测、降级怎么走，见 :mod:`classification` 的模块头
+# —— 那儿对齐的是官方文档 ``docs/faq/19-register-media-source.md`` 第 4 节与
+# ``docs/faq/20-media-classification.md`` 第 2 节。
 CLASSIFICATION_FIELD_PREFIX = f"extensions.{MEDIA_SOURCE_KEY}."
 # 三个字段：一个恒真（兜底，保证规则一定命中）+ 两个站点真实字段（便于以后细分）。
-# ⚠️ 值类型与操作符必须匹配 ``domain/classification/fields.VALUE_TYPE_OPERATORS``，
-# 否则插件加载时声明会被整体拒绝（``PluginClassificationDeclarationError``）。
+# ⚠️ 值类型与操作符必须匹配宿主 ``domain/classification/fields.VALUE_TYPE_OPERATORS``
+# （v3.1.5 逐条核对），否则插件加载时**整份**声明会被拒
+# （``PluginClassificationDeclarationError``）—— 连恒真那条也一起丢。
+# 站点只有一套页面（简体页按电视剧投放），所以三个字段的 ``media_types`` 都是「电视剧」；
+# 不填宿主也会回落成来源的媒体类型，显式写出来是为了让面板上的适用范围一目了然。
+_MEDIA_TYPE_TV: Tuple[str, ...] = ("电视剧",)
 CLASSIFICATION_FIELDS: Tuple[Dict[str, Any], ...] = (
     {
         "id": f"{CLASSIFICATION_FIELD_PREFIX}is_short_drama",
@@ -121,6 +120,7 @@ CLASSIFICATION_FIELDS: Tuple[Dict[str, Any], ...] = (
         "description": "由短剧百科识别成功的条目；本站只收录短剧，因此恒为真",
         "value_type": "boolean",
         "operators": ["is_true", "is_false", "exists", "not_exists"],
+        "media_types": list(_MEDIA_TYPE_TV),
     },
     {
         "id": f"{CLASSIFICATION_FIELD_PREFIX}kind",
@@ -129,10 +129,15 @@ CLASSIFICATION_FIELDS: Tuple[Dict[str, Any], ...] = (
         "description": "详情页角标：真人短剧 / AI短剧；页面没给出角标时不带这一条",
         "value_type": "string",
         "operators": ["equals", "not_equals", "in", "not_in", "exists", "not_exists"],
+        # ⚠️ 刻意**不用** ``enum``：站点角标是抓来的、随时可能多出第三种（动态漫画 /
+        # 互动剧…），而 ``enum`` + ``allow_custom_values=False`` 会让宿主把目录外的
+        # 新值当「值不符合声明」整条丢弃 ⇒ 分类规则静默漏命中。这里当**开放字符串**，
+        # ``options`` 只作前端候选提示，``allow_custom_values`` 保持默认 True。
         "options": [
             {"value": "真人短剧", "label": "真人短剧"},
             {"value": "AI短剧", "label": "AI短剧"},
         ],
+        "media_types": list(_MEDIA_TYPE_TV),
     },
     {
         "id": f"{CLASSIFICATION_FIELD_PREFIX}tags",
@@ -141,6 +146,7 @@ CLASSIFICATION_FIELDS: Tuple[Dict[str, Any], ...] = (
         "description": "详情页的题材标签（都市 / 逆袭 / 系统 …）",
         "value_type": "string_list",
         "operators": ["contains_any", "contains_all", "contains_none", "exists", "not_exists"],
+        "media_types": list(_MEDIA_TYPE_TV),
     },
 )
 
