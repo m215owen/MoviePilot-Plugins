@@ -134,8 +134,12 @@ try:  # 宿主配置（读系统代理 / 图片白名单）
 except Exception:  # pragma: no cover - 宿主版本差异兜底
     _settings = None
 
-# 同一个关键词在这个间隔内查过引擎就不再查（库里确实没有时也不必每次搜索都出网）
+# 同一个关键词在这个间隔内查过引擎就不再查（库里确实没有时也不必每次搜索都出网）。
 SEARCH_RETRY_INTERVAL = 300.0
+# 「上一次空手而归」的冷却：引擎召回本来就不稳（同一句话换个后端结果完全不同），
+# 失败也按 300s 记会把**一次抽风**变成「五分钟内怎么点都搜不到」—— 实测用户看到的
+# 就是「81s 前刚检索过（间隔需 300s）」，而那次检索其实一条可用候选都没拿回来。
+SEARCH_RETRY_INTERVAL_FAILED = 60.0
 
 # 「这条记录数据全不全」的判据（字段, 权重）。站点会给同一部剧建多条记录：实测
 # ``/drama/40354``（AI短剧）与 ``/drama/40445``（真人短剧）标题 / 简介 / 首播日期完全相同，
@@ -190,6 +194,8 @@ class ShortDramaBaikeSource(_PluginBase):
     _cache_lock = threading.RLock()
     # 关键词 → 上次问引擎的时间戳（避免库里确实没有时每次搜索都出网）
     _searched_at: Dict[str, float] = {}
+    # 关键词 → 上次问引擎**有没有拿回可用候选**（决定冷却用 300s 还是 60s）
+    _search_hits: Dict[str, bool] = {}
     # TMDB 身份补充器（init_plugin 里按实例重建；为 None 时该功能整体跳过）
     _tmdb: Optional["TmdbIdentity"] = None
 
@@ -221,6 +227,7 @@ class ShortDramaBaikeSource(_PluginBase):
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定（它们是类属性）。
         self._cache = {}
         self._searched_at = {}
+        self._search_hits = {}
         self._web_index.reset_throttle()
         # TMDB 身份补充器：复用本插件的同步 GET（代理 / 超时 / UA 与站点请求一致）
         self._tmdb = TmdbIdentity(self._get)
@@ -525,12 +532,25 @@ class ShortDramaBaikeSource(_PluginBase):
                 best[native_id] = row
         return [best[native_id] for native_id in order]
 
+    def _retry_interval(self, key: str) -> float:
+        """这个关键词现在的冷却时长：上次**拿回了可用候选** 300s，空手而归只 60s。
+
+        「有没有拿回东西」与「该不该等五分钟」是两件事 —— 引擎召回不稳（同一句话换个
+        后端结果完全不同，甚至同一个后端也会一次空一次有），失败按 300s 记会把一次抽风
+        放大成「五分钟内怎么点都搜不到」。
+        """
+        return (
+            SEARCH_RETRY_INTERVAL
+            if self._search_hits.get(key)
+            else SEARCH_RETRY_INTERVAL_FAILED
+        )
+
     def _should_search(self, key: str) -> bool:
         """这个关键词现在该不该问引擎（含「站外索引」开关与重试间隔）。"""
         if not self._web_index_search or not self._web_index.available:
             return False
         last = self._searched_at.get(key)
-        return last is None or (time.time() - last) >= SEARCH_RETRY_INTERVAL
+        return last is None or (time.time() - last) >= self._retry_interval(key)
 
     def _search_skip_reason(self, key: str) -> str:
         """「这次不问引擎」的真实原因 —— 开关关着 / 环境缺依赖 / 刚查过，三者都要说得清。"""
@@ -541,7 +561,10 @@ class ShortDramaBaikeSource(_PluginBase):
         last = self._searched_at.get(key)
         if last is None:
             return "（无需跳过）"
-        return f"{int(time.time() - last)}s 前刚检索过（间隔需 {int(SEARCH_RETRY_INTERVAL)}s）"
+        gap = int(time.time() - last)
+        interval = int(self._retry_interval(key))
+        tail = "（上次没拿回可用候选，冷却 60s）" if interval < int(SEARCH_RETRY_INTERVAL) else ""
+        return f"{gap}s 前刚检索过（间隔需 {interval}s）{tail}"
 
     def _discover(self, keyword: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """检索一次引擎，**两类 URL 一起抽、一起入库**，返回入库后的记录。
@@ -551,6 +574,9 @@ class ShortDramaBaikeSource(_PluginBase):
         """
         key = _normalize_title(keyword)
         self._searched_at[key] = time.time()
+        # 先按「空手而归」记，真拿到可用候选再翻成 True —— 决定冷却时长（见
+        # :meth:`_retry_interval`）。三个返回点都要覆盖，中途抛异常也停在失败上。
+        self._search_hits[key] = False
         host = self._domain_host()
         rows = self._web_index.search(keyword, host, self._web_index_backend)
         if not rows:
@@ -562,9 +588,10 @@ class ShortDramaBaikeSource(_PluginBase):
         if not raw_works and not raw_actors:
             logger.info(
                 f"{PLUGIN_NAME} 站外索引「{keyword}」返回 {len(rows)} 条，"
-                f"但都不是作品页 / 演员页 —— 图集页、榜单页与外域地址一律剔除"
+                f"但都不是作品页 / 演员页 —— 榜单页与外域地址一律剔除"
             )
             return [], []
+        self._search_hits[key] = True
         raw_works = raw_works[:MAX_CANDIDATES]
         raw_actors = raw_actors[:MAX_ACTOR_CANDIDATES]
         self._enrich_labels(keyword, raw_works, raw_actors)
@@ -1599,7 +1626,9 @@ class ShortDramaBaikeSource(_PluginBase):
             return {"success": False, "message": f"清库失败：{err}",
                     "removed": 0, "stats": self._store_count()}
         if not keyword:
-            self._searched_at.clear()  # 允许马上重新检索同一个词
+            # 允许马上重新检索同一个词（连「上次是空手而归」的记账一起清掉）
+            self._searched_at.clear()
+            self._search_hits.clear()
         scope = "、".join(part for part in (
             f"类型 {kind}" if kind else "", f"关键词「{keyword}」" if keyword else "") if part) or "整库"
         logger.warning(f"{PLUGIN_NAME} 手动清库（{scope}）：删除 {removed} 条")

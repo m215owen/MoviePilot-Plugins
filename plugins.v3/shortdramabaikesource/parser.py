@@ -28,6 +28,7 @@ from .constants import (
     VIDEO_EXT_RE,
     WEB_INDEX_ACTOR_RE,
     WEB_INDEX_DETAIL_RE,
+    WEB_INDEX_GALLERY_RE,
     WEB_INDEX_HOST_SUFFIX_RE,
     WEB_INDEX_TITLE_SUFFIX_RE,
 )
@@ -226,12 +227,20 @@ def _strip_org_suffix(title: str) -> str:
 
 
 def web_index_native_id(url: str, host: str) -> str:
-    """从搜索引擎结果里的 URL 取作品 ID；不是本域的详情页一律返回空串。
+    """从搜索引擎结果里的 URL 取作品 ID；不是本域的详情页 / 图集页一律返回空串。
 
-    结果里混着演员页（``/actor/371``）、图集页（``/drama/37508/photos``）与榜单页，
-    它们都拿不到作品 ID —— 用「路径恰好是 ``/drama/<数字>``」这一条把它们筛掉。
+    结果里混着演员页（``/actor/371``）与榜单页，它们都拿不到作品 ID —— 用「路径恰好是
+    ``/drama/<数字>``」这一条把它们筛掉。
+
+    ⚠️ **图集页（``/drama/<数字>/photos``）必须接住**：它是详情页的子路径、ID 完全一致，
+    而引擎常常**只索引到图集页**。实测（2026-10-15）搜「难驯」返回 7 条，全是别的剧
+    （重生难驯 / 野性难驯 / 他难驯）加上一条 ``/zh-Hans/drama/17139/photos``
+    （标题「难驯 - 剧照 - 短剧百科」）—— 以前把这条当「图集页」剔掉，17139 就永远搜不到。
     """
-    return _web_index_id(url, host, WEB_INDEX_DETAIL_RE)
+    return (
+        _web_index_id(url, host, WEB_INDEX_DETAIL_RE)
+        or _web_index_id(url, host, WEB_INDEX_GALLERY_RE)
+    )
 
 
 def web_index_actor_id(url: str, host: str) -> str:
@@ -258,8 +267,11 @@ def _web_index_id(url: str, host: str, pattern: Any) -> str:
 
 
 # 页面路径形态：``/drama/<数字>`` / ``/actor/<数字>``，**语言前缀可有可无、可以是任何语言**
-# （``/actor/371``、``/zh-Hant/actor/371`` 都得接住 —— 实测引擎两种都会给）
-_PAGE_ANY_LANG_RE = re.compile(r"^/(?:[A-Za-z][A-Za-z-]{0,11}/)?(?P<kind>drama|actor)/(?P<id>\d+)/?$")
+# （``/actor/371``、``/zh-Hant/actor/371`` 都得接住 —— 实测引擎两种都会给）。
+# 末尾的 ``/photos``（图集页）一并吃下：它是详情页的子路径，归一化掉才是能抓的地址。
+_PAGE_ANY_LANG_RE = re.compile(
+    r"^/(?:[A-Za-z][A-Za-z-]{0,11}/)?(?P<kind>drama|actor)/(?P<id>\d+)(?:/photos)?/?$"
+)
 
 
 def canonical_page_url(url: str, domain: str = ORG_DEFAULT_DOMAIN) -> str:
@@ -268,6 +280,11 @@ def canonical_page_url(url: str, domain: str = ORG_DEFAULT_DOMAIN) -> str:
     ⚠️ 这**不是**「按 ID 反拼地址」—— 路径形态（``/drama/`` 还是 ``/actor/``）与 ID
     仍然完全来自页面 / 引擎给的那条 URL，这里只把一个必须成立的前提写死：**站点只抓简体**。
 
+    唯一的例外是**图集页**：``…/drama/17139/photos`` 会被归一化成 ``…/drama/17139``。
+    它是详情页的子路径（同一个作品的 ID），却**不是**能抓的详情页地址；引擎在「详情页没被
+    索引、只索引了图集页」时给的就是它（见 :func:`web_index_native_id`），照抄原址入库
+    会拿图集页当详情页解析。
+
     实测（2026-10-15）：``/actor/371``、``/drama/22049``、``/zh-Hant/actor/24243`` 三种写法
     都会被 301 到 **繁体** 页面，而繁体页里
 
@@ -275,7 +292,7 @@ def canonical_page_url(url: str, domain: str = ORG_DEFAULT_DOMAIN) -> str:
     2. 统计标签是「熱度 / 評分」⇒ 简体正则匹配不到，``heat`` 恒为 ``null``。
 
     两种症状都**不报错**，极难发现 —— 所以抓取与入库一律先过这一步。
-    不是站点页面地址（图集页、榜单页、外域、图片 CDN 等）时**原样返回**，由调用方另行筛掉。
+    不是站点页面地址（榜单页、外域、图片 CDN 等）时**原样返回**，由调用方另行筛掉。
     """
     text = _clean(url)
     if not text:

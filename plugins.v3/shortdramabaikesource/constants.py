@@ -171,6 +171,12 @@ WEB_INDEX_HOST_SUFFIX_RE = re.compile(
 )
 # 只认作品详情页：``/drama/<数字>``（可带 zh-Hans / zh-Hant 前缀），排除 /photos、/actor 等
 WEB_INDEX_DETAIL_RE = re.compile(r"^/(?:zh-Hans|zh-Hant)?/?drama/(?P<id>\d+)/?$")
+# 作品**图集页**：``/drama/<数字>/photos`` —— 它是详情页的子路径，**作品 ID 完全相同**，
+# 所以它是「这部作品存在」的等价证据。实测（2026-10-15）搜「难驯」时引擎一条详情页都没给，
+# 只给了 ``/zh-Hans/drama/17139/photos``（标题「难驯 - 剧照 - 短剧百科」）—— 以前它被当
+# 「图集页」整行剔除，于是这部作品**在插件里永远搜不到**（用户看到的正是「库里只有作品 0」）。
+# 现在认它，并在 :func:`parser.canonical_page_url` 里归一化成作品页地址再入库。
+WEB_INDEX_GALLERY_RE = re.compile(r"^/(?:zh-Hans|zh-Hant)?/?drama/(?P<id>\d+)/photos/?$")
 # 只认演员页：``/actor/<数字>``（可带 zh-Hans / zh-Hant 前缀）
 WEB_INDEX_ACTOR_RE = re.compile(r"^/(?:zh-Hans|zh-Hant)?/?actor/(?P<id>\d+)/?$")
 
