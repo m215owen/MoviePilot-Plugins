@@ -39,6 +39,8 @@ URL 会**自己长大**：解析作品页时顺带把 ``actor[].url`` 入库，�
 4. **默认视频识别源是硬编码的 TMDB** ⇒ 本插件**不会**自动成为全局兜底，
    ``media_source`` 不匹配时**必须返回 None**，绝不能劫持其它来源的识别。
    刮削出口（``metadata_nfo`` / ``metadata_img``）同理，只服务自己的来源，见 :mod:`scrape`。
+   唯一的补充通道是宿主的**官方征集**：原生识别失败后宿主广播 ``MediaRecognize``
+   链式事件邀请三方源补位（见下方「链式事件：补充识别」）—— 那不是抢，是应征。
 5. **图片域名要登记**：宿主图片代理只放行 ``SECURITY_IMAGE_DOMAINS`` 内的域名。
 6. **分类扩展字段是受协议门控的可选能力**：来源声明里的 ``classification_fields`` 要
    先探测 ``app.sdk.classification`` 的协议版本，探不到就**降级**成普通来源声明；
@@ -60,6 +62,7 @@ URL 会**自己长大**：解析作品页时顺带把 ``actor[].url`` 入库，�
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -76,6 +79,19 @@ try:  # pragma: no cover - 分支只取决于宿主版本
     from app.foundation.text import convert as zhconv_convert
 except Exception:  # pragma: no cover
     zhconv_convert = None
+
+# 补充识别链式事件（官方扩展点，官方文档 §9.1 同款导入）：宿主原生源（TMDB / 豆瓣…）
+# 识别失败后广播 ``ChainEventType.MediaRecognize``，三方媒体源按要素回写完整 MediaInfo。
+# 事件类型与宿主 ``EventType`` 同住 ``app.schemas.types``；事件总线走 ``app.sdk.events``。
+# 任一拿不到（老版本宿主 / 本地单测桩缺失）就整段功能静默关闭 —— 可选增强绝不阻断加载。
+try:  # pragma: no cover - 分支只取决于宿主版本
+    from app.sdk.events import eventmanager as _eventmanager
+except Exception:  # pragma: no cover
+    _eventmanager = None
+try:  # pragma: no cover - 分支只取决于宿主版本
+    from app.schemas.types import ChainEventType as _ChainEventType
+except Exception:  # pragma: no cover
+    _ChainEventType = None
 
 from .classification import classification_protocol_version, media_source_declaration
 # 缓存层：与宿主同一套缓存机制（Redis / 进程内内存），有效期与站点开关跟随系统设置，
@@ -260,6 +276,13 @@ class ShortDramaBaikeSource(_PluginBase):
         self._tmdb = TmdbIdentity(self._get, self._cache)
 
         self._register_image_domains()
+        # 补充识别处理器在模块导入期完成注册（见文件末尾），这里只跟随插件启停
+        # 切换启用状态 —— 与官方插件的 enable/disable 姿势一致
+        if _eventmanager is not None:
+            try:
+                _eventmanager.enable_event_handler(self._on_media_recognize)
+            except Exception as err:  # pragma: no cover - 宿主版本差异
+                logger.debug(f"{PLUGIN_NAME} 启用补充识别事件失败：{err}")
         # 历史遗留的重复行（同一个页面存成多条）在启动时合并掉：面板上一行＝一站剧
         merged = self._dedupe_store()
         stats = self._store_count()
@@ -288,6 +311,11 @@ class ShortDramaBaikeSource(_PluginBase):
         """
         stats = self._cache.stats() if self._cache is not None else {"count": 0}
         released = self._cache.release() if self._cache is not None else False
+        if _eventmanager is not None:
+            try:
+                _eventmanager.disable_event_handler(self._on_media_recognize)
+            except Exception as err:  # pragma: no cover - 宿主版本差异
+                logger.debug(f"{PLUGIN_NAME} 停用补充识别事件失败：{err}")
         logger.info(
             f"{PLUGIN_NAME} 已停止："
             + ("进程内缓存已释放" if released else f"缓存保留 {stats.get('count', 0)} 条（宿主 Redis，跨重启存活）")
@@ -1157,7 +1185,9 @@ class ShortDramaBaikeSource(_PluginBase):
         而 ``chain/media/recognition.py`` 又会把空的 ``media_source`` **回填成系统主视频源**
         （实测 ``media_source=<MediaSource.TMDB: 'themoviedb'>`` / ``media_id=None``）。
         所以「对话框里选了本插件、ID 留空」的请求是**带着 TMDB 身份**到这里来的 —— 这种
-        请求本插件不认领，原来源照常处理。想整理短剧就在对话框里**选中具体条目**（带上 ID）。
+        请求本插件不认领，原来源照常处理。想整理短剧就在对话框里**选中具体条目**（带上 ID）；
+        那类请求最终由宿主的 ``MediaRecognize`` 补充识别事件征集本插件补位
+        （见 :meth:`_on_media_recognize`），不经过本方法。
 
         ⚠️ 入口 3 与「裸数字 ID」的取舍：正因为规范 ID 是裸数字，入口 3 **不能**放行裸数字
         —— 否则 TMDB 的 ``603`` 会被当成本站作品 603。裸数字只在**来源确实指向本插件**
@@ -1207,6 +1237,114 @@ class ShortDramaBaikeSource(_PluginBase):
 
     async def async_recognize_media(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.to_thread(self.recognize_media, *args, **kwargs)
+
+    # ── 链式事件：补充识别（宿主 MediaRecognize）──────────────────
+    #
+    # 宿主识别状态机 = NATIVE → SUPPLEMENT 两步（``chain/_recognition.py``）：原生模块
+    # （TMDB / 豆瓣…）拿不到带身份的结果时，宿主广播 ``MediaRecognize`` 事件，源码注释
+    # 原文「允许插件（**如第三方媒体源**）按已知要素匹配并返回标准信息」。本插件在此
+    # 按片名走与 :meth:`recognize_media` 完全相同的检索口径（URL 库优先 → 站外索引，
+    # 节流共用），命中即回写带 ``media_source + media_id`` 的完整 MediaInfo —— 宿主对
+    # 缺身份的回写不采信（``_media_info_from_plugin``）。
+    #
+    # 这条路与 FAQ 19 §2 **不冲突**：那里约束的是模块方法 ``recognize_media``（来源
+    # 不匹配必须让路，三条入口判据一个字不动）；这里只应答宿主在**原生识别失败之后**
+    # 的显式征集。手动整理「对话框里选了短剧百科但 ID 留空」的请求 —— 前端按宿主
+    # 「身份成对」契约把来源一起丢掉、宿主把空来源回填成 TMDB、TMDB 自然识别不出 ——
+    # 正是靠这条通道补位的。
+    #
+    # 触发面：宿主**所有**走完原生识别仍无身份的请求（自动整理 / 扫描 / 订阅…）都会
+    # 广播一次。检索口径自带两道闸：URL 库命中零引擎请求；未命中走站外索引但受
+    # ``SEARCH_RETRY_INTERVAL`` 节流（同一关键词 300s / 失败 60s 内不重复出网）。
+
+    @staticmethod
+    def _event_get(data: Any, key: str, default: Any = None) -> Any:
+        """兼容读取字典或事件模型字段（官方插件同款写法）。"""
+        if isinstance(data, dict):
+            return data.get(key, default)
+        return getattr(data, key, default)
+
+    @staticmethod
+    def _event_set(data: Any, key: str, value: Any) -> None:
+        """兼容写入字典或事件模型字段。"""
+        if isinstance(data, dict):
+            data[key] = value
+        else:
+            setattr(data, key, value)
+
+    @classmethod
+    def _event_keywords(cls, title: str) -> List[str]:
+        """从事件载荷的**原始标题**提取候选检索名（有序、去重、去空）。
+
+        事件载荷的 ``title`` 是 ``meta.title`` —— 往往是带拼音点串与扩展名的原始
+        文件名（实测 ``末世：我能听到别人心声.Mo.Shi…2025.S01E55….mp4``）。本站只收
+        中文短剧，所以直接抽**最长的中日韩连续段**当片名（段内允许全角标点与数字，
+        「云渺3：镇魔世家」这类才不会被腰斩），再补一个简体写法 —— 与
+        :meth:`_meta_keywords` 的「中文名 + 简体」口径对齐。抽不出中文段就放弃
+        （英文片名在本站必然搜不到，不值得为此出网）。
+        """
+        text = video_name_of(_clean(title))
+        if not text:
+            return []
+        runs = re.findall(
+            r"[\u3400-\u4dbf\u4e00-\u9fff]"
+            r"[\u3400-\u4dbf\u4e00-\u9fff\u3000-\u303f\uff01-\uff5e·:0-9]*",
+            text,
+        )
+        if not runs:
+            return []
+        runs.sort(key=len, reverse=True)
+        names: List[str] = []
+        for run in runs[:3]:
+            trimmed = run.strip("·:：！？、，。 　")
+            for value in (trimmed, cls._to_simplified(trimmed)):
+                cleaned = _clean(value)
+                if cleaned and cleaned not in names:
+                    names.append(cleaned)
+        return names[:MAX_META_KEYWORDS]
+
+    def _on_media_recognize(self, event: Any) -> None:
+        """宿主 ``MediaRecognize`` 处理器：按片名补位，命中即回写完整身份。"""
+        if not self._enabled or event is None:
+            return
+        data = getattr(event, "event_data", None)
+        if not data:
+            return
+        # 已有插件回写 / 宿主已给出来源声明 → 不掺和；点名本插件却没拿到结果的重试
+        # 同样让路（原生入口已经按同一套检索口径试过一轮，再来一遍只会重复出网）
+        if self._event_get(data, "mediainfo") or self._event_get(data, "source_plugin"):
+            return
+        if self._is_our_source(self._event_get(data, "media_source")):
+            return
+        keywords = self._event_keywords(str(self._event_get(data, "title") or ""))
+        if not keywords:
+            return
+        year = str(self._event_get(data, "year") or "").strip()
+        record: Optional[Dict[str, Any]] = None
+        # 与识别同一份「候选名挨个试，第一个有结果就停」的口径
+        for keyword in keywords:
+            record = self._resolve_item(keyword=keyword, year=year)
+            if record is not None:
+                break
+        if record is None:
+            logger.debug(f"{PLUGIN_NAME} 补充识别未命中：{'/'.join(keywords)}")
+            return
+        info = build_media_info(record, self._tmdb_identity(record))
+        if info is None:
+            return
+        try:
+            payload = info.to_dict()
+        except Exception as err:  # pragma: no cover - 宿主模型版本差异
+            logger.debug(f"{PLUGIN_NAME} 补充识别结果序列化失败：{err}")
+            return
+        if not isinstance(payload, dict) or not payload.get("media_source") or not payload.get("media_id"):
+            return
+        self._event_set(data, "mediainfo", payload)
+        self._event_set(data, "source_plugin", self.__class__.__name__)
+        logger.info(
+            f"{PLUGIN_NAME} 补充识别命中：{payload.get('media_id')}《{payload.get('title')}》"
+            f"（检索词 {'/'.join(keywords)}）"
+        )
 
     # ── 模块接口：检索（宿主静态合同）─────────────────────────────
 
@@ -2461,3 +2599,16 @@ def _as_int(value: Any, default: Optional[int] = None) -> Optional[int]:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+# ── 事件注册 ─────────────────────────────────────────────────────
+# 与官方插件在类体上挂 ``@eventmanager.register`` 等价：宿主按处理函数的属主类
+# （``__qualname__`` → 插件类名）解析当前运行实例，插件重载后自动换绑。
+# 事件总线 / 事件类型 / ``MediaRecognize`` 成员任一不可用（老版本宿主、单测桩缺失）
+# 就整体不注册 —— 补充识别是可选增强，绝不能阻断插件本体加载。
+_MEDIA_RECOGNIZE_EVENT = getattr(_ChainEventType, "MediaRecognize", None) if _ChainEventType is not None else None
+if _eventmanager is not None and _MEDIA_RECOGNIZE_EVENT is not None:
+    ShortDramaBaikeSource._on_media_recognize = _eventmanager.register(  # type: ignore[method-assign]
+        _MEDIA_RECOGNIZE_EVENT
+    )(ShortDramaBaikeSource._on_media_recognize)
+
