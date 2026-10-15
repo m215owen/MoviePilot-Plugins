@@ -47,10 +47,10 @@ function proxyImage(url) {
 }
 function unwrap(response) {
   const value = response;
-  if (value && typeof value === "object" && "data" in value) {
-    const inner = value.data;
-    if (inner && typeof inner === "object") return inner;
-  }
+  if (!value || typeof value !== "object") return response;
+  const headers = value.headers;
+  const looksLikeAxiosResponse = typeof value.status === "number" && typeof value.statusText === "string" && Boolean(headers) && typeof headers === "object";
+  if (looksLikeAxiosResponse && "data" in value) return value.data;
   return response;
 }
 async function getJson(api, path, params) {

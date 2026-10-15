@@ -120,15 +120,25 @@ export function siteMediaUrl(url?: string | null): string {
 /**
  * 把 axios 响应归一化成后端返回的原始对象。
  *
- * 宿主拦截器可能已经把 `data` 解出来了，也可能没有 —— 两种都兜住。
+ * 宿主拦截器通常已经把响应体解了出来（`api.get()` 直接拿到后端 JSON），但个别版本
+ * 仍会套一层 axios response —— 两种都要兜住。
+ *
+ * ⚠️ 判据必须看「像不像 axios response」，**绝不能只看有没有 `data` 字段**：
+ * 后端自己的载荷里也有 `data`（`GET /cache` 的条目数组字段就叫 `data`），
+ * 只看 `data` 会把载荷里的那个数组当成响应体返回出去，界面就变成空列表。
+ * 真正的 axios response 一定同时带 `status`(number) / `statusText`(string) /
+ * `headers`(object) —— 后端的业务载荷不会有这三样。
  */
 function unwrap<T>(response: unknown): T {
-  const value = response as { data?: unknown } | null
-  if (value && typeof value === 'object' && 'data' in value) {
-    const inner = (value as { data?: unknown }).data
-    // 只在看起来像「被包了一层 axios response」时解包
-    if (inner && typeof inner === 'object') return inner as T
-  }
+  const value = response as Record<string, unknown> | null
+  if (!value || typeof value !== 'object') return response as T
+  const headers = value.headers
+  const looksLikeAxiosResponse =
+    typeof value.status === 'number'
+    && typeof value.statusText === 'string'
+    && Boolean(headers)
+    && typeof headers === 'object'
+  if (looksLikeAxiosResponse && 'data' in value) return value.data as T
   return response as T
 }
 

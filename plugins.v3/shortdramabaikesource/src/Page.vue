@@ -55,83 +55,76 @@
       直接查库、零引擎请求；卡片上的「原始数据」可以看到插件解析出的完整字段。
     </v-alert>
 
-    <!-- ── 缓存 与 URL 库：并排各占一半（点标题展开 / 收起） ─── -->
+    <!-- ── 缓存 与 URL 库：并排各占一半（两张常开、等高、内部各自滚动） ─── -->
     <div class="sdbs-duo">
       <!-- ── URL 库（插件自有数据库；库里只存 URL，不存解析结果） ── -->
-      <v-card variant="outlined" class="sdbs-panel">
-        <!-- 卡片头（整行可点）：收起时也只占一行，与右边那张等高 -->
-        <div
-          class="d-flex align-center pa-3 sdbs-fold"
-          style="gap: 8px"
-          @click="toggleLibrary"
-        >
+      <v-card variant="outlined" class="sdbs-panel sdbs-col">
+        <div class="d-flex align-center flex-wrap pa-3 pb-2" style="gap: 8px">
           <v-icon icon="mdi-database-outline" size="18" />
           <span class="text-subtitle-2">URL 库</span>
           <v-chip v-if="storeChip" size="x-small" variant="tonal" color="teal">{{ storeChip }}</v-chip>
           <v-spacer />
-          <span class="text-caption sdbs-dim">{{ libraryOpen ? '收起' : '展开' }}</span>
-          <v-icon :icon="libraryOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="20" />
+          <span v-if="libraryStats" class="text-caption sdbs-dim">{{ libraryStats }}</span>
         </div>
-        <template v-if="libraryOpen">
-          <v-divider />
-          <div class="pa-3 pt-2">
-            <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
-              <v-btn
-                size="x-small"
-                variant="text"
-                :loading="libraryLoading"
-                prepend-icon="mdi-refresh"
-                @click="loadLibrary()"
-              >
-                刷新
-              </v-btn>
-              <v-btn
-                size="x-small"
-                variant="text"
-                color="error"
-                prepend-icon="mdi-delete-sweep-outline"
-                :disabled="libraryLoading || libraryClearing"
-                @click="libraryClearOpen = true"
-              >
-                清空库
-              </v-btn>
-              <v-spacer />
-              <span v-if="libraryStats" class="text-caption sdbs-dim">{{ libraryStats }}</span>
-            </div>
-            <div class="text-caption sdbs-dim mb-2">
-              库里只存「页面 URL」：命中就直接抓页面（<b>零引擎请求</b>），解析结果不落库 ——
-              站点内容随时在变，页面永远实时解析。<b>一个页面只占一条记录</b>（同一个 ID 走了两条
-              发现路径被写成多行时会自动合并），每条按<b>它自己的名字</b>建档；右边标出「命中词」，
-              告诉你它是搜哪个词时被带出来的。解析作品页时顺带把演员链接写进库，所以搜过一部剧，
-              之后再搜它里面的演员名也能命中。
-            </div>
-            <v-alert v-if="libraryNotice" type="success" variant="tonal" density="compact" class="mb-2">
-              {{ libraryNotice }}
-            </v-alert>
-            <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
-              <v-text-field
-                v-model="libraryKeyword"
-                density="compact"
-                variant="outlined"
-                hide-details
-                clearable
-                prepend-inner-icon="mdi-magnify"
-                placeholder="按关键词精确查（留空＝最近入库）"
-                class="sdbs-lib-search"
-                @keyup.enter="loadLibrary()"
-              />
-              <v-btn size="small" variant="tonal" color="primary" :loading="libraryLoading" @click="loadLibrary()">
-                查询
-              </v-btn>
-              <v-btn-toggle v-model="libraryKind" density="compact" variant="outlined" divided mandatory>
-                <v-btn size="small" value="all">全部</v-btn>
-                <v-btn size="small" value="work">作品</v-btn>
-                <v-btn size="small" value="actor">演员</v-btn>
-              </v-btn-toggle>
-            </div>
-            <v-alert v-if="!libraryRecords.length" type="info" variant="tonal" density="compact">
-              {{ libraryEmptyText }}
-            </v-alert>
+        <v-divider />
+        <div class="pa-3 pt-2 d-flex flex-column flex-grow-1">
+          <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+            <v-btn
+              size="x-small"
+              variant="text"
+              :loading="libraryLoading"
+              prepend-icon="mdi-refresh"
+              @click="loadLibrary()"
+            >
+              刷新
+            </v-btn>
+            <v-btn
+              size="x-small"
+              variant="text"
+              color="error"
+              prepend-icon="mdi-delete-sweep-outline"
+              :disabled="libraryLoading || libraryClearing"
+              @click="libraryClearOpen = true"
+            >
+              清空库
+            </v-btn>
+            <v-spacer />
+            <v-btn-toggle v-model="libraryKind" density="compact" variant="outlined" divided mandatory>
+              <v-btn size="small" value="all">全部</v-btn>
+              <v-btn size="small" value="work">作品</v-btn>
+              <v-btn size="small" value="actor">演员</v-btn>
+            </v-btn-toggle>
+          </div>
+          <div class="text-caption sdbs-dim mb-2">
+            库里只存「页面 URL」：命中就直接抓页面（<b>零引擎请求</b>），解析结果不落库 ——
+            站点内容随时在变，页面永远实时解析。<b>一个页面只占一条记录</b>（同一个 ID 走了两条
+            发现路径被写成多行时会自动合并），每条按<b>它自己的名字</b>建档；右边标出「命中词」，
+            告诉你它是搜哪个词时被带出来的。解析作品页时顺带把演员链接写进库，所以搜过一部剧，
+            之后再搜它里面的演员名也能命中。
+          </div>
+          <v-alert v-if="libraryNotice" type="success" variant="tonal" density="compact" class="mb-2">
+            {{ libraryNotice }}
+          </v-alert>
+          <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+            <v-text-field
+              v-model="libraryKeyword"
+              density="compact"
+              variant="outlined"
+              hide-details
+              clearable
+              prepend-inner-icon="mdi-magnify"
+              placeholder="按关键词精确查（留空＝最近入库）"
+              class="sdbs-lib-search"
+              @keyup.enter="loadLibrary()"
+            />
+            <v-btn size="small" variant="tonal" color="primary" :loading="libraryLoading" @click="loadLibrary()">
+              查询
+            </v-btn>
+          </div>
+          <v-alert v-if="!libraryRecords.length" type="info" variant="tonal" density="compact">
+            {{ libraryEmptyText }}
+          </v-alert>
+          <div class="sdbs-scroll">
             <div
               v-for="row in libraryRecords"
               :key="`${row.kind}:${row.url}`"
@@ -167,137 +160,130 @@
                 打开
               </v-btn>
             </div>
-
-            <v-dialog v-model="libraryClearOpen" max-width="440">
-              <v-card>
-                <v-card-title class="text-subtitle-2 pt-3">清空 URL 库</v-card-title>
-                <v-card-text class="text-body-2">
-                  将要删除：<b>{{ libraryClearScope }}</b>。
-                  <br />
-                  库里只存「页面 URL」，清掉之后下次搜索会重新问一遍搜索引擎 ——
-                  引擎有最小间隔、召回也不稳，认得出的词会更少。确认要清吗？
-                </v-card-text>
-                <v-card-actions>
-                  <v-spacer />
-                  <v-btn size="small" variant="text" @click="libraryClearOpen = false">取消</v-btn>
-                  <v-btn
-                    size="small"
-                    variant="tonal"
-                    color="error"
-                    :loading="libraryClearing"
-                    @click="clearLibrary()"
-                  >
-                    确认清空
-                  </v-btn>
-                </v-card-actions>
-              </v-card>
-            </v-dialog>
           </div>
-        </template>
+        </div>
+
+        <v-dialog v-model="libraryClearOpen" max-width="440">
+          <v-card>
+            <v-card-title class="text-subtitle-2 pt-3">清空 URL 库</v-card-title>
+            <v-card-text class="text-body-2">
+              将要删除：<b>{{ libraryClearScope }}</b>。
+              <br />
+              库里只存「页面 URL」，清掉之后下次搜索会重新问一遍搜索引擎 ——
+              引擎有最小间隔、召回也不稳，认得出的词会更少。确认要清吗？
+            </v-card-text>
+            <v-card-actions>
+              <v-spacer />
+              <v-btn size="small" variant="text" @click="libraryClearOpen = false">取消</v-btn>
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="error"
+                :loading="libraryClearing"
+                @click="clearLibrary()"
+              >
+                确认清空
+              </v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
       </v-card>
 
       <!-- ── 缓存管理（后端与有效期跟随宿主，但不进宿主的缓存管理页） ── -->
-      <v-card variant="outlined" class="sdbs-panel">
-        <!-- 卡片头（整行可点）：收回时只剩一行，与左边那张等高 -->
-        <div
-          class="d-flex align-center pa-3 sdbs-fold"
-          style="gap: 8px"
-          @click="toggleCache"
-        >
+      <v-card variant="outlined" class="sdbs-panel sdbs-col">
+        <div class="d-flex align-center flex-wrap pa-3 pb-2" style="gap: 8px">
           <v-icon icon="mdi-cached" size="18" />
           <span class="text-subtitle-2">缓存管理</span>
           <v-chip v-if="cacheChip" size="x-small" variant="tonal" color="secondary">{{ cacheChip }}</v-chip>
           <v-spacer />
-          <span class="text-caption sdbs-dim">{{ cacheOpen ? '收起' : '展开' }}</span>
-          <v-icon :icon="cacheOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="20" />
+          <span v-if="cacheSummary" class="text-caption sdbs-dim">{{ cacheSummary }}</span>
         </div>
-        <template v-if="cacheOpen">
-          <v-divider />
-          <div class="pa-3 pt-2">
-            <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
-              <v-btn
-                size="x-small"
-                variant="text"
-                :loading="cacheLoading"
-                prepend-icon="mdi-refresh"
-                @click="loadCache()"
-              >
-                刷新
-              </v-btn>
-              <v-btn
-                size="x-small"
-                variant="text"
-                color="error"
-                prepend-icon="mdi-delete-sweep-outline"
-                :disabled="cacheLoading || cacheClearing || !cacheEntries.length"
-                @click="cacheClearOpen = true"
-              >
-                清空缓存
-              </v-btn>
-              <v-spacer />
-              <span v-if="cacheSummary" class="text-caption sdbs-dim">{{ cacheSummary }}</span>
-            </div>
-            <div class="text-caption sdbs-dim mb-2">
-              解析结果的缓存：<b>作品详情</b>、<b>演员档案</b>与 <b>TMDB 身份</b>各一条。
-              缓存的后端与有效期<b>跟着宿主走</b>（系统设置 → 缓存）——
-              启用 Redis 时与宿主共用同一个实例（本插件独占
-              <code>{{ cacheWhere.region }}</code> 区），否则落在进程内内存。
-            </div>
-            <v-alert
-              v-if="cacheWhere.blocked"
-              type="warning"
-              variant="tonal"
-              density="compact"
-              class="mb-2"
+        <v-divider />
+        <div class="pa-3 pt-2 d-flex flex-column flex-grow-1">
+          <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+            <v-btn
+              size="x-small"
+              variant="text"
+              :loading="cacheLoading"
+              prepend-icon="mdi-refresh"
+              @click="loadCache()"
             >
-              站点命中系统「不缓存站点」配置（<code>{{ cacheWhere.system?.no_cache_site_key }}</code>）
-              —— 本插件已按系统口径<b>停用缓存</b>，每次解析都会重新抓页面。
-            </v-alert>
-            <v-alert v-else-if="cacheWhere.disabled" type="warning" variant="tonal" density="compact" class="mb-2">
-              插件配置里把缓存有效期设成了 <b>{{ cacheWhere.override_ttl }}</b>（负数即<b>关闭插件缓存</b>）
-              —— 每次解析都会重新抓页面。想恢复跟随系统，把「设置 → 站点与请求 → 缓存覆盖」改回 0。
-            </v-alert>
-            <div v-else class="text-caption sdbs-dim mb-2">
-              当前：后端 <b>{{ cacheWhere.backend }}</b>｜有效期 <b>{{ cacheTtlText }}</b>
-              （{{ cacheTtlSource }}）｜图片缓存
-              <b>{{ cacheWhere.system?.image_cache ? '开' : '关' }}</b>
-              （系统「全局图片缓存」{{ cacheWhere.system?.image_cache_days ?? 7 }} 天）
-            </div>
-            <v-alert v-if="cacheNotice" type="success" variant="tonal" density="compact" class="mb-2">
-              {{ cacheNotice }}
-            </v-alert>
-            <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
-              <v-text-field
-                v-model="cacheKeyword"
-                density="compact"
-                variant="outlined"
-                hide-details
-                clearable
-                prepend-inner-icon="mdi-magnify"
-                placeholder="按片名 / 演员名 / 站点 ID 过滤"
-                class="sdbs-lib-search"
-                @keyup.enter="loadCache()"
-              />
-              <v-btn size="small" variant="tonal" color="primary" :loading="cacheLoading" @click="loadCache()">
-                查询
-              </v-btn>
-              <v-btn-toggle
-                v-model="cacheKind"
-                density="compact"
-                variant="outlined"
-                divided
-                mandatory
-                @update:model-value="loadCache()"
-              >
-                <v-btn size="small" value="all">全部</v-btn>
-                <v-btn size="small" value="detail">作品详情</v-btn>
-                <v-btn size="small" value="actor">演员档案</v-btn>
-                <v-btn size="small" value="tmdb">TMDB 身份</v-btn>
-              </v-btn-toggle>
-            </div>
-            <v-alert v-if="!cacheEntries.length" type="info" variant="tonal" density="compact">
-              {{ cacheEmptyText }}
-            </v-alert>
+              刷新
+            </v-btn>
+            <v-btn
+              size="x-small"
+              variant="text"
+              color="error"
+              prepend-icon="mdi-delete-sweep-outline"
+              :disabled="cacheLoading || cacheClearing || !cacheTotal"
+              @click="cacheClearOpen = true"
+            >
+              清空缓存
+            </v-btn>
+            <v-spacer />
+            <v-btn-toggle
+              v-model="cacheKind"
+              density="compact"
+              variant="outlined"
+              divided
+              mandatory
+              @update:model-value="loadCache()"
+            >
+              <v-btn size="small" value="all">全部</v-btn>
+              <v-btn size="small" value="detail">作品详情</v-btn>
+              <v-btn size="small" value="actor">演员档案</v-btn>
+              <v-btn size="small" value="tmdb">TMDB 身份</v-btn>
+            </v-btn-toggle>
+          </div>
+          <div class="text-caption sdbs-dim mb-2">
+            解析结果的缓存：<b>作品详情</b>、<b>演员档案</b>与 <b>TMDB 身份</b>各一条。
+            缓存的后端与有效期<b>跟着宿主走</b>（系统设置 → 缓存）——
+            启用 Redis 时与宿主共用同一个实例（本插件独占
+            <code>{{ cacheWhere.region }}</code> 区），否则落在进程内内存。
+          </div>
+          <v-alert
+            v-if="cacheWhere.blocked"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mb-2"
+          >
+            站点命中系统「不缓存站点」配置（<code>{{ cacheWhere.system?.no_cache_site_key }}</code>）
+            —— 本插件已按系统口径<b>停用缓存</b>，每次解析都会重新抓页面。
+          </v-alert>
+          <v-alert v-else-if="cacheWhere.disabled" type="warning" variant="tonal" density="compact" class="mb-2">
+            插件配置里把缓存有效期设成了 <b>{{ cacheWhere.override_ttl }}</b>（负数即<b>关闭插件缓存</b>）
+            —— 每次解析都会重新抓页面。想恢复跟随系统，把「设置 → 站点与请求 → 缓存覆盖」改回 0。
+          </v-alert>
+          <div v-else class="text-caption sdbs-dim mb-2">
+            当前：后端 <b>{{ cacheWhere.backend }}</b>｜有效期 <b>{{ cacheTtlText }}</b>
+            （{{ cacheTtlSource }}）｜图片缓存
+            <b>{{ cacheWhere.system?.image_cache ? '开' : '关' }}</b>
+            （系统「全局图片缓存」{{ cacheWhere.system?.image_cache_days ?? 7 }} 天）
+          </div>
+          <v-alert v-if="cacheNotice" type="success" variant="tonal" density="compact" class="mb-2">
+            {{ cacheNotice }}
+          </v-alert>
+          <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+            <v-text-field
+              v-model="cacheKeyword"
+              density="compact"
+              variant="outlined"
+              hide-details
+              clearable
+              prepend-inner-icon="mdi-magnify"
+              placeholder="按片名 / 演员名 / 站点 ID 过滤"
+              class="sdbs-lib-search"
+              @keyup.enter="loadCache()"
+            />
+            <v-btn size="small" variant="tonal" color="primary" :loading="cacheLoading" @click="loadCache()">
+              查询
+            </v-btn>
+          </div>
+          <v-alert v-if="!cacheEntries.length" type="info" variant="tonal" density="compact">
+            {{ cacheEmptyText }}
+          </v-alert>
+          <div class="sdbs-scroll">
             <div v-for="row in cacheEntries" :key="row.key" class="d-flex align-center py-1">
               <v-chip
                 size="x-small"
@@ -322,33 +308,34 @@
                 删除
               </v-btn>
             </div>
-
-            <v-dialog v-model="cacheClearOpen" max-width="440">
-              <v-card>
-                <v-card-title class="text-subtitle-2 pt-3">清空缓存</v-card-title>
-                <v-card-text class="text-body-2">
-                  将要删除：<b>{{ cacheClearScope }}</b>。
-                  <br />
-                  缓存只是「省一次抓页面」，<b>删掉不会丢任何数据</b> —— 下次识别 / 搜索会重新解析一遍
-                  （站点有风控，短时间大量重建可能触发限流）。只清本插件自己的缓存区，不动宿主与其它插件。
-                </v-card-text>
-                <v-card-actions>
-                  <v-spacer />
-                  <v-btn size="small" variant="text" @click="cacheClearOpen = false">取消</v-btn>
-                  <v-btn
-                    size="small"
-                    variant="tonal"
-                    color="error"
-                    :loading="cacheClearing"
-                    @click="clearCacheAll()"
-                  >
-                    确认清空
-                  </v-btn>
-                </v-card-actions>
-              </v-card>
-            </v-dialog>
           </div>
-        </template>
+          <div v-if="cacheMoreText" class="text-caption sdbs-dim mt-1">{{ cacheMoreText }}</div>
+        </div>
+
+        <v-dialog v-model="cacheClearOpen" max-width="440">
+          <v-card>
+            <v-card-title class="text-subtitle-2 pt-3">清空缓存</v-card-title>
+            <v-card-text class="text-body-2">
+              将要删除：<b>{{ cacheClearScope }}</b>。
+              <br />
+              缓存只是「省一次抓页面」，<b>删掉不会丢任何数据</b> —— 下次识别 / 搜索会重新解析一遍
+              （站点有风控，短时间大量重建可能触发限流）。只清本插件自己的缓存区，不动宿主与其它插件。
+            </v-card-text>
+            <v-card-actions>
+              <v-spacer />
+              <v-btn size="small" variant="text" @click="cacheClearOpen = false">取消</v-btn>
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="error"
+                :loading="cacheClearing"
+                @click="clearCacheAll()"
+              >
+                确认清空
+              </v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
       </v-card>
     </div>
 
@@ -383,7 +370,8 @@
 
     <v-row dense>
       <!-- ── 作品结果 ─────────────────────────────────────────── -->
-      <v-col v-if="hasTitlePanel" cols="12" md="6">
+      <!-- 只有一块结果时独占整行 —— 固定 md=6 会让单块结果右边空出一半 -->
+      <v-col v-if="hasTitlePanel" cols="12" :md="hasActorPanel ? 6 : 12">
         <v-card variant="outlined" class="pa-3 sdbs-panel">
           <div class="d-flex align-center mb-2">
             <v-icon icon="mdi-movie-search-outline" size="18" class="mr-1" />
@@ -532,7 +520,8 @@
       </v-col>
 
       <!-- ── 演员结果 ─────────────────────────────────────────── -->
-      <v-col v-if="hasActorPanel" cols="12" md="6">
+      <!-- 同上：只有演员结果时占满整行 -->
+      <v-col v-if="hasActorPanel" cols="12" :md="hasTitlePanel ? 6 : 12">
         <v-card variant="outlined" class="pa-3 sdbs-panel">
           <div class="d-flex align-center mb-2">
             <v-icon icon="mdi-account-search-outline" size="18" class="mr-1" />
@@ -840,7 +829,6 @@ const workFull = ref<Record<number, MediaRecord>>({})
 const workLoadingIndex = ref<number | null>(null)
 
 // ── URL 库（插件自有数据库） ──
-const libraryOpen = ref(false)
 const libraryLoading = ref(false)
 const libraryKeyword = ref('')
 const libraryKind = ref<'all' | 'work' | 'actor'>('all')
@@ -855,7 +843,6 @@ const libraryClearing = ref(false)
 const libraryEmptyText = ref('库里还没有记录 —— 先在上面的搜索框搜一次片名或演员名。')
 
 // ── 缓存管理（后端与有效期跟随宿主；不进宿主的缓存管理页） ──
-const cacheOpen = ref(false)
 const cacheLoading = ref(false)
 const cacheKeyword = ref('')
 const cacheKind = ref<'all' | string>('all')
@@ -1167,11 +1154,6 @@ function toggleWorkRaw(index: number): void {
 
 // ── URL 库操作 ──
 
-function toggleLibrary(): void {
-  libraryOpen.value = !libraryOpen.value
-  if (libraryOpen.value) void loadLibrary()
-}
-
 /**
  * 读 URL 库。
  *
@@ -1200,7 +1182,7 @@ async function loadLibrary(): Promise<void> {
     libraryRecords.value = report.records || []
     const stats = report.stats || {}
     libraryStatsRaw.value = stats
-    libraryStats.value = `共 ${stats.total ?? 0} 条（作品 ${stats.work ?? 0} / 演员 ${stats.actor ?? 0}，关键词 ${stats.keywords ?? 0} 个）`
+    libraryStats.value = `作品 ${stats.work ?? 0} / 演员 ${stats.actor ?? 0}｜关键词 ${stats.keywords ?? 0} 个`
     libraryEmptyText.value = query
       ? `库里没有「${query}」——换个完整片名或演员全名，或先在上面的搜索框搜一次。`
       : '库里还没有记录 —— 先在上面的搜索框搜一次片名或演员名。'
@@ -1258,7 +1240,7 @@ async function clearLibrary(): Promise<void> {
 }
 
 watch(libraryKind, () => {
-  if (libraryOpen.value) void loadLibrary()
+  void loadLibrary()
 })
 
 // ── 缓存管理操作 ──
@@ -1274,7 +1256,28 @@ const cacheSummary = computed(() => {
   if (!total) return ''
   const parts = [`作品 ${kinds.detail ?? 0}`, `演员 ${kinds.actor ?? 0}`]
   if (kinds.tmdb) parts.push(`TMDB ${kinds.tmdb}`)
-  return `共 ${total} 条（${parts.join(' / ')}）`
+  return parts.join(' / ')
+})
+
+/**
+ * 当前筛选下后端报的总条数。
+ *
+ * 「清空缓存」按它决定能不能点 —— 不能拿 `cacheEntries.length`：列表空可能只是
+ * 这一页没数据（或筛选后为空），而总量仍是判断「有没有东西可清」的唯一依据。
+ */
+const cacheTotal = computed(() => Number(cacheWhere.value.count ?? 0))
+
+/**
+ * 列表被截断时的一句话提示。
+ *
+ * 后端一次最多回 200 条（按写入时间倒序），超出部分不铺出来 —— 面板不假装
+ * 「这就是全部」，老老实实说清楚还剩多少、怎么查到。
+ */
+const cacheMoreText = computed(() => {
+  const total = cacheTotal.value
+  const shown = cacheEntries.value.length
+  if (!total || shown >= total) return ''
+  return `列表按写入时间倒序显示前 ${shown} 条（共 ${total} 条）—— 用上面的框按片名 / 演员名 / 站点 ID 过滤。`
 })
 
 /** 有效期的人话版本（秒 → 小时） */
@@ -1319,11 +1322,6 @@ function cacheTime(ts?: number): string {
   if (Number.isNaN(date.getTime())) return ''
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
-function toggleCache(): void {
-  cacheOpen.value = !cacheOpen.value
-  if (cacheOpen.value) void loadCache()
 }
 
 /**
@@ -1419,7 +1417,10 @@ async function onConfigSaved(config?: Partial<PluginConfig>): Promise<void> {
   await load()
 }
 
+// 两张卡片常开：进面板就把状态、URL 库清单、缓存清单一起拉回来
 load()
+void loadLibrary()
+void loadCache()
 </script>
 
 <style scoped>
@@ -1463,21 +1464,27 @@ load()
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   gap: 12px;
   margin-bottom: 4px;
-  align-items: start;
+  align-items: stretch;
 }
-/* 折叠卡片头：整行可点，悬停有反馈 */
-.sdbs-fold {
-  cursor: pointer;
-  user-select: none;
+/* 并排卡片：按列排（列表区靠 flex-grow 撑开，短的那张也跟右边等高） */
+.sdbs-col {
+  display: flex;
+  flex-direction: column;
 }
-.sdbs-fold:hover {
-  background-color: rgba(128, 128, 128, 0.08);
+/* 卡片内的记录列表：固定上限 + 内部滚动 —— 否则缓存几百条会把整页拉长，
+   两张卡片也就谈不上「大小一致」 */
+.sdbs-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
 }
 /* URL 库：关键词输入框限宽，记录行的标题可省略号截断（地址可能很长） */
 .sdbs-lib-search {
   max-width: 320px;
   min-width: 200px;
-}.sdbs-lib-text {
+}
+.sdbs-lib-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
