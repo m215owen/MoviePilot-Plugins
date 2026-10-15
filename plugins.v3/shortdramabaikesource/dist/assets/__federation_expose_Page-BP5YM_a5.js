@@ -371,14 +371,17 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       const works = actorProfile.value?.works || [];
       return workFull.value[index] ?? works[index] ?? {};
     }
+    function workComplete(index, work) {
+      return Boolean(workFull.value[index]) || work?.origin === "detail";
+    }
     function workTags(index, work) {
       const tags = (workFull.value[index]?.tags ?? work.tags) || [];
-      return workFull.value[index] ? tags : tags.slice(0, 3);
+      return workComplete(index, work) ? tags : tags.slice(0, 3);
     }
     async function loadWorkDetail(index) {
       const api = resolveApi(props);
       const work = (actorProfile.value?.works || [])[index];
-      if (!api || !work?.media_id || workFull.value[index]) return;
+      if (!api || !work?.media_id || workComplete(index, work)) return;
       workLoadingIndex.value = index;
       try {
         const report = await recognizeTitle(api, { media_id: work.media_id });
@@ -1357,12 +1360,12 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                                         size: "x-small",
                                         variant: "text",
                                         loading: workLoadingIndex.value === index,
-                                        disabled: Boolean(workFull.value[index]),
-                                        title: workFull.value[index] ? "已按详情页补全（完整标签 / 首播 / 版权方 / 时长）" : "演员页卡片是摘要（标签只印 1~3 个、没有版权方），抓一次详情页补全",
+                                        disabled: workComplete(index, work),
+                                        title: workComplete(index, work) ? "已是作品页那份数据（完整标签 / 首播 / 版权方 / 时长 / 简介 / 剧照）" : "演员页卡片是摘要（标签只印 1~3 个、没有版权方），抓一次详情页补全",
                                         onClick: ($event) => loadWorkDetail(index)
                                       }, {
                                         default: _withCtx(() => [
-                                          _createTextVNode(_toDisplayString(workFull.value[index] ? "已补全" : "完整信息"), 1)
+                                          _createTextVNode(_toDisplayString(workComplete(index, work) ? "已补全" : "完整信息"), 1)
                                         ]),
                                         _: 2
                                       }, 1032, ["loading", "disabled", "title", "onClick"]),
@@ -1432,6 +1435,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-0eebfbcd"]]);
+const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-50d81de3"]]);
 
 export { Page as default };

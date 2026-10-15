@@ -34,7 +34,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 - 每张卡片（作品 / 演员档案 / 作品墙里的单部作品）都有 **「原始数据」** 按钮，
   展开就是该条目**插件处理后的完整 JSON** —— 卡片是给人看的，展开是给你核对字段的。
 - 每块只有 1 条候选时自动取详情，不用多点一次。
-- 搜索结果里的 `media_id`（`duanju:<作品ID>`）可以直接喂给 `/recognize`，也就是别的插件能直接复用。
+- 搜索结果里的 `media_id`（作品 ID，**裸数字**）可以直接喂给 `/recognize`，也就是别的插件能直接复用。
 
 > ⚠️ **`/lookup` 必须只打一次引擎。** 片名与演员名共用同一条站外索引，而引擎侧有
 > 3 秒的最小间隔 —— 分头查两次，第二次会被直接跳过，结果就是两块里**恒有一块是空的**。
@@ -53,25 +53,37 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | --- | --- | --- |
 | 声明数据源 | `get_media_source()` | 在识别 / 刮削 / 搜索界面的「媒体来源」里出现「短剧百科」 |
 | 片名检索 | `search_medias` | 返回候选 `MediaInfo`，宿主搜索框、订阅都能用 |
-| 详情识别 | `recognize_media` | 按 `media_id`（`duanju:<id>`，兼容旧前缀 `org:`）或片名取完整记录 |
+| 详情识别 | `recognize_media` | 按 `media_id`（裸数字 `60017`；历史 `duanju:60017` / `org:60017` 照收）或片名取完整记录 |
 | 补图 | `obtain_images` | 缺海报时按身份补抓，并把海报兜底填到背景图 |
-| **演员档案** | `search_actors` / `actor_works` | 演员名 → 候选演员；演员 → **全部作品**（实测 21 部一次全渲染、不分页） |
+| **演员档案** | `search_actors` / `actor_works` | 演员名 → 候选演员；演员 → **全部作品**（实测 21 部一次全渲染、不分页），**每条作品都已补成作品页记录** |
 | **URL 库** | `get_database_models()` | 插件自有数据库里存「关键词 → 页面 URL」，取数**库优先** |
 | **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 分季），换回宿主详情页的演职员 / 推荐 / 分季区块 |
-| **分类扩展字段** | `get_media_source()` + `MediaInfo.classification_facts` | 声明 `extensions.duanjubaike.*` 三个字段并给出事实，**让宿主能把它归到「短剧」分类 —— 分类不匹配就整理不了**，见下节 |
+| **分类扩展字段** | `get_media_source()` + `MediaInfo.classification_facts` | 声明 `extensions.duanju.*` 三个字段并给出事实，**让宿主能把它归到「短剧」分类 —— 分类不匹配就整理不了**，见下节 |
 | **刮削出口** | `metadata_nfo` / `metadata_img` | 刮削时自己出 NFO 文本与图片清单（简介 / 题材 / 演员含角色与头像 / 海报 / 背景图）；不实现的话内置生成器全被来源过滤掉，**永远 NFO 生成失败**，见下节 |
 | **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + URL 库查看器 + 可展开原始数据 |
-| 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / URL 库 / 缓存等 9 项 |
+| 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / URL 库 / 缓存等 10 项 |
 
-统一媒体身份：
+统一媒体身份（宿主只认「来源 + 该来源的编号」这一对，同 TMDB 的 `themoviedb` + `603`）：
 
-- 作品 `media_source = "duanjubaike"`，`media_id = "duanju:<id>"`（裸数字 ID 等价；**旧前缀 `org:` 仍接受**，宿主库里按旧前缀存下来的订阅不会失效）；
-- 演员 `media_id` 形如 `actor:<id>`（裸数字也接受）—— 演员**不是**媒体条目，
-  这个前缀只是让调用方一眼分清「演员 ID 还是作品 ID」。
+- 作品：`media_source = "duanju"`、`media_id = "60017"`（**裸数字**，`MediaSource("duanju")` 构造的枚举）；
+- 演员：`media_id` 形如 `actor:371`（裸数字也接受）—— 演员**不是**媒体条目、
+  不给宿主路由用，这个前缀只是让调用方一眼分清「演员 ID 还是作品 ID」。
 
-> ⚠️ ID 前缀是**白名单**：`duanju:` / `org:`（旧）/ `actor:` 之外的前缀（例如历史形态的
-> `net:duanju:123`）一律判空，尾巴不是纯数字也判空 —— 免得拿一个不属于本站的值
-> 去拼地址、白发一次必然 404 的请求。
+> **来源标识与 ID 的历史包袱**（2026-10-15 改名，读入一律向后兼容，**新产出一律新形态**）：
+>
+> | 物件 | 旧形态（仍接受） | 新形态（现在产出） |
+> | --- | --- | --- |
+> | 来源标识 | `duanjubaike`（别名，其它插件 / 宿主 `SEARCH_SOURCE` 里留着它） | `duanju` |
+> | 作品 ID | `duanju:60017`、`org:60017`（更早的前缀） | `60017` |
+> | 分类命名空间 | `extensions.duanjubaike.*` | `extensions.duanju.*` |
+>
+> 前端 `MediaIdSelector` 选择器给出的、宿主详情页与 NFO 里落的，都是新形态。
+
+> ⚠️ ID 前缀是**白名单**（只有历史前缀 `duanju:` / `org:` 与演员的 `actor:`），
+> 别的前缀（例如历史形态的 `net:123`）一律判空，尾巴不是纯数字也判空 ——
+> 免得拿一个不属于本站的值去拼地址、白发一次必然 404 的请求。
+> 反过来，**裸数字不能无条件认领**：`603` 是 TMDB 的编号，只有在来源确实指向
+> 本插件时才当成本站作品 —— 详见「识别入口」一节。
 
 > **本插件不提供智能体工具**（`get_agent_tools()` 与 `agenttool.py` 已删除）。
 > 面板搜索框 + HTTP 接口已经覆盖同样的能力，再挂两个智能体工具只会与面板职责重复。
@@ -83,7 +95,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 
 ## 整理（媒体整理 / 目录匹配）与分类：为什么必须声明扩展字段
 
-**症状**：识别明明成功（`duanju:24755《疯了吧！我演个反派，我上犯罪榜了》`），
+**症状**：识别明明成功（`24755《疯了吧！我演个反派，我上犯罪榜了》`），
 手动整理却报「**未找到有效的媒体库目录**」。
 
 **链路**（`application/directory.py` + `modules/filemanager/module.py`）：
@@ -104,7 +116,7 @@ if rule.sources and normalized_media_source not in rule.sources:
 ```
 
 而已有规则全部是迁移自旧版配置的 legacy 规则，`sources` 一律 `["themoviedb"]` ——
-我们的 `duanjubaike` 一条都进不去，落到兜底 `tv.uncategorized`（**未分类**），
+我们的 `duanju` 一条都进不去，落到兜底 `tv.uncategorized`（**未分类**），
 与「短剧」目录对不上。
 
 **为什么不能直接用「来源=短剧百科」当条件**：校验器要求条件字段在规则所选来源上
@@ -113,7 +125,7 @@ if rule.sources and normalized_media_source not in rule.sources:
 
 ```json
 {"code":"unavailable_field_support",
- "message":"字段 identity.media_source 在所选来源中均不可用：duanjubaike"}
+ "message":"字段 identity.media_source 在所选来源中均不可用：duanju"}
 ```
 
 宿主留给插件的只有 `extensions.<来源>.<字段>` 命名空间（由 `get_media_source()`
@@ -123,9 +135,9 @@ if rule.sources and normalized_media_source not in rule.sources:
 
 | 字段 | 类型 | 值 | 说明 |
 | --- | --- | --- | --- |
-| `extensions.duanjubaike.is_short_drama` | boolean | 恒 `True` | 本站只收录短剧；规则拿它做「本源识别出来的都归短剧」的兜底 |
-| `extensions.duanjubaike.kind` | string | `真人短剧` / `AI短剧` | 详情页角标，页面没给就不带 |
-| `extensions.duanjubaike.tags` | string_list | 题材标签 | 便于以后按题材再细分目录 |
+| `extensions.duanju.is_short_drama` | boolean | 恒 `True` | 本站只收录短剧；规则拿它做「本源识别出来的都归短剧」的兜底 |
+| `extensions.duanju.kind` | string | `真人短剧` / `AI短剧` | 详情页角标，页面没给就不带 |
+| `extensions.duanju.tags` | string_list | 题材标签 | 便于以后按题材再细分目录 |
 
 事实通过 `MediaInfo.classification_facts` 交给宿主（`build_classification_facts`），
 **只发声明过的字段，缺值就不发**，不伪造。
@@ -133,9 +145,9 @@ if rule.sources and normalized_media_source not in rule.sources:
 配套在宿主「设置 → 媒体分类策略」里加一条规则（revision 3，可回滚到 2）：
 
 ```json
-{"id": "legacy.tv.43ad153372ee83c5.rule.duanjubaike", "kind": "category",
- "media_types": ["电视剧"], "sources": ["duanjubaike"],
- "when": {"field": "extensions.duanjubaike.is_short_drama", "operator": "is_true"},
+{"id": "legacy.tv.43ad153372ee83c5.rule.duanju", "kind": "category",
+ "media_types": ["电视剧"], "sources": ["duanju"],
+ "when": {"field": "extensions.duanju.is_short_drama", "operator": "is_true"},
  "target": {"category_id": "legacy.tv.43ad153372ee83c5"}}
 ```
 
@@ -163,7 +175,7 @@ if (mediainfo.scrape_source or get_runtime_setting('SCRAP_SOURCE')) != "<自己�
 ```
 
 而整理与手动刮削会把 `scrape_source` 设成**媒体来源**（`chain/transfer/execution.py`、
-`api/endpoints/media.py`）⇒ `duanjubaike` 下五个生成器全返回 `None`，日志里只会留下
+`api/endpoints/media.py`）⇒ `duanju` 下五个生成器全返回 `None`，日志里只会留下
 `xxx.nfo NFO 文件生成失败！`，磁盘上什么都没有。
 
 **本插件的做法**（`scrape.py`）：直接把宿主**公开**的
@@ -176,7 +188,7 @@ if (mediainfo.scrape_source or get_runtime_setting('SCRAP_SOURCE')) != "<自己�
 | 季目录 | `season.nfo` |
 | 单集文件 | 同名 `.nfo`（`episodedetails`） |
 
-NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqueid>`、简介、
+NFO 里带站点真实数据：`<uniqueid type="duanju">60017</uniqueid>`、简介、
 题材标签、出品方、演员（**含角色名与头像**）、首播日期。两个刻意的边界：
 
 * **只服务自己的来源** —— 插件 provider 排在宿主模块之前，不做身份判断就会劫持
@@ -188,7 +200,7 @@ NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqu
 > 站点给的是 `profile_path` ⇒ `payload.build_media_info` 补一份 `avatar`（**拷贝后再补**，
 > 原始记录是解析缓存里的同一对象）。
 
-真机实测（临时目录，`POST /api/v1/media/scrape/local?media_source=duanjubaike&media_id=duanju:60017`）：
+真机实测（临时目录，`POST /api/v1/media/scrape/local?media_source=duanju&media_id=60017`）：
 目录目标落盘 `tvshow.nfo` + `poster.jpg` + `backdrop.jpg` + `fanart.jpg`；单集目标落盘同名
 `.nfo`；日志里能看到 `请求插件 短剧百科数据源 执行：metadata_nfo / metadata_img`。
 
@@ -200,10 +212,10 @@ NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqu
 
 | 场景 | 请求里的 `media_source` | 谁识别 |
 | --- | --- | --- |
-| 媒体详情页 / 搜索里点名「短剧百科」 | `duanjubaike` | ✅ 本插件（可查引擎） |
+| 媒体详情页 / 搜索里点名「短剧百科」 | `duanju` | ✅ 本插件（可查引擎） |
 | 整理 / 扫描 / 订阅刷新，系统「媒体识别来源」= 短剧百科 | `None` | ✅ 本插件（可查引擎） |
-| 点名别的来源，但 ID 写了 `duanju:<id>` / `org:<id>` | 别的值 | ✅ 本插件 —— **前缀本身就是身份声明** |
-| 点名别的来源，ID 是裸数字 | 别的值 | ❌ 返回 `None`（`603` 是 TMDB 的编号，不能抢） |
+| 点名别的来源，但 ID 写了 `duanju:<id>` / `org:<id>`（历史前缀） | 别的值 | ✅ 本插件 —— **前缀本身就是身份声明** |
+| 点名别的来源，ID 是裸数字 | 别的值 | ❌ 返回 `None`（`603` 是 TMDB 的编号，不能抢；要认就用来源 `duanju`，或写历史前缀） |
 | 点名别的来源（含宿主回填的 TMDB）、**ID 留空** | 别的值 | ✅ **库兜底**（见下）：库里**有**完全同名短剧就认，**没有**立刻让位 |
 
 ⚠️ **`None` 不能无条件接手**。宿主原生识别是
@@ -233,7 +245,7 @@ NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqu
        video_kwargs["media_source"] = self._video_primary_source
    ```
 
-   真机日志（本插件自己的日志文件，见「日志在哪」）：
+   真机日志（临时入口探针打印，本插件自己的日志文件，见「日志在哪」）：
 
    ```text
    [诊断入口] enabled=True media_source=<MediaSource.TMDB: 'themoviedb'> media_id=None meta=MetaVideo
@@ -245,7 +257,7 @@ NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqu
 
 打开 `identify_fallback` 后，这类识别会先拿片名到**本地 URL 库**里找一部同名短剧：
 
-* **命中且片名完全一致** ⇒ 本插件认下（`duanju:<id>`）；
+* **命中且片名完全一致** ⇒ 本插件认下（身份 = `duanju` + 该作品的原生数字 ID）；
 * **未命中 / 只是近似片名** ⇒ 立刻 `return None`，TMDB 照常接手，行为与开关关闭时
   **完全一致**；
 * **只查库，绝不触发站外检索**（引擎单次 10~70s，挂在所有无从属的识别请求上会拖垮
@@ -502,17 +514,29 @@ PTS 这类**整个站点都不带年份**的来源不受影响；这里只放宽
 
 ```python
 actors = self.run_module("search_actors", name="魏依珂")   # → [{"actor_id","name","media_id","url","source"}, …] 按名字打分排序
-works  = self.run_module("actor_works", actor_id="371")    # → 该演员的全部作品（作品卡片字段）
+works  = self.run_module("actor_works", actor_id="371")    # → 该演员的全部作品（**每条都已补成作品页记录**）
 works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以，内部先解析成 ID
 ```
 
 `search_actors` **只出候选、不抓演员页**（候选里带 `url` 与 `source`，`source` 标明
 `from` 是 `库` 还是 `引擎`）；要看作品用 `actor_works`。
 
-`actor_works` 回的是**作品卡片**字段（与 `parse_org_cards` 一致，实测 21 部作品里的分布）：
-`media_id` / `native_id` / `title` / `poster` / `url` / `kind` / `heat` / `play_count` 每条都有，
-`episode_count`（20/21）、`tags`（19/21）、`rating`（19/21）部分有，`badge` 少见。
-**热度（`heat`）与播放量（`play_count`）是 v2.0.0 新增解析的**，此前只解析了片名/海报/集数这几种。
+⚠️ **演员页的作品卡片是摘要视图**：题材标签只印 1~3 个（实测《失控交易》卡片上只有「爱情」，
+详情页 5 个），也没有版权方 / 简介 / 剧照 / 首播 —— 这些**作品页都有**。所以
+`actor_works` / `actor_profile` / `/actor` **一贯把每一部作品都补抓一次详情页**，把详情记录
+整条灌进作品条目（`origin: "detail"`）：**作品页有的字段，演员页的作品条目一样有**，
+消费方（面板 / 其它插件 / 脚本）不必再写两套解析。详情走 `cache_ttl` 缓存（默认 7 天），
+同一个演员第二次打开基本不再出网。
+
+> 没有「补全开关」—— 不补就缺字段，摘要不是一种可接受的输出。只有批量扫全部演员、
+> 只想要片名清单时，才在调用上显式跳过：`self.run_module("actor_works", actor_id="371", enrich=False)`
+> （HTTP 侧对应 `GET /actor?actor_id=371&enrich=0`）。跳过后条目只有卡片字段、`origin` 为 `"card"`。
+
+补全后每条作品的字段集（`build_public_record`，与作品页 `/recognize` 那条记录**同源同函数**）：
+`media_id` / `native_id` / `title` / `poster` / `backdrop` / `url` / `kind` / `episode_count` /
+`duration_minutes`（**全集总时长**）/ `episode_minutes`（单集）/ `release_date` / `year` /
+`studio`（版权方）/ `overview` / `rating` / `tags`（**完整**标签）/ `heat` / `play_count` /
+`favorite_count` / `badge` / `actors`（演员阵容）/ `related`（同页推荐）/ `origin`。
 
 演员档案（`build_public_actor`，即 `/actor` 的 `actor` 载荷）形状 —— 下面是真机返回的字段：
 
@@ -526,16 +550,29 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
     "bio": "魏依珂，中国内地女演员。代表作《一眼见到你》、《将心锁玉》等。",
     "url": "https://duanjubaike.org/zh-Hans/actor/371",
     "works": [
-      {"media_id": "duanju:45982", "native_id": "45982", "title": "女足替补的滚烫夏天",
-       "poster": "https://cdn.duanjubaike.org/cover/2026/09/…jpg?width=400",
+      {"media_id": "45982", "native_id": "45982", "media_source": "duanju", "origin": "detail",
+       "title": "女足替补的滚烫夏天", "year": "2026",
+       "poster": "https://cdn.duanjubaike.org/cover/2026/09/…jpg",
+       "backdrop": "https://cdn.duanjubaike.org/picture/2026/09/…jpg",
        "url": "https://duanjubaike.org/zh-Hans/drama/45982", "kind": "真人短剧",
-       "episode_count": 41, "tags": ["逆袭"], "heat": 3540000.0, "play_count": 996.0}
+       "episode_count": 41, "duration_minutes": 94, "episode_minutes": 2,
+       "release_date": "2026-09-23", "heat": 3540000.0, "play_count": 996.0,
+       "tags": ["逆袭", "竞技逆袭", "大女主"],
+       "studio": "红果创作服务平台千部计划", "in_language": "zh-Hans",
+       "overview": "县城女足替补林小草，三年来坚持凌晨五点加练……",
+       "actors": [ … 4 人 … ], "related": [ … 3 部 … ]}
     ],
     "works_count": 21,
     "coactors": [{"id": "2121", "name": "王石", "profile_path": "https://cdn.duanjubaike.org/avatar/2026/05/…jpg"}]
   }
 }
 ```
+
+> ⚠️ 上面 `works[]` 里的条目**不是**演员页卡片 —— 卡片只有海报 / 集数 / 1~3 个标签，
+> 没有 `studio` / `overview` / `backdrop` / `release_date` / `actors` / `related`。
+> 插件按「作品页有的数据演员页也要有」的口径，**每条都补抓了详情页**（`origin: "detail"`）。
+> 实测这条记录与 `GET …/recognize?media_id=45982` 的 `record` **键集完全相同（22 键）、
+> 值逐一相等** —— 两边走的是同一个投影函数 `build_public_record`。
 
 > `job_title`（职务）/ `gender`（性别）/ `nationality`（国籍）都是 v2.0.0 新增解析的
 > —— 来自演员页 JSON-LD `Person`，缺失时再用「基本信息」区块的 `dt/dd` 兜底。
@@ -557,7 +594,7 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
 ## 「点开作品」后的详情页能显示什么（重要）
 
 从宿主的搜索框 / 媒体页点开一部作品，前端会跳到
-`/media?media_source=duanjubaike&media_id=duanju:<id>`，
+`/media?media_source=duanju&media_id=60017`，
 再由宿主调 `GET /api/v1/media/{media_id}?media_source=…&type_name=…` →
 `recognize_media` 取数。前端产物 `media-<hash>.js` 逐块核对过（v3.1.5）：
 
@@ -613,7 +650,7 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
   分集内容由宿主按 ID 自己去 TMDB 取；
 - **负结果也缓存**（24h），失败只记 debug，任何异常都不影响识别主流程；插件停止时清缓存。
 
-> ⚠️ 主身份**不变**：`media_source` 仍是 `duanjubaike`、`media_id` 仍是 `duanju:<id>`，
+> ⚠️ 主身份**不变**：`media_source` 仍是 `duanju`、`media_id` 仍是那串**裸数字**站点 ID，
 > `tmdb_id` 只是补上的**同一部作品**的 TMDB 身份（与宿主内置的 豆瓣↔TMDB 身份投影同性质）。
 
 ## 供其它插件调用
@@ -629,15 +666,16 @@ plugin_catalog=self.pluginmanager, …)`），而每个插件都是 `ChainBase` 
 
 ```python
 # 在另一个插件里（self 是任意插件实例 / 任意 Chain）
-infos  = self.run_module("search_medias", meta=meta, media_source="duanjubaike")
-info   = self.run_module("recognize_media", media_source="duanjubaike", media_id="duanju:40105")
+infos  = self.run_module("search_medias", meta=meta, media_source="duanju")
+info   = self.run_module("recognize_media", media_source="duanju", media_id="40105")
 img    = self.run_module("obtain_images", mediainfo=info)
 actors = self.run_module("search_actors", name="魏依珂")
 works  = self.run_module("actor_works", actor_id="371")
 ```
 
-`media_source` 写 `duanjubaike` / `shortdramabaike` / `shortdramabaikesource` 任一都能命中
-（见 `MEDIA_SOURCE_ALIASES`）。作品类方法返回宿主 `MediaInfo`。
+`media_source` 写 `duanju` / `shortdramabaike` / `shortdramabaikesource` 任一都能命中；
+**早期标识 `duanjubaike` 也照样命中**（别的插件与宿主 `SEARCH_SOURCE` 里留着它）——
+四个值都在 `MEDIA_SOURCE_ALIASES` 里。作品类方法返回宿主 `MediaInfo`。
 
 `search_actors` / `actor_works` 是**自定义模块方法名**（不在宿主 `module_method` 合同里）。
 宿主对未登记的名字走 legacy 契约（`public_to_plugins=True`，聚合 = 有序列表合并），
@@ -648,13 +686,17 @@ works  = self.run_module("actor_works", actor_id="371")
 
 ```bash
 # 面板用登录态调，脚本用 X-API-KEY 调 —— 同一批接口，鉴权声明是 auth: "bear"
-GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?media_id=duanju:40105
+GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?media_id=40105
 GET  /api/v1/plugin/ShortDramaBaikeSource/recognize?keyword=万妖图录传&year=2026
 GET  /api/v1/plugin/ShortDramaBaikeSource/actor?actor_id=371
+GET  /api/v1/plugin/ShortDramaBaikeSource/actor?actor_id=371&enrich=0   # 跳过详情页补全，只要片名清单
 GET  /api/v1/plugin/ShortDramaBaikeSource/actor?name=魏依珂
 GET  /api/v1/plugin/ShortDramaBaikeSource/lookup?keyword=魏依珂
 GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 ```
+
+> `/actor` 默认把**每条作品**都补成作品页那份记录（见上文「演员数据」）；`enrich=0` 是唯一
+> 的跳过方式（批量扫演员时用），没有全局开关。
 
 > ⚠️ 全部接口声明 `auth: "bear"`，宿主把它映射成 `verify_token` —— 那个依赖
 > **同时接受 JWT（浏览器登录态）与 `X-API-KEY`**，所以面板与脚本可以共用同一套接口，
@@ -667,8 +709,8 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 {
   "success": true,
   "record": {
-    "media_source": "duanjubaike", "origin": "detail",
-    "media_id": "duanju:61818", "native_id": "61818",
+    "media_source": "duanju", "origin": "detail",
+    "media_id": "61818", "native_id": "61818",
     "title": "养了十二年的石头会喊爸了", "year": "2026",
     "poster": "https://cdn.duanjubaike.org/cover/…jpg?width=400",
     "episode_count": 106, "duration_minutes": 121,
@@ -677,7 +719,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
     "heat": 3540000, "play_count": 996,
     "url": "https://duanjubaike.org/zh-Hans/drama/61818",
     "actors": [{"id": "2014", "name": "刘清心", "character": "苏晚", "profile_path": "…", "kind": "主演"}],
-    "related": [{"media_id": "duanju:53935", "title": "东家落难，保姆王妈救场翻盘", "kind": "AI短剧",
+    "related": [{"media_id": "53935", "title": "东家落难，保姆王妈救场翻盘", "kind": "AI短剧",
                  "episode_count": 50, "heat": 40710000, "rating": "8.1"}]
   }
 }
@@ -693,7 +735,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 ```json
 {
   "success": true, "message": "", "keyword": "魏依珂", "year": "",
-  "titles": [{"media_id": "duanju:45982", "native_id": "45982", "title": "女足替补的滚烫夏天",
+  "titles": [{"media_id": "45982", "native_id": "45982", "title": "女足替补的滚烫夏天",
               "url": "https://duanjubaike.org/zh-Hans/drama/45982", "from": "库", "score": 100}],
   "actors": [{"actor_id": "371", "media_id": "actor:371", "name": "魏依珂",
               "url": "https://duanjubaike.org/zh-Hans/actor/371", "from": "库", "score": 100}]
@@ -796,7 +838,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/recognize` | **作品出口**：`media_id` 或 `keyword`(+`year`) → 纯 JSON 作品记录 |
-| GET | `/actor` | **演员出口**：`actor_id` 或 `name` → 纯 JSON 演员档案（含全部作品与合作演员） |
+| GET | `/actor` | **演员出口**：`actor_id` 或 `name` → 纯 JSON 演员档案（含全部作品与合作演员）。每条作品默认已补成作品页记录（`enrich=0` 跳过） |
 | GET | `/lookup` | 一个 `keyword` 同时找作品与演员（面板唯一那个搜索框用它） |
 | GET | `/urls` | **URL 库出口**：无参回库容量统计 + 最近入库记录；带 `keyword` / `kind` / `limit` 查 |
 | POST | `/urls/clear` | **清空 URL 库**（面板「清空库」按钮）：`{"kind": "actor"}` 清该类全部、`{"keyword": "某剧"}` 清该词、空对象＝整库清空 |

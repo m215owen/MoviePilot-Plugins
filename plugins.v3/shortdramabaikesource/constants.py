@@ -19,11 +19,19 @@ PLUGIN_ICON = (
 PLUGIN_VERSION = "1.0.0"
 
 # ── 数据源契约 ────────────────────────────────────────────────────
-# 规范写法是宿主 ``MediaSource`` 枚举值；另外两个别名是为了让**其它插件**按
-# 「插件 ID」或「域名简称」点名时也能命中，不必去查枚举值的准确拼写。
-MEDIA_SOURCE_KEY = "duanjubaike"
+# 来源标识 = 宿主 ``MediaSource`` 枚举值（``MediaSource("duanju")`` 动态构造）。
+# 取名与「媒体 ID 前缀」同源（``duanju`` ↔ 作品号 ``60017``），与 TMDB 的
+# ``themoviedb`` ↔ ``603`` 一个姿势 —— 一眼就能对上是哪个来源的编号。
+MEDIA_SOURCE_KEY = "duanju"
 MEDIA_SOURCE_LABEL = "短剧百科"
-MEDIA_SOURCE_ALIASES = frozenset({"duanjubaike", "shortdramabaike", "shortdramabaikesource"})
+# ⚠️ ``duanjubaike`` 是**早期版本用过的来源标识**，必须继续接受：
+#   * 别的插件（如 ShortDramaActorSubscribe）里把 ``duanjubaike`` 写死在常量里；
+#   * 宿主 ``app.env`` 的 ``SEARCH_SOURCE`` 里也留着一份；
+#   * 旧订阅 / 旧识别缓存里可能存着按它落库的身份。
+# 后两个别名是为了让消费方能按「插件 ID」或「域名简称」点名，不必去查枚举拼写。
+MEDIA_SOURCE_ALIASES = frozenset(
+    {"duanju", "duanjubaike", "shortdramabaike", "shortdramabaikesource"}
+)
 
 ORG_DEFAULT_DOMAIN = "https://duanjubaike.org"
 
@@ -38,12 +46,15 @@ ACTOR_PATH = "/zh-Hans/actor/{id}"
 # 所以地址在**抓取与入库前**一律归一化到这个前缀（见 ``parser.canonical_page_url``）。
 LANG_PATH = "/zh-Hans"
 
-# 统一媒体 ID 前缀（media_id 形如 ``duanju:40105``）。
-# ⚠️ 历史上用过 ``org`` —— 宿主库里/别的插件里可能还留着按旧前缀存下来的身份
-# （订阅、识别缓存、跨插件调用参数），所以 ``_native_id`` **同时接受旧前缀**，
-# 见 :data:`LEGACY_MEDIA_ID_PREFIXES`；新产出一律用新前缀。
-MEDIA_ID_PREFIX = "duanju"
-LEGACY_MEDIA_ID_PREFIXES: Tuple[str, ...] = ("org",)
+# 媒体 ID 就是**站点原生数字**（``media_id = "60017"``）—— 不带前缀，与
+# TMDB 的 ``603`` / 豆瓣的 ``1234567`` 同款。宿主只会把 (``media_source``,
+# ``media_id``) 当成一对「来源 + 该来源的编号」，前缀对宿主没有任何意义，
+# 反而会让 ID 与来源标识重复表达同一件事。
+#
+# ⚠️ 历史上用过 ``duanju:`` / ``org:`` 两种前缀（早期把来源信息塞进 ID 里），
+# 别的插件与旧识别缓存里可能还留着按它们存下来的身份 —— 解析时**一律接受**，
+# 见 :data:`LEGACY_MEDIA_ID_PREFIXES`；新产出一律是裸数字。
+LEGACY_MEDIA_ID_PREFIXES: Tuple[str, ...] = ("duanju", "org")
 # 演员 ID 前缀（形如 ``actor:371``）。演员**不是**媒体条目，不给宿主路由用，
 # 只是让跨插件调用方能一眼分清「这是演员 ID 还是作品 ID」。
 ACTOR_ID_PREFIX = "actor"
@@ -78,13 +89,14 @@ EXACT_TITLE_SCORE = 100
 # ``parser.href_points_to_simplified``）。引擎三到五成结果给的是繁体标题，不换掉就会
 # 跟简体关键词字面对不上、被当无关候选丢掉；补抓有 TTL 缓存，之后识别零成本。
 DISCOVER_TITLE_ENRICH_LIMIT = 3
-# 演员档案里的作品条目是**卡片摘要**：题材标签只印 1~3 个（实测《失控交易》卡片上只有
-# 「爱情」，详情页有 5 个），也没有版权方 / 简介。要这些只能抓详情页 —— 一个演员动辄
-# 几十部作品，全抓一遍既不现实也容易撞风控，所以 ``enrich`` 只补前 N 部（有 TTL 缓存，
-# 补过的不会重复请求）。面板上是**按需**补（点哪部补哪部），不走这个上限。
-ACTOR_WORKS_ENRICH_LIMIT = 10
+# 演员档案里的作品条目在**演员页**上只是卡片摘要：题材标签只印 1~3 个（实测《失控交易》
+# 卡片上只有「爱情」，详情页有 5 个），也没有版权方 / 简介 / 剧照 / 首播 —— 这些都是
+# **作品页有、演员页没有**的缺口。所以插件把演员页的**每一部**作品都补抓一次详情页，
+# 整条记录灌进作品条目（详见 ``ShortDramaBaikeSource._enrich_works``）：对外（面板 /
+# `/actor` / 跨插件）「演员页带的作品数据」与作品页那条记录**字段完全一致**，
+# 没有开关可关 —— 不补就缺字段。详情有 TTL 缓存（默认 7 天），重复打开不出网。
 # 自检（/probe）在「检索没命中」时用来兜底的详情样本：实测存在且字段完整的作品
-PROBE_SAMPLE_MEDIA_ID = "duanju:45982"
+PROBE_SAMPLE_MEDIA_ID = "45982"
 
 # ── 分类扩展字段（宿主「媒体分类策略」用）──────────────────────────
 # 为什么要有这一段：宿主的目录匹配是**按分类**挑媒体库目录的
@@ -93,7 +105,7 @@ PROBE_SAMPLE_MEDIA_ID = "duanju:45982"
 # = 整理失败。而宿主的分类规则**不能用来源身份做条件** —— 校验器要求条件字段在
 # 规则所选来源里「可用」，标准字段（``identity.media_source`` / ``media.*``）的能力
 # 表只登记了内置来源，插件来源一律是 unavailable，实测发布规则会被拒：
-#   ``字段 identity.media_source 在所选来源中均不可用：duanjubaike``
+#   ``字段 identity.media_source 在所选来源中均不可用：duanju``
 # 宿主留给插件的只有 ``extensions.<来源>.<字段>`` 命名空间（``MediaSourceInfo``
 # 的 ``classification_fields``，见 ``runtime/extensions/plugin/classification.py``）
 # ⇒ 想让「短剧百科识别出来的都归到短剧分类」，只能由插件自己声明并给出事实。

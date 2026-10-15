@@ -65,14 +65,20 @@ export interface CastMember {
   kind?: string
 }
 
-/** 演员页里的一张作品卡片 */
+/** 演员页里的一张作品卡片（后端默认已补详情，字段与 `MediaRecord` 一致） */
 export interface WorkItem {
   media_id?: string
   native_id?: string
   title?: string
   poster?: string
+  backdrop?: string
   url?: string
   kind?: string
+  /**
+   * `detail` = 已按**作品页**补全（后端一贯如此，是默认也是唯一口径）；
+   * `card` = 只有演员页卡片摘要（只可能出现在 `enrich=0` 的老缓存 / 显式跳过时）。
+   */
+  origin?: string
   episode_count?: number
   /** ⚠️ **全集总时长**（只有补全过详情页才有） */
   duration_minutes?: number
@@ -83,13 +89,18 @@ export interface WorkItem {
   overview?: string
   rating?: number
   /**
-   * 卡片上印的题材标签是**摘要**（只印 1~3 个），完整标签要抓详情页才有
-   * —— 点卡片上的「完整信息」按需补。
+   * 卡片上印的题材标签是**摘要**（只印 1~3 个），完整标签要抓详情页才有。
+   * 后端默认已全部补全（`origin === 'detail'`），所以正常不会看到截断的标签。
    */
   tags?: string[]
   heat?: number
   play_count?: number
+  favorite_count?: number
   badge?: string
+  /** 演员阵容（作品页有，演员页补全后同样有） */
+  actors?: CastMember[]
+  /** 同页「推荐短剧」区块 */
+  related?: MediaRecord[]
 }
 
 /** 演员档案（`/actor` 的 `actor`） */

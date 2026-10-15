@@ -391,7 +391,7 @@ class UrlStore:
         return hits
 
     def by_native_id(self, kind: str, native_id: str) -> Optional[SiteUrl]:
-        """按站点 ID 取一条记录（``recognize_media(media_id="duanju:45982")`` 用）。"""
+        """按站点 ID 取一条记录（``recognize_media(media_id="45982")`` 用）。"""
         if not native_id:
             return None
         session = self._session()

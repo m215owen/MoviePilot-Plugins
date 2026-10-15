@@ -548,13 +548,13 @@
                       size="x-small"
                       variant="text"
                       :loading="workLoadingIndex === index"
-                      :disabled="Boolean(workFull[index])"
-                      :title="workFull[index]
-                        ? '已按详情页补全（完整标签 / 首播 / 版权方 / 时长）'
+                      :disabled="workComplete(index, work)"
+                      :title="workComplete(index, work)
+                        ? '已是作品页那份数据（完整标签 / 首播 / 版权方 / 时长 / 简介 / 剧照）'
                         : '演员页卡片是摘要（标签只印 1~3 个、没有版权方），抓一次详情页补全'"
                       @click="loadWorkDetail(index)"
                     >
-                      {{ workFull[index] ? '已补全' : '完整信息' }}
+                      {{ workComplete(index, work) ? '已补全' : '完整信息' }}
                     </v-btn>
                     <v-spacer />
                     <v-btn size="x-small" variant="text" @click="toggleWorkRaw(index)">
@@ -945,25 +945,36 @@ function workView(index: number): WorkItem {
 }
 
 /**
- * 卡片上的标签：补全过就全给，没补全时**照旧只给卡片上那 1~3 个**。
+ * 这部作品是否已是「作品页那份数据」。
+ *
+ * 后端**一贯**把全部作品补过详情（`origin === 'detail'`），这时面板不必再点
+ * 「完整信息」—— 载荷里就是完整记录；只有 `enrich=0` 的老缓存 / 手动跳过时才需要
+ * 按需补（点哪部补哪部）。
+ */
+function workComplete(index: number, work?: WorkItem): boolean {
+  return Boolean(workFull.value[index]) || work?.origin === 'detail'
+}
+
+/**
+ * 卡片上的标签：已是完整记录就全给，摘要则**照旧只给卡片上那 1~3 个**。
  *
  * 卡片印多少就是多少，不补齐也不假装 —— 摘要里没有的东西不能凭空造。
  */
 function workTags(index: number, work: WorkItem): string[] {
   const tags = (workFull.value[index]?.tags ?? work.tags) || []
-  return workFull.value[index] ? tags : tags.slice(0, 3)
+  return workComplete(index, work) ? tags : tags.slice(0, 3)
 }
 
 /**
  * 抓一部作品的详情页，把卡片补成完整记录（按需，一部一次请求）。
  *
- * 演员页的作品卡只印 1~3 个题材标签（《失控交易》只有「爱情」，详情页却有 5 个），
- * 一个演员几十部作品全抓一遍既不现实也容易撞站点风控 —— 所以交给用户点。
+ * 只在后端没补全时才有意义：演员页作品卡只印 1~3 个题材标签（《失控交易》只有
+ * 「爱情」，详情页却有 5 个）。后端一贯全补，这个按钮是 `enrich=0` 老缓存时的兜底。
  */
 async function loadWorkDetail(index: number): Promise<void> {
   const api = resolveApi(props)
   const work = (actorProfile.value?.works || [])[index]
-  if (!api || !work?.media_id || workFull.value[index]) return
+  if (!api || !work?.media_id || workComplete(index, work)) return
   workLoadingIndex.value = index
   try {
     const report = await recognizeTitle(api, { media_id: work.media_id })

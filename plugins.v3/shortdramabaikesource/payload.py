@@ -406,9 +406,10 @@ PUBLIC_ACTOR_FIELDS: Tuple[str, ...] = (
 def build_public_actor(item: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """把一条演员档案整理成纯 JSON（跨插件 / 外部脚本用）。
 
-    作品条目复用 ``parse_org_cards`` 的输出（``media_id`` / ``title`` / ``poster`` /
-    ``episode_count`` / ``rating`` / ``tags`` …），这里只补一个 ``works_count``，
-    免得消费方还要自己数。
+    ⚠️ **作品条目一律套用作品页的投影**（:func:`build_public_record`）—— 演员页卡片是
+    摘要视图（标签只印 1~3 个、没有版权方 / 简介 / 剧照 / 首播），不套用的话消费方就得
+    为「演员页里的作品」和「作品页的作品」写两套字段解析。补没补过详情由 ``origin``
+    区分：``detail`` = 抓过详情页（字段与作品页一致），``card`` = 只有卡片摘要。
 
     :param item: ``parse_org_actor`` 的结果
     :return: 无空值的纯 JSON 字典；``item`` 为空时返回空字典
@@ -420,7 +421,11 @@ def build_public_actor(item: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         for name in PUBLIC_ACTOR_FIELDS
         if _has_value(item.get(name))
     }
-    works = [dict(work) for work in (item.get("works") or []) if work.get("title")]
+    works = [
+        build_public_record(work, str(work.get("origin") or "card"))
+        for work in (item.get("works") or [])
+        if isinstance(work, dict) and work.get("title")
+    ]
     record["works"] = works
     record["works_count"] = len(works)
     # 合作演员来自 ``parse_org_cast``，用的是**阵容记录**的字段名（id / character /

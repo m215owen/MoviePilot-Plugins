@@ -21,7 +21,6 @@ from .constants import (
     EPISODE_CN_RE,
     FILENAME_EDGE_SEPARATOR_RE,
     LANG_PATH,
-    MEDIA_ID_PREFIX,
     ORG_DEFAULT_DOMAIN,
     SEASON_EPISODE_RE,
     SEASON_ONLY_RE,
@@ -476,7 +475,8 @@ def parse_org_cards(html: str, domain: str = ORG_DEFAULT_DOMAIN) -> List[Dict[st
                 src = head[-1]
 
         record: Dict[str, Any] = {
-            "media_id": f"{MEDIA_ID_PREFIX}:{native_id}",
+            # 媒体 ID 是**裸数字**（与来源标识 ``duanju`` 配成一对，同 TMDB 的 ``603``）
+            "media_id": str(native_id),
             "native_id": native_id,
             "title": title,
             "poster": _normalize_image(src.group("src")) if src else "",
@@ -771,7 +771,8 @@ def parse_org_detail(html: str, native_id: str, domain: str = ORG_DEFAULT_DOMAIN
     """
     source = html or ""
     data: Dict[str, Any] = {
-        "media_id": f"{MEDIA_ID_PREFIX}:{native_id}",
+        # 媒体 ID 是**裸数字**（与来源标识 ``duanju`` 配成一对，同 TMDB 的 ``603``）
+        "media_id": str(native_id),
         "native_id": native_id,
         # 兜底地址：只在页面自己没声明 url 时使用（见下方 JSON-LD 覆写）
         "url": f"{domain.rstrip('/')}/zh-Hans/drama/{native_id}",

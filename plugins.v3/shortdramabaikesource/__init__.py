@@ -32,7 +32,7 @@ URL 会**自己长大**：解析作品页时顺带把 ``actor[].url`` 入库，�
 1. **扩展点是官方的**：``_PluginBase`` 提供 ``get_media_source()``（声明数据源）、
    ``get_module()``（把宿主模块方法名映射到插件实现）、``get_database_models()``
    （声明插件自有表）。
-2. **来源标识不是封闭枚举**：``MediaSource("duanjubaike")`` 可直接构造。
+2. **来源标识不是封闭枚举**：``MediaSource("duanju")`` 可直接构造。
 3. **模块方法签名照宿主静态合同，一个字都不能改**：``recognize_media`` /
    ``async_recognize_media`` / ``search_medias`` / ``async_search_medias`` /
    ``obtain_images`` / ``async_obtain_images`` / ``metadata_nfo`` / ``metadata_img``。
@@ -75,7 +75,6 @@ except Exception:  # pragma: no cover
 from .constants import (
     ACTOR_ID_PREFIX,
     ACTOR_PATH,
-    ACTOR_WORKS_ENRICH_LIMIT,
     CLASSIFICATION_FIELDS,
     DEFAULT_CACHE_TTL,
     DEFAULT_TIMEOUT,
@@ -89,7 +88,6 @@ from .constants import (
     MAX_CANDIDATES,
     MAX_META_KEYWORDS,
     LEGACY_MEDIA_ID_PREFIXES,
-    MEDIA_ID_PREFIX,
     MEDIA_SOURCE_ALIASES,
     MEDIA_SOURCE_KEY,
     MEDIA_SOURCE_LABEL,
@@ -322,10 +320,14 @@ class ShortDramaBaikeSource(_PluginBase):
 
         任何 ``ChainBase`` 子类（也就是别的插件）都能直接调到：
 
-            infos = self.run_module("search_medias", meta=meta, media_source="duanjubaike")
-            info = self.run_module("recognize_media", media_source="duanjubaike", media_id="duanju:45982")
+            infos = self.run_module("search_medias", meta=meta, media_source="duanju")
+            info = self.run_module("recognize_media", media_source="duanju", media_id="45982")
             works = self.run_module("actor_works", actor_id="371")
             actors = self.run_module("search_actors", name="魏依珂")
+
+        身份是 (``media_source="duanju"``, ``media_id="45982"``) 这一对 —— 与 TMDB 的
+        (``themoviedb``, ``603``) 同款：来源标识在 ``media_source`` 里，ID 就是裸数字。
+        历史标识 ``duanjubaike`` 与历史 ID 前缀 ``duanju:`` / ``org:`` 仍然接受。
 
         前两个返回宿主 ``MediaInfo``（与 TMDB / 豆瓣模块同一个模型）；演员那两个是本插件
         **自定义**方法名，返回纯 Python 列表，消费方不必做任何转换。
@@ -745,7 +747,7 @@ class ShortDramaBaikeSource(_PluginBase):
         """
         native_id = _clean(native_id)
         if not native_id.isdigit():
-            # 站点作品 ID 恒为裸数字；别拿 ``duanju:abc`` 这类值去拼一个必然 404 的地址
+            # 站点作品 ID 恒为裸数字；别拿 ``duanju:abc`` / ``org:abc`` 这类值去拼一个必然 404 的地址
             return None
         cached = self._cache_get(f"detail:{native_id}")
         if cached is not None:
@@ -865,7 +867,8 @@ class ShortDramaBaikeSource(_PluginBase):
         url: str = "",
         allow_search: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``）或片名取一条作品记录。
+        """按 ``media_id``（裸数字 ``60017``，历史 ``duanju:60017`` / ``org:60017`` 照收）
+        或片名取一条作品记录。
 
         ``allow_search=False`` 时**只认本地 URL 库**（按 ID 取详情不受影响，那本来就是
         库内寻址），库外一概不问 —— 见 :meth:`_resolve` 的同名参数。
@@ -1068,13 +1071,14 @@ class ShortDramaBaikeSource(_PluginBase):
         meta: Any = None,
         **kwargs: Any,
     ) -> Any:
-        """按 ``media_id``（``duanju:<id>``，兼容旧前缀 ``org:``与裸数字）或片名识别一部短剧。
+        """按 ``media_id``（**裸数字** ``60017``；历史 ``duanju:60017`` / ``org:60017`` 照收）
+        或片名识别一部短剧。
 
         四条入口的判据，全部以宿主实参为准（``MediaSource`` 枚举，不是字符串）：
 
-        1. **来源指向本插件**（``media_source == duanjubaike``，或 ``None`` 且系统
+        1. **来源指向本插件**（``media_source == duanju``，或 ``None`` 且系统
            「媒体识别来源」是本插件）⇒ 正常识别，**可查引擎**；
-        2. **ID 自带本插件前缀**（``duanju:`` / 历史 ``org:``）⇒ 认领，同样可查引擎 ——
+        2. **ID 自带本插件前缀**（历史 ``duanju:`` / ``org:``）⇒ 认领，同样可查引擎 ——
            前缀本身就是身份声明，跟表单里选的来源无关；
         3. **别的来源 + 不带前缀的 ID** ⇒ **立刻返回 None**。那是别人的身份（``603`` 是
            TMDB 的编号），抢过来只会毁掉用户明确指定的那次识别；
@@ -1091,7 +1095,7 @@ class ShortDramaBaikeSource(_PluginBase):
         ⚠️ 为什么需要第 4 条：宿主 ``OptionalMediaIdentityMixin`` 要求 ``media_source`` 与
         ``media_id`` **成对**，前端因此在 ID 留空时把来源一起丢掉；而
         ``chain/media/recognition.py`` 又会把空的 ``media_source`` **回填成系统主视频源**。
-        实测日志（真机）：
+        真机实测（临时入口探针）：
 
         .. code-block:: text
 
@@ -1100,6 +1104,10 @@ class ShortDramaBaikeSource(_PluginBase):
 
         也就是说「对话框里选了本插件、ID 留空」的请求到这里时**带着 TMDB 的身份** ——
         没有库兜底就永远轮不到本插件。详见 README 的「留空自动识别」一节。
+
+        ⚠️ 第 3 条与「裸数字 ID」的取舍：正因为规范 ID 是裸数字，第 3 条**不能**放行裸数字
+        —— 否则 TMDB 的 ``603`` 会被当成本站作品 603。裸数字只在**来源确实指向本插件**
+        （第 1 条）时才认。
         """
         if not self._enabled:
             return None
@@ -1228,7 +1236,7 @@ class ShortDramaBaikeSource(_PluginBase):
                 # 详情页没抓到也要给一条**可路由**的候选：``media_id`` 是宿主的身份键，
                 # 缺了它这条记录连构造都构造不出来（会被整条丢掉）
                 record = {
-                    "media_id": f"{MEDIA_ID_PREFIX}:{native_id}",
+                    "media_id": str(native_id),
                     "title": title,
                     "url": str(row.get("url") or ""),
                     "native_id": native_id,
@@ -1383,29 +1391,22 @@ class ShortDramaBaikeSource(_PluginBase):
             return None
         return self._fetch_actor(native_id, url)
 
-    def _enrich_works(
-        self,
-        profile: Dict[str, Any],
-        limit: int = ACTOR_WORKS_ENRICH_LIMIT,
-    ) -> int:
-        """给演员档案里的作品条目**补详情页字段**，返回补了几部。
+    def _enrich_works(self, profile: Dict[str, Any]) -> int:
+        """给演员档案里的**每一部**作品条目补详情页数据，返回补了几部。
 
-        演员页卡片是摘要：题材标签只印 1~3 个、没有版权方、没有简介与剧照。要这些
-        只能抓详情页 —— 一个演员动辄几十部作品（实测曹天恺 42 部），全抓一遍既不现实
-        也容易撞站点风控，所以限量补前 ``limit`` 部；详情有 TTL 缓存，补过的零成本。
+        演员页卡片是摘要视图：题材标签只印 1~3 个、没有版权方 / 简介 / 剧照 / 首播，
+        而这些**作品页都有**。这里把详情页记录**整条灌进作品条目**（详情是权威，同名
+        字段以详情为准），于是「演员页带的作品页数据」与作品页那条记录**字段一致** ——
+        消费方（面板 / 其它插件 / 脚本）不必再分两套结构处理。
 
-        只覆盖**详情页才有**的字段，卡片上已有的（片名 / 海报 / 集数 / 评分 / 热度）
-        保持不动 —— 补抓是为了补齐，不是为了改写。
+        ⚠️ 这是**一贯口径**，没有开关：演员页作品天然就是摘要，不补就缺字段；
+        详情有 TTL 缓存（默认 7 天），同一个演员第二次打开基本不再出网。
         """
         works = profile.get("works") or []
-        if not isinstance(works, list) or limit <= 0:
+        if not isinstance(works, list) or not works:
             return 0
-        fields = (
-            "tags", "studio", "release_date", "year", "episode_count",
-            "duration_minutes", "episode_minutes", "overview", "backdrop",
-        )
         filled = 0
-        for work in works[:limit]:
+        for work in works:
             if not isinstance(work, dict):
                 continue
             native_id = _clean(work.get("native_id"))
@@ -1414,14 +1415,18 @@ class ShortDramaBaikeSource(_PluginBase):
             detail = self._fetch_detail(native_id, _clean(work.get("url")))
             if not detail:
                 continue
-            for field in fields:
-                if _has_value(detail.get(field)):
-                    work[field] = detail[field]
+            # 详情优先：卡片上的标签是截断的（1~3 个），集数 / 时长也可能与详情页不一致；
+            # ``native_id`` / ``url`` 这类本地字段详情里同样有，照覆盖即可。
+            for field, value in detail.items():
+                if _has_value(value):
+                    work[field] = value
+            work["origin"] = "detail"
             filled += 1
         if filled:
             logger.info(
                 f"{PLUGIN_NAME} 演员「{profile.get('name') or '?'}」作品补全 {filled} 部"
-                f"（共 {len(works)} 部，上限 {limit}）：补上完整标签 / 首播 / 版权方 / 时长"
+                f"（共 {len(works)} 部）："
+                f"套用作品页字段（完整标签 / 首播 / 版权方 / 时长 / 简介 / 剧照 / 演员 / 推荐）"
             )
         return filled
 
@@ -1431,9 +1436,8 @@ class ShortDramaBaikeSource(_PluginBase):
         ``actor_works(actor_id="371")`` 最省事（库里直接有 URL，零引擎请求）；
         只有姓名时先解析出 ID 再抓演员页。
 
-        ``enrich=True`` 时给作品条目补抓详情页（完整标签 / 首播 / 版权方 / 时长），
-        最多补 ``ACTOR_WORKS_ENRICH_LIMIT`` 部 —— 默认**不补**：跨插件批量调用不该
-        为了几个标签搭上几十次请求。
+        返回的**每条作品都补过详情页**，结构与作品页记录完全一致（``origin="detail"``）。
+        ``enrich=False`` 可以强制不补（例如批量扫全部演员时只想要片名清单）。
         """
         if not self._enabled:
             return []
@@ -1444,7 +1448,7 @@ class ShortDramaBaikeSource(_PluginBase):
                 f" 姓名={_clean(name) or '-'}"
             )
             return []
-        if kwargs.get("enrich"):
+        if self._as_bool(kwargs.get("enrich"), True):
             self._enrich_works(profile)
         works = [dict(work) for work in (profile.get("works") or [])]
         logger.debug(
@@ -1457,18 +1461,19 @@ class ShortDramaBaikeSource(_PluginBase):
         return await asyncio.to_thread(self.actor_works, *args, **kwargs)
 
     def actor_profile(
-        self, actor_id: str = "", name: str = "", enrich: bool = False
+        self, actor_id: str = "", name: str = "", enrich: Optional[bool] = None
     ) -> Dict[str, Any]:
         """取演员完整档案（含全部作品与合作演员）—— 纯 JSON，供外部消费。
 
-        ``enrich=True`` 时给作品条目补抓详情页（完整标签 / 首播 / 版权方 / 时长），
-        最多补 ``ACTOR_WORKS_ENRICH_LIMIT`` 部。
+        默认把**全部作品**补成详情页记录（与作品页字段一致）；``enrich=False`` 强制不补。
         """
         if not self._enabled:
             return {}
         profile = self._resolve_actor(actor_id=actor_id, name=name)
         if not profile:
             return {}
+        if enrich is None:
+            enrich = True
         if enrich:
             self._enrich_works(profile)
         return build_public_actor(profile)
@@ -1573,7 +1578,7 @@ class ShortDramaBaikeSource(_PluginBase):
                 # 召回不稳是这条通道的固有属性，字面对不上的候选不该占着面板位置
                 continue
             ranked_titles.append((score, {
-                "media_id": f"{MEDIA_ID_PREFIX}:{native_id}",
+                "media_id": str(native_id),
                 "title": title,
                 "native_id": native_id,
                 "url": _clean(row.get("url") or ""),
@@ -1649,16 +1654,16 @@ class ShortDramaBaikeSource(_PluginBase):
     def api_actor(self, actor_id: str = "", name: str = "", enrich: str = "") -> Dict[str, Any]:
         """``GET /actor`` —— 演员出口（纯 JSON，含全部作品与合作演员）。
 
-        ``enrich=1`` 时给作品条目补抓详情页（完整标签 / 首播 / 版权方 / 时长），最多补
-        ``ACTOR_WORKS_ENRICH_LIMIT`` 部 —— 面板上是按需补（点哪部补哪部），这个参数
-        给外部脚本一次性拿全用。
+        默认**全部作品**补详情页，每条作品与作品页那条记录字段一致；
+        ``enrich=0`` 可以强制不补（只要片名清单时用）。
         """
         if not _clean(actor_id) and not _clean(name):
             return {"success": False, "message": "需要 actor_id 或 name 之一", "actor": None}
+        flag = _clean(enrich).lower()
         profile = self.actor_profile(
             actor_id=_clean(actor_id),
             name=_clean(name),
-            enrich=_clean(enrich).lower() in ("1", "true", "yes", "on"),
+            enrich=None if not flag else flag in ("1", "true", "yes", "on"),
         )
         if not profile:
             return {"success": False, "message": "没找到该演员", "actor": None}
@@ -1829,10 +1834,10 @@ class ShortDramaBaikeSource(_PluginBase):
         report["store"] = self._store_count()
 
         sample_url = works[0].get("url") if works else ""
-        sample_id = str(works[0].get("native_id") or "") if works else PROBE_SAMPLE_MEDIA_ID.split(":")[-1]
+        sample_id = str(works[0].get("native_id") or "") if works else PROBE_SAMPLE_MEDIA_ID
         detail = self._fetch_detail(sample_id, sample_url)
         report["detail"] = {
-            "media_id": f"{MEDIA_ID_PREFIX}:{sample_id}",
+            "media_id": sample_id,
             "title": (detail or {}).get("title", ""),
             "rating": (detail or {}).get("rating"),
             "heat": (detail or {}).get("heat"),
@@ -1979,39 +1984,43 @@ class ShortDramaBaikeSource(_PluginBase):
 
     @staticmethod
     def _native_id(media_id: Any) -> str:
-        """``duanju:40105`` / ``40105`` → ``40105``；别的前缀一律不认。
+        """``40105`` / 历史 ``duanju:40105`` / ``org:40105`` → ``40105``；别的前缀一律不认。
 
-        ⚠️ 前缀必须是**白名单**：宿主或别的插件可能把历史形态的复合 ID（``net:duanju:123``）
-        塞进来，照单全收会让一个不属于本站的 ID 悄悄变成「本插件的作品 123」，
-        白白发一次无关请求。非数字的尾巴同样判空 —— 站点 ID 恒为裸数字。
+        规范形态是**裸数字**（与来源标识 ``duanju`` 成对，同 TMDB 的 ``603``）；
+        带前缀只是历史包袱，解析时照收。
 
-        ⚠️ ``org:`` 是**历史前缀**（早期版本用过），宿主库里可能还留着按它存的订阅与识别
-        记录 —— 继续接受，新产出一律用 :data:`MEDIA_ID_PREFIX`。
+        ⚠️ 前缀必须是**白名单**（:data:`LEGACY_MEDIA_ID_PREFIXES`）：宿主或别的插件可能把
+        历史形态的复合 ID（``net:duanju:123``）塞进来，照单全收会让一个不属于本站的 ID
+        悄悄变成「本插件的作品 123」，白白发一次无关请求。非数字的尾巴同样判空 ——
+        站点 ID 恒为裸数字。
+
+        ⚠️ ``duanju:`` / ``org:`` 都是**历史前缀**（早期把来源信息塞进 ID 里），宿主库里、
+        别的插件里可能还留着按它们存的订阅与识别记录 —— 继续接受，新产出一律裸数字。
         """
         text = _clean(media_id)
         if not text:
             return ""
         head, sep, tail = text.partition(":")
         if sep:
-            prefix = head.strip().lower()
-            if prefix != MEDIA_ID_PREFIX and prefix not in LEGACY_MEDIA_ID_PREFIXES:
+            if head.strip().lower() not in LEGACY_MEDIA_ID_PREFIXES:
                 return ""
             text = _clean(tail)
         return text if text.isdigit() else ""
 
     @staticmethod
     def _has_our_prefix(media_id: Any) -> bool:
-        """``media_id`` 是否**自带**本插件前缀（``duanju:`` / 历史 ``org:``）。
+        """``media_id`` 是否**自带**本插件前缀（历史 ``duanju:`` / ``org:``）。
 
         与 :meth:`_native_id` 的区别：裸数字在那边是合法 ID，在这里**不算**声明 ——
-        ``603`` 既可能是本插件的作品号，也可能是 TMDB 的编号，只有带了前缀才无歧义。
-        :meth:`recognize_media` 用它决定「点名的来源是别人，但 ID 明确是本插件的」该不该接手。
+        ``60017`` 既可能是本插件的作品号，也可能是别的来源的编号，只有带了（历史）前缀
+        才无歧义。:meth:`recognize_media` 用它决定「点名的来源是别人，但 ID 明确是本插件
+        的」该不该接手。
         """
         head, sep, _ = _clean(media_id).partition(":")
         if not sep:
             return False
         prefix = head.strip().lower()
-        return prefix == MEDIA_ID_PREFIX or prefix in LEGACY_MEDIA_ID_PREFIXES
+        return prefix in LEGACY_MEDIA_ID_PREFIXES
 
     @staticmethod
     def _actor_native_id(actor_id: Any) -> str:
