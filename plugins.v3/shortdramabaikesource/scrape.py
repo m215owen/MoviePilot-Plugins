@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from xml.dom import minidom
 
 from .constants import MEDIA_SOURCE_ALIASES, MEDIA_SOURCE_KEY, PLUGIN_NAME
 
@@ -48,6 +49,77 @@ except Exception:  # pragma: no cover - 宿主版本差异兜底
 
 
 __all__ = ["build_images", "build_nfo", "is_own_media"]
+
+
+def _element_text(node: Any) -> str:
+    """取一个元素节点的合并文本（没有就空串）。"""
+    return "".join(
+        child.nodeValue or ""
+        for child in node.childNodes
+        if child.nodeType == child.TEXT_NODE
+    ).strip()
+
+
+def _has_child(node: Any, tag: str) -> bool:
+    return any(
+        child.nodeType == child.ELEMENT_NODE and child.tagName == tag
+        for child in node.childNodes
+    )
+
+
+def _annotate_actors(text: str, mediainfo: Any) -> str:
+    """给 NFO 的每个 ``<actor>`` 节点补 ``<order>``（番位）与 ``<type>Actor``。
+
+    宿主通用刮削器只写 name / role / thumb 三件套，而 NFO 规范里 ``<actor>``
+    还认 ``<order>``（媒体服务器按它排演员表）与 ``<type>``。宿主 helper 按
+    ``mediainfo.actors`` 的顺序产出节点，所以**数量一致时按位置对齐**；对不上
+    时退回按名字查，再不行就放弃该节点（宁缺勿脏）。
+
+    解析失败一律原样返回 —— 注入是锦上添花，绝不能弄脏一份本来合法的 NFO。
+    """
+    actors = [
+        actor
+        for actor in (getattr(mediainfo, "actors", None) or [])
+        if isinstance(actor, dict)
+    ]
+    if not actors:
+        return text
+    try:
+        doc = minidom.parseString(text.encode("utf-8"))
+    except Exception as err:  # pragma: no cover - 宿主产物理论合法
+        logger.debug(f"{PLUGIN_NAME} NFO 演员注入解析失败，保持原文：{err}")
+        return text
+    nodes = [
+        node
+        for node in doc.documentElement.childNodes
+        if node.nodeType == node.ELEMENT_NODE and node.tagName == "actor"
+    ]
+    if not nodes:
+        return text
+    by_name: Dict[str, int] = {}
+    for index, actor in enumerate(actors, start=1):
+        name = str(actor.get("name") or "").strip()
+        if name and name not in by_name:
+            by_name[name] = index
+    positional = len(nodes) == len(actors)
+    for position, node in enumerate(nodes, start=1):
+        order: Optional[int] = position if positional else None
+        if order is None:
+            for child in node.childNodes:
+                if child.nodeType == child.ELEMENT_NODE and child.tagName == "name":
+                    order = by_name.get(_element_text(child))
+                    break
+        if not order:
+            continue
+        if not _has_child(node, "order"):
+            order_node = doc.createElement("order")
+            order_node.appendChild(doc.createTextNode(str(order)))
+            node.appendChild(order_node)
+        if not _has_child(node, "type"):
+            type_node = doc.createElement("type")
+            type_node.appendChild(doc.createTextNode("Actor"))
+            node.appendChild(type_node)
+    return doc.toxml()
 
 
 def is_own_media(mediainfo: Any) -> bool:
@@ -98,10 +170,11 @@ def build_nfo(
     # 宿主那个 helper 带 encoding 调 toprettyxml，拿到的是 bytes；契约声明的是 str
     if isinstance(text, bytes):
         try:
-            return text.decode("utf-8")
+            text = text.decode("utf-8")
         except UnicodeDecodeError:  # pragma: no cover - 理论不可达
             return None
-    return str(text)
+    # 宿主 helper 不写 <order>/<type>，这里按番位补上（失败保持原文）
+    return _annotate_actors(str(text), mediainfo)
 
 
 def build_images(
