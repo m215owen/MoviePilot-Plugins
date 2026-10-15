@@ -107,7 +107,16 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
         # 单集按集数折算（parser 已算），全集时长留在 record 的 ``duration_minutes`` 里。
         "runtime": episode_minutes,
         "genres": [{"name": tag} for tag in tags],
-        "names": list(tags),
+        # ⚠️ ``names`` 是**别名 / 译名**，不是题材：宿主把它当**搜索关键词来源**
+        # （``chain/search/plan.py`` / ``provider.py`` 会逐个拿 title / en_title /
+        # original_title / names 去站点搜索，首个有结果即停），还会参与下载资源匹配
+        # （``application/torrent/download.py`` 的 ``media_names``）。
+        # 曾经这里误填了题材标签，于是主名在站点上搜不到时，宿主会拿「都市」这种泛词去搜
+        # —— 实测捞回 45 条无关资源（老友记 / 杀戮都市 / 都市女孩 …）、白耗站点配额，
+        # 最后全在匹配阶段被淘汰，用户看到「找到 45 个资源但一条都不符合」。
+        # 本站点详情页目前没有别名数据（解析器只认集数/时长/首播/出品方/类型/播放/收藏/
+        # 热度/评分），故留空；将来真解析出别名再填这里。
+        "names": [],
         "actors": actors,
         "production_companies": [{"name": studio}] if studio else [],
         "status": _clean(item.get("status")) or None,
