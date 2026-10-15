@@ -337,13 +337,17 @@ class ShortDramaBaikeSource(_PluginBase):
             info = self.run_module("recognize_media", media_source="duanju", media_id="45982")
             works = self.run_module("actor_works", actor_id="371")
             actors = self.run_module("search_actors", name="魏依珂")
+            profile = self.run_module("actor_profile", actor_id="371", enrich=False)
 
         身份是 (``media_source="duanju"``, ``media_id="45982"``) 这一对 —— 与 TMDB 的
         (``themoviedb``, ``603``) 同款：来源标识在 ``media_source`` 里，ID 就是裸数字。
         历史标识 ``duanjubaike`` 与历史 ID 前缀 ``duanju:`` / ``org:`` 仍然接受。
 
-        前两个返回宿主 ``MediaInfo``（与 TMDB / 豆瓣模块同一个模型）；演员那两个是本插件
-        **自定义**方法名，返回纯 Python 列表，消费方不必做任何转换。
+        前两个返回宿主 ``MediaInfo``（与 TMDB / 豆瓣模块同一个模型）；演员那三个是本插件
+        **自定义**方法名：``search_actors`` / ``actor_works`` 返回纯 Python 列表，
+        ``actor_profile`` 返回纯 Python dict —— legacy 聚合对 dict 做 ``update`` 合并，
+        本插件是唯一提供者 ⇒ 消费方拿到的就是 :meth:`actor_profile` 的返回原样，
+        不必做任何转换（``enrich=False`` 可跳过作品详情补全）。
 
         ``metadata_nfo`` / ``metadata_img`` 是**宿主刮削链**的两个出口（NFO 文本 / 图片
         清单）：这两个契约对插件是「先跑、非空即短路」的，而内置的五个 NFO 生成器又都按
@@ -360,11 +364,13 @@ class ShortDramaBaikeSource(_PluginBase):
             # 刮削出口（宿主 chain/scraping.py 调用，签名见 scrape.py）
             "metadata_nfo": self.metadata_nfo,
             "metadata_img": self.metadata_img,
-            # 自定义能力（宿主模块合同里没有这两个名字，走 legacy 契约放行）
+            # 自定义能力（宿主模块合同里没有这些名字，走 legacy 契约放行）
             "search_actors": self.search_actors,
             "async_search_actors": self.async_search_actors,
             "actor_works": self.actor_works,
             "async_actor_works": self.async_actor_works,
+            "actor_profile": self.actor_profile,
+            "async_actor_profile": self.async_actor_profile,
         }
 
     # ── URL 库（插件自有数据库） ──────────────────────────────────
@@ -488,6 +494,13 @@ class ShortDramaBaikeSource(_PluginBase):
         一个页面只留一条记录，那条的键落在哪儿取决于它先被哪条路发现，三个字段都认才对
         得上「库优先」这个承诺。
 
+        ⚠️ **「一类为空」不等于「库答不了」**：演员名天然匹配不到「作品」类记录（作品记录
+        按片名建档），片名也天然匹配不到「演员」类记录 —— 只按「两类都命中」判，等于
+        **搜任何库里已有的演员 / 片名都要白跑一趟引擎**。真机实测：搜库里的演员
+        「黄云云」，引擎跑 9.5s（另一台次 22.9s）后「与搜索词完全匹配 0 部，入库 0 条」，
+        纯浪费。所以补一条判据：库里存在**本体命中**（见 :meth:`_store_answers`）时直接
+        返回 —— 那条记录就是这个关键词自己的页面，另一类为空是必然的。
+
         :return: ``(works, actors)``，每项含 ``url`` / ``label`` / ``native_id`` / ``from``
         """
         query = _clean(keyword)
@@ -511,6 +524,12 @@ class ShortDramaBaikeSource(_PluginBase):
                 f"演员 {len(actors)}（零引擎请求）"
             )
             return works, actors
+        if self._store_answers(works, actors, key):
+            logger.info(
+                f"{PLUGIN_NAME}「{query}」URL 库本体命中：作品 {len(works)} / "
+                f"演员 {len(actors)}（另一类为空是必然的，零引擎请求）"
+            )
+            return works, actors
         if not force and not self._should_search(key):
             # 两类里缺了哪一类、为什么这次不问引擎 —— 「库里没有」与「刚查过被挡住」
             # 表现一样（都是没结果），日志里必须分得开
@@ -525,6 +544,30 @@ class ShortDramaBaikeSource(_PluginBase):
         # 丢掉 —— 面板上第一次只显示库里那条（实测「相亲对象是迟来的心动」只出 40354
         # 那条 AI 版空壳），得再查一次才看得到引擎刚发现的 40445。库里没有的才补进来。
         return self._merge(works, found_works), self._merge(actors, found_actors)
+
+    @staticmethod
+    def _store_answers(
+        works: List[Dict[str, Any]], actors: List[Dict[str, Any]], key: str
+    ) -> bool:
+        """库能不能**独立回答**这个关键词（存在一条「本体命中」）。
+
+        「本体命中」= 记录的标题（``label``）归一化后**完全等于**查询词 —— 也就是这条
+        记录就是这个关键词自己的页面（演员名 ↔ 演员页、片名 ↔ 作品页）。命中时另一类
+        为空是结构性的必然（作品记录按片名建档、演员记录按姓名建档），再问引擎也补不出
+        东西，不出网。
+
+        ⚠️ **只能用 ``label``，不能用 ``keyword``**：``keyword`` 是「当初用什么词发现了
+        这个页面」—— 站外索引是 ``site:`` 全文检索，搜一个演员名会召回一堆**沾边但不同**
+        的剧页，那些行的 ``keyword`` 就是那个演员名、``label`` 却是别人的片名。拿
+        ``keyword`` 判本体等于把「键是这个搜索词、内容却是别的剧」的错行当成答案，
+        会把真正该去引擎找的那一次也挡掉。
+        """
+        if not key:
+            return False
+        for row in list(works) + list(actors):
+            if _normalize_title(_clean(row.get("label") or "")) == key:
+                return True
+        return False
 
     @staticmethod
     def _merge(
@@ -1453,6 +1496,11 @@ class ShortDramaBaikeSource(_PluginBase):
         if enrich:
             self._enrich_works(profile)
         return build_public_actor(profile)
+
+    async def async_actor_profile(
+        self, *args: Any, **kwargs: Any
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.actor_profile, *args, **kwargs)
 
     # ── HTTP 接口 ─────────────────────────────────────────────────
 
