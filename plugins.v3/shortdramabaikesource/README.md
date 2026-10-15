@@ -192,6 +192,38 @@ NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqu
 目录目标落盘 `tvshow.nfo` + `poster.jpg` + `backdrop.jpg` + `fanart.jpg`；单集目标落盘同名
 `.nfo`；日志里能看到 `请求插件 短剧百科数据源 执行：metadata_nfo / metadata_img`。
 
+## 识别入口：什么时候轮得到本插件（`media_source` 口径）
+
+宿主识别一部媒体时**用哪个来源**由请求里的 `media_source` 决定，本插件与内置来源
+（themoviedb / douban / bangumi / anilist / imdb）用的是**同一套规则**：
+
+| 场景 | 请求里的 `media_source` | 谁识别 |
+| --- | --- | --- |
+| 媒体详情页 / 搜索里点名「短剧百科」 | `duanjubaike` | ✅ 本插件 |
+| 整理、扫描、订阅刷新（**没点名来源**） | `None` | 看系统设置「媒体识别来源」（`RECOGNIZE_SOURCE`）：设成「短剧百科」才轮到本插件，否则走 TMDB |
+| 点名的其它来源（豆瓣 / TMDB / TVDB …） | 别的值 | ❌ 一律返回 `None`，绝不抢别的来源 |
+
+⚠️ **`None` 必须按设置自证身份**，不能无条件接手。宿主原生识别是
+`run_module`「**运行包含该方法的所有模块**」（`chain/base.py`），而 `recognize_media`
+的模块契约是 `plugin_short_circuit=True` —— **插件模块先跑、结果非空就短路**，
+宿主模块（TMDB 等）根本不会被调用。所以：
+
+* **无条件接手 `None`** ⇒ 把 TMDB 的识别全抢过来（同名电影会被错判成短剧）；
+* **恒不接手 `None`** ⇒ 整理 / 扫描 / 订阅**永远只走 TMDB**，短剧必然识别不到。
+  真机症状：日志里只有「辅助识别未识别到 … 尝试使用原生识别」＋「TMDB 未匹配」，
+  **插件零日志** —— 它就在 `_is_our_source(media_source)` 那一行静默返回了 `None`。
+
+正确写法与内置来源逐字一致：
+
+```python
+media_source or get_runtime_setting("RECOGNIZE_SOURCE")   # 内置来源的统一写法
+```
+
+系统设置默认为 `themoviedb` ⇒ **行为与从前完全一致**（插件不接手，零影响）；
+把它切成「短剧百科」（设置页的选项由 `GET /api/v1/media/source` 动态构造，
+插件来源本来就在列表里）后，**不带显式来源的识别**才会落到本插件。
+代价要心里有数：切换是**全局**的，TMDB 会同时不再接单，非短剧内容会识别不到。
+
 ## 检索：库优先，库空了才打引擎
 
 ### 拿「哪个名字」去查：照宿主 TMDB 源的口径

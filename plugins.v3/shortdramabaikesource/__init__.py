@@ -134,6 +134,11 @@ try:  # 宿主配置（读系统代理 / 图片白名单）
 except Exception:  # pragma: no cover - 宿主版本差异兜底
     _settings = None
 
+try:  # 运行时设置（读系统「媒体识别来源」RECOGNIZE_SOURCE，与内置来源同一入口）
+    from app.runtime.settings import get_runtime_setting as _get_runtime_setting
+except Exception:  # pragma: no cover - 宿主版本差异兜底
+    _get_runtime_setting = None
+
 # 同一个关键词在这个间隔内查过引擎就不再查（库里确实没有时也不必每次搜索都出网）。
 SEARCH_RETRY_INTERVAL = 300.0
 # 「上一次空手而归」的冷却：引擎召回本来就不稳（同一句话换个后端结果完全不同），
@@ -1919,14 +1924,43 @@ class ShortDramaBaikeSource(_PluginBase):
         return text if text.isdigit() else ""
 
     @staticmethod
+    def _default_recognize_source() -> str:
+        """系统「媒体识别来源」设置（``RECOGNIZE_SOURCE``），拿不到时返回空串。
+
+        与内置来源（themoviedb / douban / bangumi / anilist / imdb）读的是**同一个键**，
+        它们一律写 ``media_source or get_runtime_setting("RECOGNIZE_SOURCE")``。
+        """
+        value: Any = None
+        if _get_runtime_setting is not None:
+            try:
+                value = _get_runtime_setting("RECOGNIZE_SOURCE", None)
+            except Exception as err:  # pragma: no cover - 宿主版本差异兜底
+                logger.debug(f"{PLUGIN_NAME} 读取 RECOGNIZE_SOURCE 失败：{err}")
+        if value is None and _settings is not None:
+            value = getattr(_settings, "RECOGNIZE_SOURCE", None)
+        return str(getattr(value, "value", value) or "").strip().lower()
+
+    @staticmethod
     def _is_our_source(media_source: Any) -> bool:
         """宿主给的来源可能是枚举、字符串、集合或 None；只有点名本来源时才接手。
 
         集合形态要一并接住：宿主在「多来源」场景下会把候选来源打包成 list / tuple
         传下来，那种情况应当视为**有**本来源。
+
+        ``None`` 按**内置来源的口径**处理：``media_source or get_runtime_setting(
+        "RECOGNIZE_SOURCE")`` —— 也就是「没点名来源时，看系统『媒体识别来源』设置是不是
+        自己」。这是宿主内置来源（themoviedb / douban / …）的统一写法，插件跟它对齐：
+
+        * 系统设置仍是默认的 ``themoviedb`` ⇒ **行为与从前完全一致**（插件不接手）；
+        * 用户把设置切成「短剧百科」后，**整理 / 扫描 / 订阅这些不带显式来源的识别**
+          才会落到本插件 —— 这正是「和 TMDB 数据源一样」该有的样子。
+
+        ⚠️ **绝不能无条件接手 ``None``**：宿主的原生识别是 ``run_module``
+        **遍历所有媒体模块**（``chain/base.py::run_module``「运行包含该方法的所有模块」），
+        乱接就等于把别的来源的识别请求抢过来。
         """
         if media_source is None:
-            return False
+            return ShortDramaBaikeSource._default_recognize_source() in MEDIA_SOURCE_ALIASES
         if isinstance(media_source, (list, tuple, set, frozenset)):
             return any(ShortDramaBaikeSource._is_our_source(item) for item in media_source)
         value = getattr(media_source, "value", media_source)
