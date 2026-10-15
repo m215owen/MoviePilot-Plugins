@@ -142,6 +142,20 @@ if rule.sources and normalized_media_source not in rule.sources:
 事实通过 `MediaInfo.classification_facts` 交给宿主（`build_classification_facts`），
 **只发声明过的字段，缺值就不发**，不伪造。
 
+**面板里怎么点**（「媒体自动分类 → 高级设置」新建/编辑规则）：
+
+| 面板项 | 选什么 |
+| --- | --- |
+| 媒体类型 | `电视剧` |
+| **媒体数据来源** | 勾 **短剧百科** |
+| 条件字段 | 字段选择器里「短剧百科」分组的 **「短剧百科收录」**（= `extensions.duanju.is_short_drama`） |
+| 操作符 | `是`（`is_true`） |
+| 目标分类 | `短剧` |
+
+⚠️ **别把条件字段选成「媒体来源」** —— 那是标准字段 `identity.media_source`，在插件来源上判
+`unavailable`，一保存就报上面那条错。选「短剧百科」这个来源时，条件只能用 `extensions.duanju.*`
+（收录 / 形态 / 题材标签）这三个字段。
+
 配套在宿主「设置 → 媒体分类策略」里加一条规则（revision 3，可回滚到 2）：
 
 ```json
