@@ -33,12 +33,17 @@ function apiPrefix() {
     return fallback;
   }
 }
+let imageCacheEnabled = true;
+function setImageCacheEnabled(value) {
+  imageCacheEnabled = value;
+}
 function proxyImage(url) {
   const raw = String(url || "").trim();
   if (!raw) return "";
   if (!/^https?:\/\//i.test(raw)) return raw;
   if (raw.includes("/system/img/")) return raw;
-  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`;
+  const cache = imageCacheEnabled ? "&cache=true" : "";
+  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}${cache}`;
 }
 function unwrap(response) {
   const value = response;
@@ -57,8 +62,11 @@ async function getJson(api, path, params) {
     return null;
   }
 }
-function fetchStatus(api) {
-  return getJson(api, "/status");
+async function fetchStatus(api) {
+  const report = await getJson(api, "/status");
+  const imageCache = report?.cache?.system?.image_cache;
+  if (typeof imageCache === "boolean") setImageCacheEnabled(imageCache);
+  return report;
 }
 function lookupKeyword(api, keyword, year) {
   return getJson(api, "/lookup", { keyword, year: void 0 });
@@ -89,6 +97,33 @@ async function clearUrls(api, options = {}) {
     return unwrap(response);
   } catch (error) {
     console.warn(`[${PLUGIN_ID}] 清空 URL 库失败`, error);
+    return null;
+  }
+}
+function fetchCache(api, options = {}) {
+  return getJson(api, "/cache", {
+    kind: options.kind || void 0,
+    keyword: options.keyword || void 0,
+    limit: options.limit ?? 200
+  });
+}
+async function deleteCacheEntry(api, key) {
+  try {
+    const response = await api.delete(`${API_BASE}/cache/${encodeURIComponent(key)}`);
+    return unwrap(response);
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 删除缓存失败`, error);
+    return null;
+  }
+}
+async function clearCache(api, kind = "") {
+  try {
+    const response = await api.delete(`${API_BASE}/cache`, {
+      params: kind ? { kind } : void 0
+    });
+    return unwrap(response);
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 清空缓存失败`, error);
     return null;
   }
 }
@@ -138,7 +173,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       domain: "https://duanjubaike.org",
       search_in_global: true,
       timeout: 15,
-      cache_ttl: 604800,
+      // 0 = 跟随宿主（系统设置里的「单条元数据识别缓存有效期」）
+      cache_ttl: 0,
       web_index_search: true,
       web_index_backend: "auto",
       proxy: false,
@@ -187,11 +223,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         const index = report.web_index || {};
         const indexText = index.available ? index.enabled ? `站外索引 开（后端 ${index.backend || "auto"}）` : "站外索引 关" : "站外索引 不可用（依赖缺失）";
         const store = report.store || {};
+        const cache = report.cache || {};
+        const ttlText = cache.ttl ? `有效期 ${cache.ttl}s` : "有效期 —";
         statusText.value = [
           `运行状态：${report.enabled ? "已启用" : "未启用"}`,
           indexText,
           `URL 库 ${store.total ?? 0} 条（作品 ${store.work ?? 0} / 演员 ${store.actor ?? 0}）`,
-          `缓存 详情 ${report.cache?.detail ?? 0} 条 / 演员 ${report.cache?.actor ?? 0} 条`
+          `缓存 ${cache.count ?? 0} 条（后端 ${cache.backend ?? "—"}，${ttlText}）`
         ].join("　｜　");
       } catch (error) {
         statusText.value = "";
@@ -401,7 +439,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     modelValue: local.value.cache_ttl,
                     "onUpdate:modelValue": _cache[6] || (_cache[6] = ($event) => local.value.cache_ttl = $event),
                     modelModifiers: { number: true },
-                    label: "详情缓存",
+                    label: "缓存覆盖",
                     suffix: "秒",
                     type: "number",
                     density: "compact",
@@ -415,7 +453,14 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _: 1
           }),
           _cache[17] || (_cache[17] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
-            _createTextVNode(" 详情页内容基本不变，缓存默认 7 天。插件"),
+            _createElementVNode("b", null, "0（默认）= 跟随宿主"),
+            _createTextVNode("：有效期取系统设置的「单条元数据识别缓存有效期」 （设置 → 缓存 → "),
+            _createElementVNode("code", null, "META_CACHE_EXPIRE"),
+            _createTextVNode("，单位小时，未填时宿主按 24 小时、 大内存模式 72 小时计）；正数 = 显式覆盖；"),
+            _createElementVNode("b", null, "负数 = 关闭插件缓存"),
+            _createTextVNode("（排障用）。 缓存的后端也跟着宿主走（系统启用 Redis 时与宿主共用同一实例）， 但"),
+            _createElementVNode("b", null, "不进宿主的缓存管理页"),
+            _createTextVNode(" —— 要清缓存请用面板上的「缓存管理」。 插件"),
             _createElementVNode("b", null, "没有后台任务"),
             _createTextVNode("：缓存只在被查询时按需重建。 ")
           ], -1)),
@@ -561,6 +606,6 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-3f0f74d4"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-54abf9d8"]]);
 
-export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };
+export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, fetchCache as g, deleteCacheEntry as h, clearCache as i, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };

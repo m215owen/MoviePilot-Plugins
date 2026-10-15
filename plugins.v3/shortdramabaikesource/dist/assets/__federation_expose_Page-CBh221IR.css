@@ -1,30 +1,30 @@
 
-.sdbs-root[data-v-50d81de3] {
+.sdbs-root[data-v-dbaba41e] {
   min-width: 0;
 }
 /* 详情弹窗里的 switch 会带默认的外边距，压紧一点 */
-.sdbs-switch[data-v-50d81de3] {
+.sdbs-switch[data-v-dbaba41e] {
   margin: 0;
   flex: 0 0 auto;
 }
-.sdbs-dim[data-v-50d81de3] {
+.sdbs-dim[data-v-dbaba41e] {
   opacity: 0.7;
 }
-.sdbs-panel[data-v-50d81de3] {
+.sdbs-panel[data-v-dbaba41e] {
   height: 100%;
 }
-.sdbs-poster[data-v-50d81de3] {
+.sdbs-poster[data-v-dbaba41e] {
   background-color: rgba(128, 128, 128, 0.12);
 }
 /* 简介最多三行，避免一条简介把整列撑开 */
-.sdbs-clamp[data-v-50d81de3] {
+.sdbs-clamp[data-v-dbaba41e] {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.sdbs-work-title[data-v-50d81de3] {
+.sdbs-work-title[data-v-dbaba41e] {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
@@ -32,18 +32,18 @@
   overflow: hidden;
 }
 /* URL 库：关键词输入框限宽，记录行的标题可省略号截断（地址可能很长） */
-.sdbs-lib-search[data-v-50d81de3] {
+.sdbs-lib-search[data-v-dbaba41e] {
   max-width: 320px;
   min-width: 200px;
 }
-.sdbs-lib-text[data-v-50d81de3] {
+.sdbs-lib-text[data-v-dbaba41e] {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* 原始数据块：等宽、可横向滚动、限高避免长 JSON 顶掉整页 */
-.sdbs-pre[data-v-50d81de3] {
+.sdbs-pre[data-v-dbaba41e] {
   margin: 0;
   padding: 8px;
   max-height: 260px;

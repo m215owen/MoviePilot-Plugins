@@ -90,48 +90,60 @@ def build_season_info(detail: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 class TmdbIdentity:
-    """片名 + 首播年 → TMDB 真实身份（带 TTL 缓存，**负结果也缓存**）。
+    """片名 + 首播年 → TMDB 真实身份（**负结果也缓存**）。
 
     用插件自己的同步 GET（:meth:`ShortDramaBaikeSource._get`）发请求 —— 代理、超时、UA
     与站点请求保持一致，不另起一套客户端。
+
+    身份缓存走插件的统一缓存层（:class:`~.cache.PluginCache`，类型 ``tmdb``）—— 与作品 /
+    演员缓存同一个后端（宿主 Redis 或进程内内存）、同一套有效期，面板的缓存管理里
+    也能按类型单独清。宿主没提供缓存层时（老版本 / 单测）退回本类的进程内字典。
     """
 
-    def __init__(self, getter: Callable[[str], Tuple[str, Optional[int]]]) -> None:
+    def __init__(
+        self,
+        getter: Callable[[str], Tuple[str, Optional[int]]],
+        cache: Optional[Any] = None,
+    ) -> None:
         self._get = getter
+        self._cache = cache
         self._lock = threading.Lock()
-        self._cache: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
+        self._local: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
         # 「宿主没配 TMDB」只在**首次**报一次：环境级问题，每次调用都报会把日志刷满
         self._warned_unavailable = False
 
     # ── 缓存 ──────────────────────────────────────────────────────
 
-    def _cache_get(self, key: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    def _cache_lookup(self, key: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """``(是否命中, 值)`` —— 「命中但值是空」表示缓存的负结果（查过、没有）。"""
+        if self._cache is not None:
+            found = self._cache.lookup(key)
+            if found is None:
+                return False, None
+            data = found[1]
+            return True, data if isinstance(data, dict) else None
         now = time.time()
         with self._lock:
-            entry = self._cache.get(key)
+            entry = self._local.get(key)
         if not entry:
             return False, None
         expires, value = entry
         if expires and now > expires:
             with self._lock:
-                self._cache.pop(key, None)
+                self._local.pop(key, None)
             return False, None
         return True, value
 
-    def _cache_set(self, key: str, value: Optional[Dict[str, Any]]) -> None:
+    def _cache_store(self, key: str, value: Optional[Dict[str, Any]], title: str = "", ref: str = "") -> None:
+        if self._cache is not None:
+            self._cache.set(key, value, kind="tmdb", label=title, ref=ref)
+            return
         with self._lock:
-            self._cache[key] = (time.time() + IDENTITY_TTL, value)
-            if len(self._cache) > 512:
-                oldest = sorted(self._cache.items(), key=lambda pair: pair[1][0])
+            self._local[key] = (time.time() + IDENTITY_TTL, value)
+            if len(self._local) > 512:
+                oldest = sorted(self._local.items(), key=lambda pair: pair[1][0])
                 for stale_key, _ in oldest[:128]:
-                    self._cache.pop(stale_key, None)
-
-    def clear(self) -> int:
-        """清缓存（停止插件 / 清空库时调用）。返回清掉的条数。"""
-        with self._lock:
-            removed = len(self._cache)
-            self._cache.clear()
-        return removed
+                    self._local.pop(stale_key, None)
 
     # ── 查询 ──────────────────────────────────────────────────────
 
@@ -146,7 +158,7 @@ class TmdbIdentity:
         if not title:
             return {}
         cache_key = f"tmdb|{_normalize_title(title)}|{year}"
-        hit, value = self._cache_get(cache_key)
+        hit, value = self._cache_lookup(cache_key)
         if hit:
             return dict(value or {})
 
@@ -183,7 +195,7 @@ class TmdbIdentity:
                 f"{PLUGIN_NAME} 《{title}》在 TMDB 没有可信的同名条目（候选 {len(rows)} 条），"
                 f"保持插件来源身份"
             )
-        self._cache_set(cache_key, extra or None)
+        self._cache_store(cache_key, extra or None, title=title, ref=year)
         return extra
 
     def _search(self, domain: str, api_key: str, title: str, type_hint: str) -> List[Dict[str, Any]]:

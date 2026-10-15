@@ -77,6 +77,9 @@ except Exception:  # pragma: no cover
     zhconv_convert = None
 
 from .classification import classification_protocol_version, media_source_declaration
+# 缓存层：与宿主同一套缓存机制（Redis / 进程内内存），有效期与站点开关跟随系统设置，
+# 但**不接入**宿主的缓存管理页（详见 :mod:`cache`）。
+from .cache import CACHE_KINDS, KIND_LABELS, PluginCache
 # ⚠️ 这一批常量既是内部依赖，也是**包级导出**（单测与消费方按
 # ``app.plugins.shortdramabaikesource.<NAME>`` 取）：声明来源、比对身份都靠它们，
 # 所以即便本文件里没引用也不要删 —— ``MEDIA_SOURCE_LABEL`` 就是这类（见下方 ``__all__``）。
@@ -207,8 +210,9 @@ class ShortDramaBaikeSource(_PluginBase):
     _follow_links: bool = True
 
     # ── 运行时状态（init_plugin 逐个重建，保证实例之间不串味） ──
-    _cache: Dict[str, Tuple[float, Any]] = {}
-    _cache_lock = threading.RLock()
+    # 缓存门面：后端（Redis / 进程内内存）与有效期都跟着宿主设置走，见 :mod:`cache`。
+    # 实例级 —— 配置变更时整体重建，避免旧 TTL / 旧站点判定残留
+    _cache: Optional["PluginCache"] = None
     # 关键词 → 上次问引擎的时间戳（避免库里确实没有时每次搜索都出网）
     _searched_at: Dict[str, float] = {}
     # 关键词 → 上次问引擎**有没有拿回可用候选**（决定冷却用 300s 还是 60s）
@@ -233,7 +237,8 @@ class ShortDramaBaikeSource(_PluginBase):
         self._domain = self._as_domain(config.get("domain"), ORG_DEFAULT_DOMAIN)
         self._search_in_global = self._as_bool(config.get("search_in_global"), True)
         self._timeout = self._as_range(config.get("timeout"), DEFAULT_TIMEOUT, 5, 120)
-        self._cache_ttl = self._as_range(config.get("cache_ttl"), DEFAULT_CACHE_TTL, 0, 2592000)
+        # 缓存有效期覆盖：0 = 跟随系统设置，>0 = 显式秒数，<0 = 关闭插件缓存
+        self._cache_ttl = self._as_range(config.get("cache_ttl"), DEFAULT_CACHE_TTL, -1, 2592000)
         self._web_index_search = self._as_bool(config.get("web_index_search"), True)
         self._web_index_backend = self._as_choice(
             config.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
@@ -242,12 +247,15 @@ class ShortDramaBaikeSource(_PluginBase):
         self._follow_links = self._as_bool(config.get("follow_links"), True)
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定（它们是类属性）。
-        self._cache = {}
+        # 缓存：后端与有效期都跟着宿主设置走（见 :mod:`cache`），插件配置只做显式覆盖
+        self._cache = PluginCache()
+        self._cache.configure(override_ttl=self._cache_ttl, domain=self._domain)
         self._searched_at = {}
         self._search_hits = {}
         self._web_index.reset_throttle()
-        # TMDB 身份补充器：复用本插件的同步 GET（代理 / 超时 / UA 与站点请求一致）
-        self._tmdb = TmdbIdentity(self._get)
+        # TMDB 身份补充器：复用本插件的同步 GET（代理 / 超时 / UA 与站点请求一致）；
+        # 它的身份缓存也走上面这层缓存（同一 region，类型 tmdb）
+        self._tmdb = TmdbIdentity(self._get, self._cache)
 
         self._register_image_domains()
         # 历史遗留的重复行（同一个页面存成多条）在启动时合并掉：面板上一行＝一站剧
@@ -261,7 +269,7 @@ class ShortDramaBaikeSource(_PluginBase):
             f"（作品 {stats.get('work', 0)} / 演员 {stats.get('actor', 0)}）"
             f"｜顺带入库={'开' if self._follow_links else '关'}"
             f"｜分类协议=v{classification_protocol_version()}"
-            f"｜缓存={'关' if self._cache_ttl <= 0 else f'{self._cache_ttl}s'}"
+            f"｜缓存={self._cache_summary()}"
             + (f"｜去重合并 {merged} 条重复记录" if merged else "")
         )
 
@@ -269,14 +277,19 @@ class ShortDramaBaikeSource(_PluginBase):
         return self._enabled
 
     def stop_service(self) -> None:
-        """停止插件：清空内存缓存（URL 库是持久数据，不动）。"""
-        with self._cache_lock:
-            kept = len(self._cache)
-            self._cache.clear()
-        identities = self._tmdb.clear() if self._tmdb is not None else 0
+        """停止插件：释放**进程内**缓存，保留落盘的（Redis）缓存。
+
+        FAQ 15 的最佳实践要求卸载时清理缓存以免内存泄漏，但那条针对的是进程内后端；
+        落在宿主 Redis 上的缓存是跨重启的持久数据（与宿主的识别缓存同性质），
+        卸载时一并清掉只会让下次把页面重新抓一遍、白白撞站点风控。
+        要清由面板的「缓存管理」显式触发（`DELETE /cache`）。
+        """
+        stats = self._cache.stats() if self._cache is not None else {"count": 0}
+        released = self._cache.release() if self._cache is not None else False
         logger.info(
-            f"{PLUGIN_NAME} 已停止：清空 {kept} 条内存缓存、{identities} 条 TMDB 身份缓存"
-            f"（URL 库是持久数据，保留）"
+            f"{PLUGIN_NAME} 已停止："
+            + ("进程内缓存已释放" if released else f"缓存保留 {stats.get('count', 0)} 条（宿主 Redis，跨重启存活）")
+            + "｜要清空请用面板「缓存管理」｜URL 库是持久数据，保留"
         )
 
     def get_render_mode(self) -> Tuple[str, Optional[str]]:
@@ -765,7 +778,12 @@ class ShortDramaBaikeSource(_PluginBase):
         # 详情页那几块只认 tmdb_id 的区块也会跟着亮 —— 必须在写缓存**之前**做，
         # 否则缓存里那份没有它，面板展开的原始数据就会缺这一项
         self._tmdb_identity(record)
-        self._cache_set(f"detail:{native_id}", record)
+        self._cache_set(
+            f"detail:{native_id}",
+            record,
+            label=_clean(record.get("title") or ""),
+            ref=native_id,
+        )
         logger.debug(
             f"{PLUGIN_NAME} 作品 {native_id}《{record.get('title')}》解析完成："
             f"{len(record)} 个字段 / 演员 {len(record.get('actors') or [])} 位"
@@ -819,7 +837,12 @@ class ShortDramaBaikeSource(_PluginBase):
                 f"（正文 {len(html)} 字节，解析出 {len(profile)} 个字段）"
             )
             return None
-        self._cache_set(f"actor:{actor_id}", profile)
+        self._cache_set(
+            f"actor:{actor_id}",
+            profile,
+            label=_clean(profile.get("name") or ""),
+            ref=actor_id,
+        )
         if not (profile.get("works") or []):
             # ⚠️ 这是本插件**最难发现**的一类故障：资料字段全对、只有作品为 0。
             # 真因几乎总是抓到了繁体页（/zh-Hant 或没带 /zh-Hans 被 301），页面里作品
@@ -1476,6 +1499,27 @@ class ShortDramaBaikeSource(_PluginBase):
                 "auth": "bear",
             },
             {
+                "path": "/cache",
+                "methods": ["GET"],
+                "endpoint": self.api_cache,
+                "summary": "缓存管理：现状（后端 / 有效期 / 系统开关）+ 条目清单",
+                "auth": "bear",
+            },
+            {
+                "path": "/cache/{key}",
+                "methods": ["DELETE"],
+                "endpoint": self.api_cache_delete,
+                "summary": "缓存管理：删除单条缓存",
+                "auth": "bear",
+            },
+            {
+                "path": "/cache",
+                "methods": ["DELETE"],
+                "endpoint": self.api_cache_clear,
+                "summary": "缓存管理：清空缓存（可按类型）",
+                "auth": "bear",
+            },
+            {
                 "path": "/status",
                 "methods": ["GET"],
                 "endpoint": self.api_status,
@@ -1687,6 +1731,94 @@ class ShortDramaBaikeSource(_PluginBase):
             "stats": self._store_count(),
         }
 
+    def api_cache(self, kind: str = "", keyword: str = "", limit: str = "200") -> Dict[str, Any]:
+        """``GET /cache`` —— 缓存管理界面：现状 + 条目清单。
+
+        与宿主的 ``GET /api/v1/tmdb/cache`` 同构（``count`` + 分类计数 + ``data``），
+        额外给出「这个缓存跟着哪些系统开关」——面板要能解释清楚为什么有效期是这个值。
+        """
+        cache = self._cache
+        if cache is None:
+            return {"success": False, "message": "缓存未就绪", "count": 0, "data": []}
+        query = _clean(keyword)
+        kind = _clean(kind)
+        if kind and kind not in CACHE_KINDS:
+            return {"success": False, "message": f"kind 只能是 {'、'.join(CACHE_KINDS)}",
+                    "count": 0, "data": []}
+        size = int(_as_int(limit, 200) or 200)
+        cache.refresh()
+        entries = cache.entries(kind=kind, keyword=query)
+        rows = [entry.as_dict() for entry in entries[: max(size, 1)]]
+        return {
+            "success": True,
+            "count": len(entries),
+            "returned": len(rows),
+            "kind": kind,
+            "keyword": query,
+            "kinds": list(CACHE_KINDS),
+            "kind_labels": dict(KIND_LABELS),
+            "cache": self._cache_stats(),
+            "data": rows,
+        }
+
+    def api_cache_delete(self, key: str = "") -> Dict[str, Any]:
+        """``DELETE /cache/{key}`` —— 删除单条（键形如 ``detail:60017`` / ``actor:371``）。"""
+        key = _clean(key)
+        if not key:
+            return {"success": False, "message": "缺少 key", "stats": self._cache_stats()}
+        cache = self._cache
+        if cache is None:
+            return {"success": False, "message": "缓存未就绪", "stats": {}}
+        if not cache.delete(key):
+            return {"success": False, "message": f"缓存「{key}」不存在", "stats": self._cache_stats()}
+        logger.info(f"{PLUGIN_NAME} 手动删除缓存「{key}」")
+        return {"success": True, "message": f"已删除「{key}」", "key": key, "stats": self._cache_stats()}
+
+    def api_cache_clear(self, kind: str = "") -> Dict[str, Any]:
+        """``DELETE /cache`` —— 清空缓存（可选只清某一类）。
+
+        只清本插件的缓存区（Redis 键前缀 ``region:shortdramabaike:``），**不碰**宿主
+        与其它插件的数据 —— 这也是没接宿主缓存管理页的代价与好处。
+        """
+        kind = _clean(kind)
+        if kind and kind not in CACHE_KINDS:
+            return {"success": False, "message": f"kind 只能是 {'、'.join(CACHE_KINDS)}", "removed": 0}
+        cache = self._cache
+        if cache is None:
+            return {"success": False, "message": "缓存未就绪", "removed": 0}
+        removed = cache.clear(kind)
+        scope = KIND_LABELS.get(kind, kind) if kind else "全部"
+        logger.warning(f"{PLUGIN_NAME} 手动清空缓存（{scope}）：删除 {removed} 条")
+        return {
+            "success": True,
+            "message": f"已清空{scope}缓存，删除 {removed} 条",
+            "removed": removed,
+            "scope": scope,
+            "stats": self._cache_stats(),
+        }
+
+    def _cache_stats(self) -> Dict[str, Any]:
+        """缓存统计 + 现状（``/status`` 与 ``/cache`` 共用）。
+
+        每次现读宿主设置（:meth:`PluginCache.refresh`）：在面板上改了系统的
+        「缓存有效期」或「不缓存站点」之后，不必重载插件就能看到效果。
+        """
+        if self._cache is None:
+            return {"count": 0, "kinds": {}, "kind_labels": dict(KIND_LABELS),
+                    "detail": 0, "actor": 0, "tmdb": 0}
+        self._cache.refresh()
+        stats = self._cache.stats()
+        kinds: Dict[str, int] = stats.get("kinds") or {}
+        return {
+            "count": stats.get("count", 0),
+            "kinds": kinds,
+            "kind_labels": dict(KIND_LABELS),
+            "detail": kinds.get("detail", 0),
+            "actor": kinds.get("actor", 0),
+            "tmdb": kinds.get("tmdb", 0),
+            **self._cache.describe(),
+        }
+
     def api_status(self) -> Dict[str, Any]:
         """``GET /status`` —— 运行状态（面板读它画实况条）。"""
         return {
@@ -1694,10 +1826,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "domain": self._domain,
             "version": PLUGIN_VERSION,
             "store": self._store_count(),
-            "cache": {
-                "detail": sum(1 for key in self._cache if key.startswith("detail:")),
-                "actor": sum(1 for key in self._cache if key.startswith("actor:")),
-            },
+            "cache": self._cache_stats(),
             "web_index": {
                 "available": self._web_index.available,
                 "enabled": self._web_index_search,
@@ -1740,7 +1869,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "domain": self._as_domain(merged.get("domain"), ORG_DEFAULT_DOMAIN),
             "search_in_global": self._as_bool(merged.get("search_in_global"), True),
             "timeout": self._as_range(merged.get("timeout"), DEFAULT_TIMEOUT, 5, 120),
-            "cache_ttl": self._as_range(merged.get("cache_ttl"), DEFAULT_CACHE_TTL, 0, 2592000),
+            "cache_ttl": self._as_range(merged.get("cache_ttl"), DEFAULT_CACHE_TTL, -1, 2592000),
             "web_index_search": self._as_bool(merged.get("web_index_search"), True),
             "web_index_backend": self._as_choice(
                 merged.get("web_index_backend"), DEFAULT_WEB_INDEX_BACKEND, WEB_INDEX_BACKENDS
@@ -1905,28 +2034,35 @@ class ShortDramaBaikeSource(_PluginBase):
 
     # ── 缓存 ─────────────────────────────────────────────────────
 
-    def _cache_get(self, key: str) -> Any:
-        if self._cache_ttl <= 0:
-            return None
-        with self._cache_lock:
-            entry = self._cache.get(key)
-        if not entry:
-            return None
-        if time.time() - entry[0] > self._cache_ttl:
-            with self._cache_lock:
-                self._cache.pop(key, None)
-            return None
-        return entry[1]
+    def _cache_summary(self) -> str:
+        """缓存实况一句话（启动日志与面板共用）：后端 + 有效期来源 + 是否被系统旁路。"""
+        if self._cache is None:
+            return "未就绪"
+        describe = self._cache.describe()
+        if describe.get("disabled"):
+            return "关（插件配置 cache_ttl<0）"
+        if describe.get("blocked"):
+            return f"关（站点命中系统「不缓存站点」配置：{describe['system'].get('no_cache_site_key')}）"
+        if not describe.get("enabled"):
+            return "关"
+        source = {
+            "plugin": "插件覆盖",
+            "system": "系统设置",
+            "system-auto": "系统自动",
+        }.get(str(describe.get("ttl_source")), str(describe.get("ttl_source")))
+        return f"{describe.get('backend')}｜{describe.get('ttl')}s（{source}）"
 
-    def _cache_set(self, key: str, value: Any) -> None:
-        if self._cache_ttl <= 0:
+    def _cache_get(self, key: str) -> Any:
+        """读一条解析缓存（后端 / 有效期都由 :mod:`cache` 决定）。"""
+        if self._cache is None:
+            return None
+        return self._cache.get(key)
+
+    def _cache_set(self, key: str, value: Any, *, label: str = "", ref: str = "") -> None:
+        """写一条解析缓存；``label`` / ``ref`` 是面板缓存管理界面的展示字段。"""
+        if self._cache is None:
             return
-        with self._cache_lock:
-            self._cache[key] = (time.time(), value)
-            if len(self._cache) > 512:
-                oldest = sorted(self._cache.items(), key=lambda pair: pair[1][0])
-                for stale_key, _ in oldest[:128]:
-                    self._cache.pop(stale_key, None)
+        self._cache.set(key, value, label=label, ref=ref)
 
     # ── 工具 ─────────────────────────────────────────────────────
 

@@ -11,6 +11,7 @@ export interface PluginApi {
   get: (url: string, config?: Record<string, unknown>) => Promise<unknown>
   put: (url: string, data?: unknown, config?: Record<string, unknown>) => Promise<unknown>
   post: (url: string, data?: unknown, config?: Record<string, unknown>) => Promise<unknown>
+  delete: (url: string, config?: Record<string, unknown>) => Promise<unknown>
 }
 
 /** 一个作品记录（`/recognize` 的 `record`） */
@@ -217,12 +218,93 @@ export interface UrlsClearPayload {
   stats?: UrlsPayload['stats']
 }
 
+/**
+ * 插件缓存现状（`/status` 与 `/cache` 的 `cache` 字段）。
+ *
+ * 后端缓存**跟着宿主走**（同一套 `app.sdk.cache`），但不进宿主的缓存管理页 ——
+ * 所以这里把「跟着哪些系统开关」一并下发，面板要能解释清有效期为什么是这个值。
+ */
+export interface CacheStatus {
+  /** 条目总数 */
+  count?: number
+  /** 按类型计数（detail / actor / tmdb） */
+  kinds?: Record<string, number>
+  kind_labels?: Record<string, string>
+  detail?: number
+  actor?: number
+  tmdb?: number
+  /** 缓存区名（宿主 Redis 上的键前缀 `region:<region>:key:`） */
+  region?: string
+  /** 是否生效（站点命中系统「不缓存站点」时为 false） */
+  enabled?: boolean
+  /** 实际有效期（秒） */
+  ttl?: number
+  /** 有效期来源：plugin（插件配置覆盖）/ system / system-auto / off（插件配置关闭） */
+  ttl_source?: string
+  /** 插件配置的覆盖值（0 = 未覆盖，负数 = 关闭） */
+  override_ttl?: number
+  /** 插件配置显式关掉了缓存（`cache_ttl < 0`） */
+  disabled?: boolean
+  /** 实际落点：redis / cachetools（宿主内存后端）/ local（宿主无缓存 SDK 时的降级） */
+  backend?: string
+  sdk?: boolean
+  domain?: string
+  blocked?: boolean
+  /** 宿主的缓存相关开关（原样展示） */
+  system?: {
+    backend?: string
+    meta_expire_hours?: number
+    auto_ttl?: number
+    image_cache?: boolean
+    image_cache_days?: number
+    no_cache_site_key?: string
+  }
+}
+
+/** 缓存里的一条记录（`/cache` 的 `data`） */
+export interface CacheEntry {
+  /** 完整键，如 `detail:60017` / `actor:371` / `tmdb|片名|2026` */
+  key?: string
+  /** detail / actor / tmdb */
+  kind?: string
+  kind_label?: string
+  /** 展示名（作品片名 / 演员名 / TMDB 检索的片名） */
+  label?: string
+  /** 站点 ID 或年份（第二展示列） */
+  ref?: string
+  /** 写入时间（秒级时间戳） */
+  cached_at?: number
+}
+
+/** `/cache` —— 缓存管理界面的数据 */
+export interface CachePayload {
+  success?: boolean
+  message?: string
+  count?: number
+  returned?: number
+  kind?: string
+  keyword?: string
+  kinds?: string[]
+  kind_labels?: Record<string, string>
+  cache?: CacheStatus
+  data?: CacheEntry[]
+}
+
+/** `DELETE /cache` 的返回值 */
+export interface CacheClearPayload {
+  success?: boolean
+  message?: string
+  removed?: number
+  scope?: string
+  stats?: CacheStatus
+}
+
 /** `/status` */
 export interface StatusPayload {
   enabled?: boolean
   domain?: string
   version?: string
-  cache?: { detail?: number; actor?: number }
+  cache?: CacheStatus
   /** URL 库容量（库里只存 URL，页面数据永远实时解析） */
   store?: { total?: number; work?: number; actor?: number; keywords?: number; last_seen_at?: number }
   web_index?: { available?: boolean; enabled?: boolean; backend?: string }
@@ -236,6 +318,14 @@ export interface PluginConfig {
   domain: string
   search_in_global: boolean
   timeout: number
+  /**
+   * 缓存有效期**覆盖值**（秒）。
+   *
+   * * `0`（默认）= **跟随宿主**：取系统设置「单条元数据识别缓存有效期」
+   *   （`META_CACHE_EXPIRE`，小时，0/未填时宿主按 24 小时、大内存模式 72 小时计）；
+   * * `> 0` = 显式覆盖；
+   * * `< 0` = **关闭插件缓存**（排障用；系统没有「关掉识别缓存」的开关，所以这一档在插件侧）。
+   */
   cache_ttl: number
   web_index_search: boolean
   web_index_backend: string

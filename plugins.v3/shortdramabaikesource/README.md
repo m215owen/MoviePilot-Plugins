@@ -28,6 +28,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | **作品** | `GET /lookup?keyword=` 拿到作品候选（带匹配分与来源）→ 点「识别」→ `GET /recognize?media_id=` | 作品卡片：海报 / 年份 / 集数 / 全集时长 / 标签 / 评分 / **热度 / 播放 / 收藏** / 简介 / 主演 / **同页推荐**；上方是候选列表 |
 | **演员** | 同一次 `/lookup` 返回的演员候选 → 点「看作品」→ `GET /actor?actor_id=` | 演员卡片（头像 / 职务 / 性别 / 国籍 / 简介 / 常合作演员）+ **全部作品墙**，每部作品一张卡 |
 | **URL 库** | 搜索框那行的「URL 库」按钮 → `GET /urls` | 库容量统计 + 最近入库记录（一个页面一条，或按关键词 / 类型查），每条能直接打开站点页面；右上角「清空库」带二次确认（可整库 / 按类型 / 按关键词清） |
+| **缓存管理** | 搜索框那行的「缓存」按钮 → `GET /cache` | 与系统缓存页同构：现状一行（后端 / 有效期 / 图片缓存）+ 统计 + 关键词与类型筛选 + 逐条删除 + 二次确认清空。**自成一套账，不进系统的缓存管理页**，见「缓存：用系统的那一套」 |
 
 - 每条候选前面有两个小标：**匹配分**与**来源**（`库` = URL 库里已有、本次零引擎请求；
   `引擎` = 本次刚从搜索引擎发现并写进了库）。
@@ -61,8 +62,8 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 分季），换回宿主详情页的演职员 / 推荐 / 分季区块 |
 | **分类扩展字段** | `get_media_source()` + `MediaInfo.classification_facts` | 声明 `extensions.duanju.*` 三个字段并给出事实，**让宿主能把它归到「短剧」分类 —— 分类不匹配就整理不了**，见下节 |
 | **刮削出口** | `metadata_nfo` / `metadata_img` | 刮削时自己出 NFO 文本与图片清单（简介 / 题材 / 演员含角色与头像 / 海报 / 背景图）；不实现的话内置生成器全被来源过滤掉，**永远 NFO 生成失败**，见下节 |
-| **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + URL 库查看器 + 可展开原始数据 |
-| 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / URL 库 / 缓存等 9 项 |
+| **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + URL 库查看器 + 缓存管理器 + 可展开原始数据 |
+| 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / URL 库 / 缓存覆盖等 9 项 |
 
 统一媒体身份（宿主只认「来源 + 该来源的编号」这一对，同 TMDB 的 `themoviedb` + `603`）：
 
@@ -567,8 +568,8 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
 详情页 5 个），也没有版权方 / 简介 / 剧照 / 首播 —— 这些**作品页都有**。所以
 `actor_works` / `actor_profile` / `/actor` **一贯把每一部作品都补抓一次详情页**，把详情记录
 整条灌进作品条目（`origin: "detail"`）：**作品页有的字段，演员页的作品条目一样有**，
-消费方（面板 / 其它插件 / 脚本）不必再写两套解析。详情走 `cache_ttl` 缓存（默认 7 天），
-同一个演员第二次打开基本不再出网。
+消费方（面板 / 其它插件 / 脚本）不必再写两套解析。详情进插件缓存（有效期跟随系统
+`META_CACHE_EXPIRE`，见「缓存：用系统的那一套」），同一个演员第二次打开基本不再出网。
 
 > 没有「补全开关」—— 不补就缺字段，摘要不是一种可接受的输出。只有批量扫全部演员、
 > 只想要片名清单时，才在调用上显式跳过：`self.run_module("actor_works", actor_id="371", enrich=False)`
@@ -690,7 +691,8 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
   （附错 ID 会让页面显示另一部剧的演员与推荐）；
 - 命中后返回 `tmdb_id` + `season_info`（TMDB `/tv/{id}` 的季列表，否则「分季分集」区块会只剩标题）；
   分集内容由宿主按 ID 自己去 TMDB 取；
-- **负结果也缓存**（24h），失败只记 debug，任何异常都不影响识别主流程；插件停止时清缓存。
+- **负结果也缓存**，失败只记 debug，任何异常都不影响识别主流程；缓存与作品详情 / 演员档案
+  共用同一套（独立 region，有效期跟随系统设置，见「缓存：用系统的那一套」）。
 
 > ⚠️ 主身份**不变**：`media_source` 仍是 `duanju`、`media_id` 仍是那串**裸数字**站点 ID，
 > `tmdb_id` 只是补上的**同一部作品**的 TMDB 身份（与宿主内置的 豆瓣↔TMDB 身份投影同性质）。
@@ -735,6 +737,9 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/actor?actor_id=371&enrich=0   # 跳过
 GET  /api/v1/plugin/ShortDramaBaikeSource/actor?name=魏依珂
 GET  /api/v1/plugin/ShortDramaBaikeSource/lookup?keyword=魏依珂
 GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
+GET  /api/v1/plugin/ShortDramaBaikeSource/cache?kind=actor&keyword=魏依珂   # 缓存管理
+DELETE /api/v1/plugin/ShortDramaBaikeSource/cache/detail%3A27672          # 删单条
+DELETE /api/v1/plugin/ShortDramaBaikeSource/cache                          # 清空
 ```
 
 > `/actor` 默认把**每条作品**都补成作品页那份记录（见上文「演员数据」）；`enrich=0` 是唯一
@@ -863,7 +868,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | WARNING | URL **入库失败** | 静默降级：本次结果照常返回，只是下次还得再问一次引擎，容易被误判成「引擎召回时好时坏」 |
 | WARNING | 详情页解析不出标题 / 页面撞 Cloudflare 风控 | 站点改版或风控收紧，默认级别下必须看得见 |
 | WARNING | 手动清库 | 破坏性操作，记下范围与条数 |
-| INFO | 启动 / 停止 / 配置保存 | 启动时给出域名、后端、URL 库容量、顺带入库开关、缓存时长 |
+| INFO | 启动 / 停止 / 配置保存 | 启动时给出域名、后端、URL 库容量、顺带入库开关、缓存摘要（`缓存=redis｜259200s（系统自动）`）；停止时给出缓存是清空了还是保留了多少条 |
 | INFO | **库命中**（零引擎请求） | 证实「库优先」真的生效了 |
 | INFO | **本次不问引擎**及真实原因 | 「开关关着」「环境缺依赖」「Ns 前刚查过」三者表现一样（都是没结果），必须分开 |
 | INFO | 引擎返回结果条数与分类 | 结果里混着图集页 / 榜单页 / 外域地址，「返回 10 条、能用 3 条」要看得见 |
@@ -872,6 +877,109 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | INFO | 候选标题**补抓简体页后替换** | 繁体那行按简体关键词打分恒为 0，换了才知道它其实命中了 |
 | INFO | 检索命中条数、面板 0 命中的原因 | 界面只给一句提示，原因留在日志里 |
 | DEBUG | 缓存命中、作品/演员解析摘要、入库整理、识别与检索的逐条结果 | 逐条追踪，默认不落盘（见上方警告） |
+
+## 缓存：用系统的那一套，但不进系统那一页
+
+**机制同源、账目分开。** 插件缓存走的是宿主的统一缓存 SDK
+（`from app.sdk.cache import TTLCache`，对照官方 FAQ `docs/faq/15-use-system-cache.md`），
+后端由宿主自己按 `CACHE_BACKEND_TYPE` 在 Redis 与进程内内存之间切换，**插件代码不需要改一行**。
+但插件缓存**不注册进宿主的缓存管理页**，自成一套账。
+
+| | 宿主缓存 | 插件缓存 |
+| --- | --- | --- |
+| 存储机制 | `app.sdk.cache` | **同一个** `app.sdk.cache` |
+| 后端选择 | `CACHE_BACKEND_TYPE` | **同一个**（自动跟随） |
+| region | 各自私有 | `shortdramabaike`（独立命名空间） |
+| 管理入口 | 系统 → 缓存管理 | 插件面板 →「缓存管理」 |
+| 互相影响 | 无 | 无 |
+
+缓存分三类，**一类一个键前缀**：
+
+| 类型 | 键 | 内容 |
+| --- | --- | --- |
+| 作品详情 | `detail:<站点ID>` | 详情页解析出的完整作品记录 |
+| 演员档案 | `actor:<演员ID>` | 演员档案 + 全部作品（每条作品已是详情页字段） |
+| TMDB 身份 | `tmdb\|<片名>\|<年份>` | 严格匹配到的真实 `tmdb_id`；**负结果也缓存**（命中不了这件事本身值得记） |
+
+落 Redis 时键形如 `region:shortdramabaike:key:detail%3A27672`
+（`%3A` 是 `:` 的 URL 转义，`region:` / `:key:` 前缀由宿主 SDK 拼接）。
+列举只 `SCAN` 本 region 的前缀，**不碰别的插件与宿主的键**。
+
+### 系统的开关，同样管着插件的缓存
+
+面板每次打开缓存管理都会现读一次系统设置（`app.runtime.settings.get_runtime_setting`），
+改系统设置**不必重载插件**：
+
+| 系统设置 | 对插件缓存的作用 |
+| --- | --- |
+| `CACHE_BACKEND_TYPE` | 决定落 Redis 还是进程内内存（插件只报告，不选择） |
+| `META_CACHE_EXPIRE` | 插件缓存的**有效期**（小时；`0` = 自动，按宿主口径 → 普通模式 24h / `BIG_MEMORY_MODE` 72h） |
+| `NO_CACHE_SITE_KEY` | **命中即整体旁路**：插件域名含该子串时，本插件的缓存层直接停用（与宿主 `chain/torrents.py` 的 `_is_no_cache_site` 同一判据，小写子串匹配） |
+| `GLOBAL_IMAGE_CACHE` / `GLOBAL_IMAGE_CACHE_DAYS` | 下发给前端：决定海报走不走宿主的图片代理缓存（拼不拼 `&cache=true`） |
+
+有效期按**三级优先**解析，优先级从高到低：
+
+```
+cache_ttl > 0  →  插件覆盖（秒，面板显示「插件覆盖」）
+cache_ttl = 0  →  跟随系统（面板显示「系统自动」/「系统」）
+cache_ttl < 0  →  关闭插件缓存（缓存不写不读，面板出 warning）
+```
+
+> 面板默认是 `0`（跟随系统）—— 也就是**开箱即受 `META_CACHE_EXPIRE` 控制**。
+> 插件的旧版本默认值是 `604800`（写死在库里），等于显式覆盖 7 天、
+> 让 `META_CACHE_EXPIRE` 管不着；升级后想恢复「跟随系统」，
+> 在配置页把「缓存覆盖」改成 `0` 即可（或 `PUT /config {"cache_ttl": 0}`）。
+
+### 为什么**不**并进系统的「识别缓存」列表
+
+宿主确实留了口子：`tmdb_cache_items` / `tmdb_cache_delete` / `tmdb_cache_clear`
+是**正式登记的模块契约**（`runtime/extensions/module/contracts.py`，`family="tmdb"`，
+分别是 `ORDERED_LIST_MERGE` / `FIRST_NON_EMPTY` / `FAN_OUT`），而
+`chain/tmdb.py` 的 `cache_items()` 就是 `self.run_module("tmdb_cache_items")`
+—— 插件只要在 `get_module()` 里挂上方法名，条目就会被合并进
+`GET /api/v1/tmdb/cache`（前端那个「识别缓存」页）。**口子是通的，但这条路本插件不走**：
+
+- 条目形状被 `TmdbRecognitionCacheItem` 钉死（`key` / `tmdb_id` / `title` / `year` /
+  `media_type` / `poster_path` / `backdrop_path`），**没有 `source` 字段**；
+  而该端点是 `response_model=TmdbRecognitionCacheData`，FastAPI 会按模型过滤字段
+  ⇒ 插件条目在页面上**和 TMDB 条目长得一模一样，用户分不出来**。
+- `tmdb_id` 非 0 才算「已识别」，插件条目（没有 TMDB ID）会被统计进**「未识别」**，
+  把宿主那页的已识别/未识别口径搅浑。
+
+所以插件的缓存**只由插件自己的面板管**：系统那页保持纯 TMDB 语义，插件这页自成一账，
+两边互不掺数据。
+
+> 同一条约束也适用于 `update_recognize_cache` / `async_update_recognize_cache`
+> （`family="media-recognition"`）：**可以**接，接进去等于把短剧的识别结果写进宿主的
+> 本地识别缓存，代价同样是宿主那页多出无法归因的条目。本插件选择不写。
+
+### 面板「缓存管理」卡片
+
+面板搜索栏右侧的「缓存」按钮展开，内容与系统缓存页同构：
+
+- 顶部一行现状：后端（`redis` / 内存）、有效期与来源（插件覆盖 / 系统 / 系统自动）、图片缓存开关；
+- 统计 chip：总数 + 三类分项；
+- 筛选：关键词（片名 / 演员名 / 键）+ 类型 `v-btn-toggle`（全部 / 作品详情 / 演员档案 / TMDB 身份）；
+- 每条一行：类型 chip + 名称 + ref + 时间 + ✕ 删除；
+- 「清空缓存」（走二次确认 `v-dialog`，可按类型清）。
+
+### 停止 / 卸载时的行为
+
+对照 FAQ 15 的「插件卸载时清理相关缓存，避免内存泄漏」：
+
+- **进程内后端**（宿主没配 Redis）：`stop_service()` 清空本 region，避免实例反复启停攒内存；
+- **落 Redis**：**不清**。Redis 是跨重启的持久存储，缓存正是为「重载插件不丢」而生的；
+  要清请用面板。停止日志会写明保留了多少条、以及去哪清。
+
+### 对照官方 FAQ 15（`docs/faq/15-use-system-cache.md`）
+
+| 文档要求 | 本插件 | 说明 |
+| --- | --- | --- |
+| 用 `app.sdk.cache` 里的缓存类型，别自己造 | ✅ | `TTLCache(region=…, maxsize=…, ttl=…)`；`app.core.cache` 那条老路径只作降级兜底 |
+| 后端由系统按 `CACHE_BACKEND_TYPE` 自动选，插件不改代码 | ✅ | 插件只读不选；Redis 与内存切换对插件透明 |
+| 为每个插件使用**独立 region** | ✅ | `region="shortdramabaike"`，Redis 键前缀 `region:shortdramabaike:key:` |
+| 插件卸载时清理相关缓存，避免内存泄漏 | ✅（进程内后端） | `stop_service()` 清本 region；落 Redis 时不清（跨重启持久，见上） |
+| 有效期跟系统走 | ✅ | `cache_ttl=0` 时直接用 `META_CACHE_EXPIRE` 折算后的秒数，连「0 = 自动 → 24h/72h」的口径都照抄 |
 
 ## HTTP 接口
 
@@ -884,14 +992,60 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | GET | `/lookup` | 一个 `keyword` 同时找作品与演员（面板唯一那个搜索框用它） |
 | GET | `/urls` | **URL 库出口**：无参回库容量统计 + 最近入库记录；带 `keyword` / `kind` / `limit` 查 |
 | POST | `/urls/clear` | **清空 URL 库**（面板「清空库」按钮）：`{"kind": "actor"}` 清该类全部、`{"keyword": "某剧"}` 清该词、空对象＝整库清空 |
-| GET | `/status` | 运行情况：域名 / 站外索引配置 / 缓存条数 / **URL 库统计**（面板顶部 chip 与配置页读它） |
+| GET | `/status` | 运行情况：域名 / 站外索引配置 / 缓存条数与后端 / **URL 库统计**（面板顶部 chip 与配置页读它） |
+| GET | `/cache` | **缓存管理出口**：现状（后端 / 有效期 / 系统开关）+ 条目清单。`kind` 筛选类型、`keyword` 筛选词、`limit` 限制条数 |
+| DELETE | `/cache/{key}` | **删除单条缓存**（`key` 需 URL 转义，如 `detail%3A27672`） |
+| DELETE | `/cache` | **清空缓存**：`?kind=detail` 只清该类，不带参数＝整 region 清空 |
 | GET | `/config` | 读当前配置 + 候选值（面板配置页回显） |
 | PUT | `/config` | 存配置（逐键合并 + 归一化后落盘，并重建运行状态） |
 | GET | `/probe` | 连通性自检：robots / 站外索引 / 详情页 / 演员页各自的状态码与解析条数 |
 
-> 接口一共 9 条。`/urls` 是 v2.0.0 新增的、`/urls/clear` 是 v2.1.0 新增的；
-> 旧的 `/search`、`/actor_search` 已并入 `/lookup`，`/explore` 随宿主探索页一起删除
-> —— 那都是 v1.8.0 的事。
+> 接口一共 12 条。`/urls` 是 v2.0.0 新增的、`/urls/clear` 是 v2.1.0 新增的、
+> `/cache` 三条是缓存管理新增的；旧的 `/search`、`/actor_search` 已并入 `/lookup`，
+> `/explore` 随宿主探索页一起删除 —— 那都是 v1.8.0 的事。
+
+`/cache` 的样子（无参 = 现状 + 全部条目）：
+
+```json
+{
+  "success": true, "count": 45, "returned": 45, "kind": "", "keyword": "",
+  "kinds": ["detail", "actor", "tmdb"],
+  "kind_labels": {"detail": "作品详情", "actor": "演员档案", "tmdb": "TMDB 身份"},
+  "cache": {
+    "count": 45, "kinds": {"detail": 22, "actor": 1, "tmdb": 22},
+    "region": "shortdramabaike", "backend": "redis", "sdk": true,
+    "enabled": true, "disabled": false, "blocked": false,
+    "ttl": 259200, "ttl_source": "system-auto", "override_ttl": 0,
+    "domain": "https://duanjubaike.org",
+    "system": {"backend": "redis", "meta_expire_hours": 0, "auto_ttl": 259200,
+               "image_cache": true, "image_cache_days": 7, "no_cache_site_key": ""}
+  },
+  "data": [
+    {"key": "detail:27672", "kind": "detail", "kind_label": "作品详情",
+     "label": "逆子别反了，你爹我真是千古一帝", "ref": "27672", "cached_at": 1792080945.01}
+  ]
+}
+```
+
+> `ttl_source` 三种取值对应上文的「插件覆盖 / 系统 / 系统自动」；`disabled` 是
+> `cache_ttl < 0`（插件层面关缓存），`blocked` 是 `NO_CACHE_SITE_KEY` 命中（系统层面旁路）；
+> `backend` 是实际在用哪个后端，`sdk` 表示宿主有没有 `app.sdk.cache`
+> （没有则降级为插件自带的进程内字典，此时 `backend="local"`）。
+> `data` 里**不含缓存内容**，只有面板要展示的元信息（键 / 类型 / 名称 / ref / 时间）。
+
+`DELETE /cache/{key}` 与 `DELETE /cache` 的样子：
+
+```json
+// DELETE /cache/detail%3A27672 →
+{"success": true, "message": "已删除「detail:27672」", "key": "detail:27672", "stats": {…}}
+
+// DELETE /cache?kind=tmdb →
+{"success": true, "message": "已清空TMDB 身份缓存，删除 1 条", "removed": 1, "scope": "TMDB 身份", "stats": {…}}
+```
+
+> `kind` 只能是 `detail` / `actor` / `tmdb`，给别的值直接报错、**不会退化成整 region 清空**；
+> 不带 `kind`（或空串）才是整 region 清空 —— 面板上走二次确认。
+
 
 `/urls` 的样子（无参 = 统计 + 最近 50 条）：
 
@@ -969,7 +1123,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | `search_in_global` | 开 | 参与宿主的全局检索（未限定来源时） |
 | `domain` | `duanjubaike.org` | 站点域名 |
 | `timeout` | 15 | 单次请求超时（秒） |
-| `cache_ttl` | 604800 | 详情页缓存（秒，默认 7 天） |
+| `cache_ttl` | 0 | **缓存覆盖**（秒）：`0` = 跟随系统 `META_CACHE_EXPIRE`；`>0` 插件覆盖；`<0` 关闭插件缓存。后端始终跟随系统 |
 | `web_index_search` | 开 | **站外索引检索**：库里没有时才 `site:` 限定检索片名 / 演员名，从收录的 URL 取 ID |
 | `web_index_backend` | `auto` | 检索后端（`auto` / `duckduckgo` / `yandex` / `google` / `brave` / `mojeek`） |
 | `follow_links` | 开 | **URL 库自己长大**：解析详情页 / 演员页时顺手把页面里的演员 URL、作品 URL 也入库 |
@@ -980,9 +1134,13 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 v2.0.0 新增 `follow_links`；v1.8.0 删掉了榜单范围、榜单刷新间隔、探索页详情回填三项）。
 保存是**逐键合并**的：payload 里缺的键沿用当前生效值，只翻一个开关不会把其它配置冲回默认。
 
+> `cache_ttl` 的语义在缓存层重构时改过：旧版是「详情缓存秒数，默认 604800」，
+> 现在是**覆盖值**（`0` = 跟随系统，见「缓存：用系统的那一套」）。库里若还留着旧默认值
+> `604800`，等于显式覆盖 7 天，`META_CACHE_EXPIRE` 管不着 —— 想恢复跟随把该值改成 `0`。
+
 > **没有后台任务。** `get_service()` 恒返回空列表 —— 没有榜单要刷、没有索引要建，
 > URL 库只在被查询时被动增长，缓存只在被查询时按需重建。配置页底部会显示一行运行实况
-> （启用状态 / 站外索引开关与后端 / 缓存条数 / **URL 库条数（作品 x / 演员 y）**），
+> （启用状态 / 站外索引开关与后端 / 缓存条数与后端 / **URL 库条数（作品 x / 演员 y）**），
 > 直接读 `GET /status`。
 
 ## 前端工程（维护用）

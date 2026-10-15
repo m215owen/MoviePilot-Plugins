@@ -12,7 +12,7 @@
         size="small"
         variant="tonal"
         color="secondary"
-        title="内存里已缓存的作品详情与演员档案数量（插件重启后重新累积）"
+        title="插件缓存的条目数（后端与有效期跟随系统设置；落 Redis 时重载插件也不丢）"
       >
         缓存 {{ cacheChip }}
       </v-chip>
@@ -105,6 +105,15 @@
           @click="toggleLibrary"
         >
           URL 库
+        </v-btn>
+        <v-btn
+          size="small"
+          variant="text"
+          prepend-icon="mdi-cached"
+          title="看看插件的缓存里存了什么（后端与有效期跟随系统设置）"
+          @click="toggleCache"
+        >
+          缓存
         </v-btn>
         <v-spacer />
         <span v-if="hint" class="text-caption sdbs-dim">{{ hint }}</span>
@@ -226,6 +235,147 @@
               color="error"
               :loading="libraryClearing"
               @click="clearLibrary()"
+            >
+              确认清空
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+    </v-card>
+
+    <!-- ── 缓存管理（后端与有效期跟随宿主，但不进宿主的缓存管理页） ── -->
+    <v-card v-if="cacheOpen" variant="outlined" class="pa-3 mt-3 sdbs-panel">
+      <div class="d-flex align-center mb-2 flex-wrap" style="gap: 8px">
+        <v-icon icon="mdi-cached" size="18" class="mr-1" />
+        <span class="text-subtitle-2">缓存管理</span>
+        <v-chip v-if="cacheSummary" size="x-small" variant="tonal" color="secondary">
+          {{ cacheSummary }}
+        </v-chip>
+        <v-spacer />
+        <v-btn
+          size="x-small"
+          variant="text"
+          :loading="cacheLoading"
+          prepend-icon="mdi-refresh"
+          @click="loadCache()"
+        >
+          刷新
+        </v-btn>
+        <v-btn
+          size="x-small"
+          variant="text"
+          color="error"
+          prepend-icon="mdi-delete-sweep-outline"
+          :disabled="cacheLoading || cacheClearing || !cacheEntries.length"
+          @click="cacheClearOpen = true"
+        >
+          清空缓存
+        </v-btn>
+      </div>
+      <div class="text-caption sdbs-dim mb-2">
+        解析结果的缓存：<b>作品详情</b>、<b>演员档案</b>与 <b>TMDB 身份</b>各一条。
+        缓存的后端与有效期<b>跟着宿主走</b>（系统设置 → 缓存）——
+        启用 Redis 时与宿主共用同一个实例（本插件独占
+        <code>{{ cacheWhere.region }}</code> 区），否则落在进程内内存。
+      </div>
+      <v-alert
+        v-if="cacheWhere.blocked"
+        type="warning"
+        variant="tonal"
+        density="compact"
+        class="mb-2"
+      >
+        站点命中系统「不缓存站点」配置（<code>{{ cacheWhere.system?.no_cache_site_key }}</code>）
+        —— 本插件已按系统口径<b>停用缓存</b>，每次解析都会重新抓页面。
+      </v-alert>
+      <v-alert v-else-if="cacheWhere.disabled" type="warning" variant="tonal" density="compact" class="mb-2">
+        插件配置里把缓存有效期设成了 <b>{{ cacheWhere.override_ttl }}</b>（负数即<b>关闭插件缓存</b>）
+        —— 每次解析都会重新抓页面。想恢复跟随系统，把「设置 → 站点与请求 → 缓存覆盖」改回 0。
+      </v-alert>
+      <div v-else class="text-caption sdbs-dim mb-2">
+        当前：后端 <b>{{ cacheWhere.backend }}</b>｜有效期 <b>{{ cacheTtlText }}</b>
+        （{{ cacheTtlSource }}）｜图片缓存
+        <b>{{ cacheWhere.system?.image_cache ? '开' : '关' }}</b>
+        （系统「全局图片缓存」{{ cacheWhere.system?.image_cache_days ?? 7 }} 天）
+      </div>
+      <v-alert v-if="cacheNotice" type="success" variant="tonal" density="compact" class="mb-2">
+        {{ cacheNotice }}
+      </v-alert>
+      <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+        <v-text-field
+          v-model="cacheKeyword"
+          density="compact"
+          variant="outlined"
+          hide-details
+          clearable
+          prepend-inner-icon="mdi-magnify"
+          placeholder="按片名 / 演员名 / 站点 ID 过滤"
+          class="sdbs-lib-search"
+          @keyup.enter="loadCache()"
+        />
+        <v-btn size="small" variant="tonal" color="primary" :loading="cacheLoading" @click="loadCache()">
+          查询
+        </v-btn>
+        <v-btn-toggle
+          v-model="cacheKind"
+          density="compact"
+          variant="outlined"
+          divided
+          mandatory
+          @update:model-value="loadCache()"
+        >
+          <v-btn size="small" value="all">全部</v-btn>
+          <v-btn size="small" value="detail">作品详情</v-btn>
+          <v-btn size="small" value="actor">演员档案</v-btn>
+          <v-btn size="small" value="tmdb">TMDB 身份</v-btn>
+        </v-btn-toggle>
+      </div>
+      <v-alert v-if="!cacheEntries.length" type="info" variant="tonal" density="compact">
+        {{ cacheEmptyText }}
+      </v-alert>
+      <div v-for="row in cacheEntries" :key="row.key" class="d-flex align-center py-1">
+        <v-chip
+          size="x-small"
+          variant="tonal"
+          :color="cacheKindColor(row.kind)"
+          class="mr-2"
+        >
+          {{ row.kind_label || row.kind }}
+        </v-chip>
+        <span class="text-body-2 flex-grow-1 sdbs-lib-text" :title="row.key">
+          {{ row.label || row.key }}
+        </span>
+        <span v-if="row.ref" class="text-caption sdbs-dim mr-2">{{ row.ref }}</span>
+        <span class="text-caption sdbs-dim mr-2">{{ cacheTime(row.cached_at) }}</span>
+        <v-btn
+          size="x-small"
+          variant="text"
+          color="error"
+          :loading="cacheDeleting === row.key"
+          @click="deleteCacheRow(row.key || '')"
+        >
+          删除
+        </v-btn>
+      </div>
+
+      <v-dialog v-model="cacheClearOpen" max-width="440">
+        <v-card>
+          <v-card-title class="text-subtitle-2 pt-3">清空缓存</v-card-title>
+          <v-card-text class="text-body-2">
+            将要删除：<b>{{ cacheClearScope }}</b>。
+            <br />
+            缓存只是「省一次抓页面」，<b>删掉不会丢任何数据</b> —— 下次识别 / 搜索会重新解析一遍
+            （站点有风控，短时间大量重建可能触发限流）。只清本插件自己的缓存区，不动宿主与其它插件。
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer />
+            <v-btn size="small" variant="text" @click="cacheClearOpen = false">取消</v-btn>
+            <v-btn
+              size="small"
+              variant="tonal"
+              color="error"
+              :loading="cacheClearing"
+              @click="clearCacheAll()"
             >
               确认清空
             </v-btn>
@@ -608,8 +758,11 @@
 import { computed, ref, watch } from 'vue'
 import Config from './Config.vue'
 import {
+  clearCache,
   clearUrls,
+  deleteCacheEntry,
   fetchActor,
+  fetchCache,
   fetchConfig,
   fetchStatus,
   fetchUrls,
@@ -622,6 +775,8 @@ import {
 import type {
   ActorCandidate,
   ActorProfile,
+  CacheEntry,
+  CacheStatus,
   MediaRecord,
   PluginApi,
   PluginConfig,
@@ -702,6 +857,21 @@ const libraryClearOpen = ref(false)
 const libraryClearing = ref(false)
 const libraryEmptyText = ref('库里还没有记录 —— 先在上面的搜索框搜一次片名或演员名。')
 
+// ── 缓存管理（后端与有效期跟随宿主；不进宿主的缓存管理页） ──
+const cacheOpen = ref(false)
+const cacheLoading = ref(false)
+const cacheKeyword = ref('')
+const cacheKind = ref<'all' | string>('all')
+const cacheEntries = ref<CacheEntry[]>([])
+/** 后端给的缓存现状（后端类型 / 有效期来源 / 系统开关快照） */
+const cacheStatus = ref<CacheStatus | null>(null)
+const cacheNotice = ref('')
+const cacheClearOpen = ref(false)
+const cacheClearing = ref(false)
+/** 正在删的那条（按钮 loading 态） */
+const cacheDeleting = ref('')
+const cacheEmptyText = ref('缓存还是空的 —— 搜一次片名或演员名就会写入。')
+
 const pretty = (value: unknown) => JSON.stringify(value ?? null, null, 2)
 
 /** 把大数字还原成人看得懂的量级（后端给的已经是绝对值：354万 → 3540000） */
@@ -712,10 +882,15 @@ function formatCount(value?: number): string {
   return String(value)
 }
 
+/**
+ * 标题栏的缓存 chip。
+ *
+ * 只报总条数：类型的细分在「缓存管理」里看 —— 这里要的是「有没有在攒东西」。
+ */
 const cacheChip = computed(() => {
   const cache = status.value?.cache
   if (!cache) return ''
-  return `详情 ${cache.detail ?? 0} ｜ 演员 ${cache.actor ?? 0}`
+  return `${cache.count ?? cache.detail ?? 0} 条`
 })
 
 const storeChip = computed(() => {
@@ -1088,6 +1263,143 @@ async function clearLibrary(): Promise<void> {
 watch(libraryKind, () => {
   if (libraryOpen.value) void loadLibrary()
 })
+
+// ── 缓存管理操作 ──
+
+/** 缓存现状：优先用 `/cache` 带回来的（最新），退回 `/status` 的 */
+const cacheWhere = computed<CacheStatus>(() => cacheStatus.value || status.value?.cache || {})
+
+/** 顶部统计：共 N 条（作品 x / 演员 y / TMDB z） */
+const cacheSummary = computed(() => {
+  const where = cacheWhere.value
+  const kinds = where.kinds || {}
+  const total = where.count ?? 0
+  if (!total) return ''
+  const parts = [`作品 ${kinds.detail ?? 0}`, `演员 ${kinds.actor ?? 0}`]
+  if (kinds.tmdb) parts.push(`TMDB ${kinds.tmdb}`)
+  return `共 ${total} 条（${parts.join(' / ')}）`
+})
+
+/** 有效期的人话版本（秒 → 小时） */
+const cacheTtlText = computed(() => {
+  const ttl = Number(cacheWhere.value.ttl || 0)
+  if (!ttl) return '未生效'
+  if (ttl < 3600) return `${ttl} 秒`
+  const hours = ttl / 3600
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} 小时`
+})
+
+/** 有效期是从哪来的 —— 面板必须说清楚「这个值是系统哪个开关给的」 */
+const cacheTtlSource = computed(() => {
+  const where = cacheWhere.value
+  if (where.disabled) return `插件配置关闭（cache_ttl = ${where.override_ttl ?? -1}）`
+  const meta = Number(where.system?.meta_expire_hours || 0)
+  if (where.ttl_source === 'plugin') return `插件配置覆盖（${where.override_ttl ?? 0} 秒）`
+  if (where.ttl_source === 'system') return `系统设置「缓存有效期」= ${meta} 小时`
+  return '系统自动（未设有效期：普通 24 小时 / 大内存 72 小时）'
+})
+
+/** 清空范围：跟着当前的类型筛选走 */
+const cacheClearScope = computed(() => {
+  if (!cacheWhere.value.blocked && cacheKind.value !== 'all') {
+    const label = cacheWhere.value.kind_labels?.[cacheKind.value] || cacheKind.value
+    return `全部「${label}」缓存`
+  }
+  return `本插件的全部缓存（${cacheWhere.value.count ?? 0} 条）`
+})
+
+/** 类型 → 颜色（与 URL 库那套 chip 的配色习惯一致） */
+function cacheKindColor(kind?: string): string {
+  if (kind === 'actor') return 'purple'
+  if (kind === 'tmdb') return 'teal'
+  return 'primary'
+}
+
+/** 写入时间（后端给的是秒级时间戳） */
+function cacheTime(ts?: number): string {
+  if (!ts) return ''
+  const date = new Date(ts * 1000)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function toggleCache(): void {
+  cacheOpen.value = !cacheOpen.value
+  if (cacheOpen.value) void loadCache()
+}
+
+/**
+ * 读缓存清单。
+ *
+ * 过滤走后端参数（类型 + 关键词），前端不自己筛 —— 与 URL 库那边同一个理由：
+ * 免得两边的键 / 归一化规则不一致。
+ */
+async function loadCache(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  cacheLoading.value = true
+  cacheNotice.value = ''
+  try {
+    const query = cacheKeyword.value.trim()
+    const report = await fetchCache(api, {
+      keyword: query,
+      kind: cacheKind.value === 'all' ? '' : cacheKind.value,
+    })
+    if (!report?.success) {
+      cacheEntries.value = []
+      cacheEmptyText.value = report?.message || '缓存读不出来（宿主缓存后端未就绪？）'
+      return
+    }
+    cacheEntries.value = report.data || []
+    cacheStatus.value = report.cache || null
+    cacheEmptyText.value = query
+      ? `缓存里没有「${query}」——换个完整片名 / 演员名，或站点 ID 试试。`
+      : '缓存还是空的 —— 搜一次片名或演员名就会写入。'
+  } finally {
+    cacheLoading.value = false
+  }
+}
+
+/** 删一条缓存（键如 `detail:60017`） */
+async function deleteCacheRow(key: string): Promise<void> {
+  if (!key) return
+  const api = resolveApi(props)
+  if (!api) return
+  cacheDeleting.value = key
+  try {
+    const report = await deleteCacheEntry(api, key)
+    if (!report?.success) {
+      cacheNotice.value = report?.message || '删除失败（后端没有响应）'
+      return
+    }
+    await loadCache()
+    cacheNotice.value = report.message || '已删除'
+    void load()
+  } finally {
+    cacheDeleting.value = ''
+  }
+}
+
+/** 清空缓存（可选只清当前类型） */
+async function clearCacheAll(): Promise<void> {
+  const api = resolveApi(props)
+  if (!api) return
+  cacheClearing.value = true
+  try {
+    const report = await clearCache(api, cacheKind.value === 'all' ? '' : cacheKind.value)
+    cacheClearOpen.value = false
+    if (!report?.success) {
+      cacheEmptyText.value = report?.message || '清空失败（后端没有响应）'
+      return
+    }
+    await loadCache()
+    cacheNotice.value = report.message || '已清空'
+    void load()
+  } finally {
+    cacheClearing.value = false
+  }
+}
 
 /** 先取配置再挂载弹窗：Config 只在 onMounted 读一次 initialConfig，先挂载会拿到空快照 */
 async function openSettings(): Promise<void> {

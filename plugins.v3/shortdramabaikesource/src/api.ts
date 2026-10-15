@@ -12,6 +12,8 @@
  */
 import type {
   ActorProfile,
+  CacheClearPayload,
+  CachePayload,
   ConfigOptions,
   LookupPayload,
   MediaRecord,
@@ -78,20 +80,36 @@ function apiPrefix(): string {
 }
 
 /**
+ * 图片是否使用宿主的磁盘缓存 —— 跟随系统的「全局图片缓存」开关。
+ *
+ * 面板拉 `/status` 时把该开关写进来：宿主关掉全局图片缓存时，插件请求图片也不再
+ * 带 `cache=true`（宿主 `proxy_img` 的 `cache` 参数控制的是**读**，写由宿主自己决定）。
+ * 拿不到状态前先按「开」处理，与宿主前端 `getDisplayImageUrl` 的默认一致。
+ */
+let imageCacheEnabled = true
+
+/** 供 `/status` 回填系统图片缓存开关（内部使用） */
+export function setImageCacheEnabled(value: boolean): void {
+  imageCacheEnabled = value
+}
+
+/**
  * 把图片地址转成宿主图片代理地址。
  *
  * 站点 CDN（`cdn.duanjubaike.org`）本身允许直连，但走宿主代理能顺带复用
  * 「安全图片域名白名单」（本插件在 `init_plugin` 里已经把该 CDN 登记进去），
  * 也避免浏览器的混合内容拦截。
  *
- * 契约与宿主前端 `getDisplayImageUrl()` 一致：`system/img/0?imgurl=<urlencoded>&cache=true`。
+ * 契约与宿主前端 `getDisplayImageUrl()` 一致：`system/img/0?imgurl=<urlencoded>&cache=true`，
+ * 其中 `cache` 只在系统开启全局图片缓存时带上。
  */
 export function proxyImage(url?: string | null): string {
   const raw = String(url || '').trim()
   if (!raw) return ''
   if (!/^https?:\/\//i.test(raw)) return raw
   if (raw.includes('/system/img/')) return raw
-  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`
+  const cache = imageCacheEnabled ? '&cache=true' : ''
+  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}${cache}`
 }
 
 /** 打开站点的作品详情页（新标签） */
@@ -125,9 +143,12 @@ async function getJson<T>(api: PluginApi, path: string, params?: Record<string, 
   }
 }
 
-/** 拉运行状态（域名 / 缓存条数 / 站外索引可用性） */
-export function fetchStatus(api: PluginApi): Promise<StatusPayload | null> {
-  return getJson<StatusPayload>(api, '/status')
+/** 拉运行状态（域名 / 缓存条数 / 站外索引可用性），顺带同步系统的图片缓存开关 */
+export async function fetchStatus(api: PluginApi): Promise<StatusPayload | null> {
+  const report = await getJson<StatusPayload>(api, '/status')
+  const imageCache = report?.cache?.system?.image_cache
+  if (typeof imageCache === 'boolean') setImageCacheEnabled(imageCache)
+  return report
 }
 
 /**
@@ -187,6 +208,47 @@ export async function clearUrls(
     return unwrap<UrlsClearPayload>(response)
   } catch (error) {
     console.warn(`[${PLUGIN_ID}] 清空 URL 库失败`, error)
+    return null
+  }
+}
+
+/**
+ * 查插件缓存（面板「缓存管理」）。
+ *
+ * 缓存后端与有效期都跟着宿主走（`app.sdk.cache`：Redis 或进程内内存），但**不接入**
+ * 宿主的缓存管理页 —— 所以插件面板自己给一个同构的界面：统计 + 类型筛选 + 删除 + 清空。
+ */
+export function fetchCache(
+  api: PluginApi,
+  options: { kind?: string; keyword?: string; limit?: number } = {},
+) {
+  return getJson<CachePayload>(api, '/cache', {
+    kind: options.kind || undefined,
+    keyword: options.keyword || undefined,
+    limit: options.limit ?? 200,
+  })
+}
+
+/** 删一条缓存（键如 `detail:60017`） */
+export async function deleteCacheEntry(api: PluginApi, key: string): Promise<CacheClearPayload | null> {
+  try {
+    const response = await api.delete(`${API_BASE}/cache/${encodeURIComponent(key)}`)
+    return unwrap<CacheClearPayload>(response)
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 删除缓存失败`, error)
+    return null
+  }
+}
+
+/** 清空缓存；给了 `kind` 就只清这一类 */
+export async function clearCache(api: PluginApi, kind = ''): Promise<CacheClearPayload | null> {
+  try {
+    const response = await api.delete(`${API_BASE}/cache`, {
+      params: kind ? { kind } : undefined,
+    })
+    return unwrap<CacheClearPayload>(response)
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 清空缓存失败`, error)
     return null
   }
 }

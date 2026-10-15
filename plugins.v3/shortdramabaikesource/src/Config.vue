@@ -65,7 +65,7 @@
       <v-col cols="12" sm="6" md="3">
         <v-text-field
           v-model.number="local.cache_ttl"
-          label="详情缓存"
+          label="缓存覆盖"
           suffix="秒"
           type="number"
           density="compact"
@@ -75,7 +75,12 @@
       </v-col>
     </v-row>
     <div class="text-caption sdbs-dim mt-1">
-      详情页内容基本不变，缓存默认 7 天。插件<b>没有后台任务</b>：缓存只在被查询时按需重建。
+      <b>0（默认）= 跟随宿主</b>：有效期取系统设置的「单条元数据识别缓存有效期」
+      （设置 → 缓存 → <code>META_CACHE_EXPIRE</code>，单位小时，未填时宿主按 24 小时、
+      大内存模式 72 小时计）；正数 = 显式覆盖；<b>负数 = 关闭插件缓存</b>（排障用）。
+      缓存的后端也跟着宿主走（系统启用 Redis 时与宿主共用同一实例），
+      但<b>不进宿主的缓存管理页</b> —— 要清缓存请用面板上的「缓存管理」。
+      插件<b>没有后台任务</b>：缓存只在被查询时按需重建。
     </div>
 
     <v-divider class="my-3" />
@@ -182,7 +187,8 @@ const DEFAULTS: PluginConfig = {
   domain: 'https://duanjubaike.org',
   search_in_global: true,
   timeout: 15,
-  cache_ttl: 604800,
+  // 0 = 跟随宿主（系统设置里的「单条元数据识别缓存有效期」）
+  cache_ttl: 0,
   web_index_search: true,
   web_index_backend: 'auto',
   proxy: false,
@@ -243,11 +249,13 @@ async function loadStatus(): Promise<void> {
         : '站外索引 关'
       : '站外索引 不可用（依赖缺失）'
     const store = report.store || {}
+    const cache = report.cache || {}
+    const ttlText = cache.ttl ? `有效期 ${cache.ttl}s` : '有效期 —'
     statusText.value = [
       `运行状态：${report.enabled ? '已启用' : '未启用'}`,
       indexText,
       `URL 库 ${store.total ?? 0} 条（作品 ${store.work ?? 0} / 演员 ${store.actor ?? 0}）`,
-      `缓存 详情 ${report.cache?.detail ?? 0} 条 / 演员 ${report.cache?.actor ?? 0} 条`,
+      `缓存 ${cache.count ?? 0} 条（后端 ${cache.backend ?? '—'}，${ttlText}）`,
     ].join('　｜　')
   } catch (error) {
     statusText.value = ''
