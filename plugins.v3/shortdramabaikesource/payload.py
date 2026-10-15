@@ -50,8 +50,13 @@ def media_source_value() -> Any:
         return MEDIA_SOURCE_KEY
 
 
-def build_media_info(item: Dict[str, Any]) -> Any:
+def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Any:
     """把解析结果映射成宿主 ``MediaInfo``。
+
+    :param item: 解析结果（``parse_org_detail`` / 卡片记录）
+    :param extra: 额外字段（目前只有 :mod:`tmdb` 补的 ``tmdb_id`` / ``season_info`` /
+        ``number_of_seasons``）。**必须是真的、匹配过的 TMDB 身份** —— 宿主详情页的
+        演职员 / 推荐 / 分季区块会拿这个 ID 去 TMDB 取数，附错等于把页面连到别的剧。
 
     宿主对插件返回值的唯一硬要求是「能当 ``MediaInfo`` 用」，因此这里先按
     ``app.sdk.media.MediaInfo``（与 TMDB / 豆瓣模块同一个领域模型）构造；
@@ -64,6 +69,7 @@ def build_media_info(item: Dict[str, Any]) -> Any:
     title = _clean(item.get("title"))
     if not media_id or not title:
         return None
+    extra = extra or {}
 
     rating = item.get("rating")
     try:
@@ -102,6 +108,11 @@ def build_media_info(item: Dict[str, Any]) -> Any:
         "status": _clean(item.get("status")) or None,
         "homepage": _clean(item.get("url")) or None,
     }
+    # TMDB 真实身份（:mod:`tmdb` 严格匹配过才给）：宿主详情页的评分面板 / 演职员 / 推荐 /
+    # 分季全都挂在这个 ID 上。取不到就没有这个键，行为与从前完全一致。
+    tmdb_id = extra.get("tmdb_id")
+    if isinstance(tmdb_id, int) and tmdb_id > 0:
+        fields["tmdb_id"] = tmdb_id
 
     mediainfo = None
     for model in (_HostMediaInfo, _schema_media_info()):
@@ -128,6 +139,14 @@ def build_media_info(item: Dict[str, Any]) -> Any:
         mediainfo.episode_run_time = [episode_minutes] if episode_minutes else []
     except Exception as err:  # pragma: no cover - 只读模型兜底
         logger.debug(f"{PLUGIN_NAME} 写入单集时长失败：{err}")
+    # 分季信息同样构造后赋值（详情页的「分季分集」区块按 season_info 渲染，缺了会只剩标题）
+    for name in ("season_info", "number_of_seasons"):
+        if extra.get(name) is None:
+            continue
+        try:
+            setattr(mediainfo, name, extra[name])
+        except Exception as err:  # pragma: no cover - 只读模型兜底
+            logger.debug(f"{PLUGIN_NAME} 写入 {name} 失败：{err}")
     return mediainfo
 
 

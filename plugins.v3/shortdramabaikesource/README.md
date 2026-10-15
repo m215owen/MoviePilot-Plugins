@@ -57,6 +57,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | 补图 | `obtain_images` | 缺海报时按身份补抓，并把海报兜底填到背景图 |
 | **演员档案** | `search_actors` / `actor_works` | 演员名 → 候选演员；演员 → **全部作品**（实测 21 部一次全渲染、不分页） |
 | **URL 库** | `get_database_models()` | 插件自有数据库里存「关键词 → 页面 URL」，取数**库优先** |
+| **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 分季），换回宿主详情页的演职员 / 推荐 / 分季区块 |
 | **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + URL 库查看器 + 可展开原始数据 |
 | 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / URL 库 / 缓存等 9 项 |
 
@@ -324,6 +325,28 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
   网格卡片 `MediaCard` 则无条件渲染 `vote_average`，评分在探索页 / 搜索结果上同样可见。
 - 结论：本插件在 `/media` 详情页能填的槽位就是 **`runtime`（单集）/ `genres` / `overview`
   + 海报背景标题年份**，这些现在都是满的。
+
+### TMDB 真实身份补充（`tmdb.py`）：把「有的来源」还给宿主
+
+上面那张表里**拿不到的那几块**（评分面板 / 演职员 / 推荐 / 相似 / 分季分集）全都挂在
+`tmdb_id` 上，而且**它们的内容不是读 `MediaInfo`** —— 是宿主拿着 `tmdb_id` 自己去 TMDB 取
+（`/api/v1/tmdb/credits/{id}/{type}`、`tmdb/recommend/{id}`…）。所以只要给出一个**真实、正确**
+的 TMDB ID，那几块立刻就全亮了。
+
+短剧大多不在 TMDB 上（从 URL 库抽 14 部实查，只命中 1 部：`相亲对象是迟来的心动` →
+`tmdb_id=332194`），所以这一层是**尽力而为 + 严格匹配**：
+
+- 用**片名 + 首播年**查 TMDB 的 `search/tv`（域名 / key 直接取宿主的
+  `TMDB_API_DOMAIN` / `TMDB_API_KEY`，插件不另存密钥，走同一个同步 GET）；
+- 认的条件：归一化片名与 TMDB 的 `name` / `original_name` **完全相等**，且年份一致
+  （容差 1 年）；我们年份未知时**只有唯一同名候选**才认 —— 宁可不附，也不附错
+  （附错 ID 会让页面显示另一部剧的演员与推荐）；
+- 命中后返回 `tmdb_id` + `season_info`（TMDB `/tv/{id}` 的季列表，否则「分季分集」区块会只剩标题）；
+  分集内容由宿主按 ID 自己去 TMDB 取；
+- **负结果也缓存**（24h），失败只记 debug，任何异常都不影响识别主流程；插件停止时清缓存。
+
+> ⚠️ 主身份**不变**：`media_source` 仍是 `duanjubaike`、`media_id` 仍是 `org:<id>`，
+> `tmdb_id` 只是补上的**同一部作品**的 TMDB 身份（与宿主内置的 豆瓣↔TMDB 身份投影同性质）。
 
 ## 供其它插件调用
 

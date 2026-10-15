@@ -107,6 +107,7 @@ from .payload import (
     media_source_value,
 )
 from .store import SiteUrl, UrlStore
+from .tmdb import TmdbIdentity
 
 try:  # 宿主统一 HTTP 入口（自动继承系统代理等设置）
     from app.sdk.network import RequestUtils as _RequestUtils
@@ -174,6 +175,8 @@ class ShortDramaBaikeSource(_PluginBase):
     _cache_lock = threading.RLock()
     # 关键词 → 上次问引擎的时间戳（避免库里确实没有时每次搜索都出网）
     _searched_at: Dict[str, float] = {}
+    # TMDB 身份补充器（init_plugin 里按实例重建；为 None 时该功能整体跳过）
+    _tmdb: Optional["TmdbIdentity"] = None
 
     def __init__(self) -> None:
         super().__init__()
@@ -204,6 +207,8 @@ class ShortDramaBaikeSource(_PluginBase):
         self._cache = {}
         self._searched_at = {}
         self._web_index.reset_throttle()
+        # TMDB 身份补充器：复用本插件的同步 GET（代理 / 超时 / UA 与站点请求一致）
+        self._tmdb = TmdbIdentity(self._get)
 
         self._register_image_domains()
         # 历史遗留的重复行（同一个页面存成多条）在启动时合并掉：面板上一行＝一站剧
@@ -228,8 +233,10 @@ class ShortDramaBaikeSource(_PluginBase):
         with self._cache_lock:
             kept = len(self._cache)
             self._cache.clear()
+        identities = self._tmdb.clear() if self._tmdb is not None else 0
         logger.info(
-            f"{PLUGIN_NAME} 已停止：清空 {kept} 条内存缓存（URL 库是持久数据，保留）"
+            f"{PLUGIN_NAME} 已停止：清空 {kept} 条内存缓存、{identities} 条 TMDB 身份缓存"
+            f"（URL 库是持久数据，保留）"
         )
 
     def get_render_mode(self) -> Tuple[str, Optional[str]]:
@@ -873,6 +880,30 @@ class ShortDramaBaikeSource(_PluginBase):
                 score += weight
         return score
 
+    # ── TMDB 身份补充 ─────────────────────────────────────────────
+
+    def _tmdb_identity(self, record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """给**确实存在于 TMDB** 的作品补上真实 ``tmdb_id``（+ 分季信息）。
+
+        为什么值得多打一次 TMDB：宿主详情页里右侧信息面板（评分 / 状态 / 首播 / 出品方）、
+        演职员区、推荐 / 相似、分季分集**全部挂在 ``tmdb_id`` 上**，而这些区块的内容是宿主自己
+        拿这个 ID 去 TMDB 取的（``/api/v1/tmdb/credits/{id}`` 等）。短剧大多不在 TMDB 上
+        （实测抽 14 部只命中 1 部），所以这里只做「有就附、没有就算」，且 :mod:`tmdb` 里
+        用的是严格匹配（同名 + 年份一致）—— 附错 ID 会把页面连到另一部剧。
+
+        任何异常都吞掉：身份补充失败绝不能影响识别本身。
+        """
+        if not record or self._tmdb is None:
+            return {}
+        try:
+            return self._tmdb.enrich(
+                _clean(record.get("title")),
+                record.get("year") or record.get("release_date"),
+            )
+        except Exception as err:  # pragma: no cover - 兜底
+            logger.debug(f"{PLUGIN_NAME} TMDB 身份补充失败：{type(err).__name__}: {err}")
+            return {}
+
     # ── 模块接口：识别（宿主静态合同）──────────────────────────────
 
     def recognize_media(
@@ -907,7 +938,7 @@ class ShortDramaBaikeSource(_PluginBase):
             f"{PLUGIN_NAME} 识别命中：{record.get('media_id')}《{record.get('title')}》"
             f"（完整度 {self._richness(record)}）"
         )
-        return build_media_info(record)
+        return build_media_info(record, self._tmdb_identity(record))
 
     async def async_recognize_media(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.to_thread(self.recognize_media, *args, **kwargs)
@@ -972,7 +1003,7 @@ class ShortDramaBaikeSource(_PluginBase):
                     "url": str(row.get("url") or ""),
                     "native_id": native_id,
                 }
-            info = build_media_info(record)
+            info = build_media_info(record, self._tmdb_identity(record))
             if info is not None:
                 pairs.append((score, self._richness(record), index, info))
         pairs.sort(key=lambda item: (-item[0], -item[1], item[2]))
