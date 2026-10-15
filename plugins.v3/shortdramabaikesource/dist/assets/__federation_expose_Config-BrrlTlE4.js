@@ -144,7 +144,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       web_index_backend: "auto",
       proxy: false,
       follow_links: true,
-      identify_fallback: true
+      identify_fallback: false
     };
     const FALLBACK_BACKENDS = ["auto", "duckduckgo", "yandex", "google", "brave", "mojeek"];
     const local = ref({ ...DEFAULTS, ...props.initialConfig || {} });
@@ -513,15 +513,16 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createElementVNode("b", null, "回填成 TMDB"),
             _createTextVNode(" —— 选了「短剧百科」却留空 ID，最后还是 TMDB 去查，短剧自然查不到。"),
             _createElementVNode("br"),
-            _createTextVNode(" 打开本项后，"),
+            _createElementVNode("b", null, "本项默认关闭"),
+            _createTextVNode("：官方数据源规范要求「来源不匹配就返回空、不要接别人的身份」， 所以默认不越权。打开后，"),
             _createElementVNode("b", null, "来源不是本插件、ID 又留空"),
-            _createTextVNode("的识别（手动整理、扫描、订阅）会先拿 片名在 "),
+            _createTextVNode("的识别（手动整理、扫描、 订阅）会先拿片名在 "),
             _createElementVNode("b", null, "本地 URL 库"),
             _createTextVNode("里找一部"),
             _createElementVNode("b", null, "完全同名"),
-            _createTextVNode("的短剧：命中就按短剧收，未命中立刻 让位给原来源 —— 与「留空自动识别」的预期一致。"),
+            _createTextVNode("的短剧：命中就按短剧收， 未命中立刻让位给原来源 —— 与「留空自动识别」的预期一致。 "),
             _createElementVNode("b", null, "只查库，不触发站外检索"),
-            _createTextVNode("， 所以不会拖慢整理。库里没有的片名，行为与开关关闭时完全相同。 ")
+            _createTextVNode("，所以不会拖慢整理。库里没有的片名，行为与关闭时完全相同。 ")
           ], -1)),
           _createVNode(_component_v_divider, { class: "my-3" }),
           _createElementVNode("div", _hoisted_5, [
@@ -610,6 +611,6 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-77a6f817"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-a04e66d5"]]);
 
 export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };

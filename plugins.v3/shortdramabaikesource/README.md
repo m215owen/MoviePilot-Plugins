@@ -280,7 +280,7 @@ NFO 里带站点真实数据：`<uniqueid type="duanju">60017</uniqueid>`、简�
 内置来源的正确写法是 `media_source or get_runtime_setting("RECOGNIZE_SOURCE")`；
 本插件在此之上多给了**一层不出网的库兜底**，理由见下一节。
 
-### 「留空自动识别」的实际落点（`identify_fallback`，默认开）
+### 「留空自动识别」的实际落点（`identify_fallback`，默认关）
 
 整理对话框的媒体 ID 输入框写着**「留空自动识别」**（`dialog.reorganize.mediaIdHint`），
 但那条路走的是**系统识别来源**，跟你在这个对话框里选的数据源**无关**：
@@ -307,7 +307,9 @@ NFO 里带站点真实数据：`<uniqueid type="duanju">60017</uniqueid>`、简�
    兜底口子判的因此是「**不是本插件 + 没有 ID**」，而不是「`media_source is None`」，
    否则这段代码永远不会被执行。
 
-打开 `identify_fallback` 后，这类识别会先拿片名到**本地 URL 库**里找一部同名短剧：
+**本节描述的行为需要先在面板打开 `identify_fallback`**（默认关 —— 官方数据源规范要求
+「来源不匹配即返回空」，这条兜底是本插件唯一的**有意例外**，所以默认取不越权的一侧）。
+打开后，这类识别会先拿片名到**本地 URL 库**里找一部同名短剧：
 
 * **命中且片名完全一致** ⇒ 本插件认下（身份 = `duanju` + 该作品的原生数字 ID）；
 * **未命中 / 只是近似片名** ⇒ 立刻 `return None`，TMDB 照常接手，行为与开关关闭时
@@ -946,7 +948,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | 19 §1 用 `MediaSourceInfo` 声明来源（名称 / 稳定标识 / 媒体类型） | ✅ | `duanju` + 电视剧；标识符合 `^[a-z][a-z0-9._-]{0,63}$` |
 | 19 §1 来源标识**发布后不改名** | ✅（今后） | 历史上改过一次（`duanjubaike` → `duanju`），代价是永久读兼容别名表，见「统一媒体身份」 |
 | 19 §2 `recognize_media` / `search_medias` / `obtain_images` / `metadata_nfo` / `metadata_img`（含 async 版） | ✅ | 参数名与宿主 `runtime/extensions/module/contracts.py` 的 `required_parameters` 逐字对齐 |
-| 19 §2 每个方法先判来源，不匹配返回 `None` / 空 | ⚠️ 一处例外 | 仅「库兜底」，见下 |
+| 19 §2 每个方法先判来源，不匹配返回 `None` / 空 | ⚠️ 一处例外（默认关） | 仅「库兜底」，且出厂关闭；见下 |
 | 19 §2 结果必须同时含 `media_source` + `media_id` | ✅ | 构造后**显式复位**（宿主 `__post_init__` 会归一化自定义来源，见 `payload.py`） |
 | 19 §2 不把来源自己的编号写进 `tmdbid` / `doubanid` | ✅ | 站点 ID 只进 `media_id`；`tmdb_id` 只在**严格匹配**（同名 + 年份一致且唯一）后填真 TMDB ID |
 | 19 §2 `get_media_auxiliary_info`（可选：给已有影视补别名） | 未实现 | 站点没有权威别名数据（详见「`MediaInfo.names` 必须留空」）；且宿主会把返回的别名并进搜索关键词 |
@@ -959,11 +961,11 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | 20 §1 语言 / 国家或地区 / 内容分级 | ⚠️ 部分 | **语言**取自详情页 JSON-LD 的 `inLanguage`（`zh-Hans` → `zh`）；**国家或地区与内容分级站点没有** ⇒ 留空，不伪造 |
 | 20 §4 开发完成后检查清单（6 条） | ✅ | 逐条核过 |
 
-### 唯一有意的例外：库兜底（`identify_fallback`）
+### 唯一有意的例外：库兜底（`identify_fallback`，**默认关**）
 
 19 §2 要求「不匹配本来源就返回 `None`」，而本插件的 `recognize_media` 有第 4 条入口：
-**别的来源 + ID 留空**时去本地 URL 库找一部**完全同名**的短剧（默认开，可在配置里关）。
-它不是无视文档，而是补宿主的表单缺口 —— 宿主 `OptionalMediaIdentityMixin` 要求
+**别的来源 + ID 留空**时去本地 URL 库找一部**完全同名**的短剧（**默认关**，可在配置里
+打开）。它不是无视文档，而是补宿主的表单缺口 —— 宿主 `OptionalMediaIdentityMixin` 要求
 `media_source` 与 `media_id` **成对**，前端因此在 ID 留空时把来源一起丢掉，而识别链又把
 空的来源**回填成系统主视频源**（实测 `media_source=<MediaSource.TMDB>`、`media_id=None`）
 ⇒ 没有这条兜底，「选了短剧百科但没填 ID」永远轮不到本插件。它有三重约束保证不越界：
@@ -972,7 +974,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
    本插件根本没有机会返回。它只在**别人也没结果**时补位；
 2. **只认完全同名**（`_match_title` 满分）且**绝不出网检索**（引擎单次 10~70s，挂在
    所有无从属的识别请求上会拖垮整理与扫描）；
-3. **可关**：配置项 `identify_fallback`。
+3. **默认关**：配置项 `identify_fallback` 出厂关闭 —— 越权能力不该默认生效。
 
 ## 数据来源与合规
 
@@ -998,7 +1000,7 @@ GET  /api/v1/plugin/ShortDramaBaikeSource/urls?keyword=魏依珂&kind=actor
 | `web_index_search` | 开 | **站外索引检索**：库里没有时才 `site:` 限定检索片名 / 演员名，从收录的 URL 取 ID |
 | `web_index_backend` | `auto` | 检索后端（`auto` / `duckduckgo` / `yandex` / `google` / `brave` / `mojeek`） |
 | `follow_links` | 开 | **URL 库自己长大**：解析详情页 / 演员页时顺手把页面里的演员 URL、作品 URL 也入库 |
-| `identify_fallback` | 开 | **库兜底**：点名的来源**不是本插件**、ID 又留空时（整理对话框里「选了数据源但 ID 留空」就是这种请求，宿主会把来源回填成 TMDB），先拿片名在 URL 库里找**完全同名**的短剧，命中就认、没命中立刻让位。**只查库，不出网检索**。关掉则退化成「不是本插件的来源一律不接手」 |
+| `identify_fallback` | 关 | **库兜底**（默认关，打开才有）：点名的来源**不是本插件**、ID 又留空时（整理对话框里「选了数据源但 ID 留空」就是这种请求，宿主会把来源回填成 TMDB），先拿片名在 URL 库里找**完全同名**的短剧，命中就认、没命中立刻让位。**只查库，不出网检索**。官方数据源规范要求「来源不匹配即返回空」，本项是本插件唯一的**有意例外**，故出厂关闭 |
 | `proxy` | 关 | 出站请求是否走系统代理 |
 
 共 10 项（v2.2.2 新增 `identify_fallback`；v2.2.1 删掉了 `detail_facts` 摘要行开关；

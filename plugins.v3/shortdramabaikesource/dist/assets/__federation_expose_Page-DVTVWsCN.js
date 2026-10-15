@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import Config, { p as proxyImage, r as resolveApi, f as fetchStatus, a as fetchConfig, s as saveConfig, l as lookupKeyword, b as recognizeTitle, c as fetchActor, d as fetchUrls, e as clearUrls, _ as _export_sfc } from './__federation_expose_Config-CwFI_tBX.js';
+import Config, { p as proxyImage, r as resolveApi, f as fetchStatus, a as fetchConfig, s as saveConfig, l as lookupKeyword, b as recognizeTitle, c as fetchActor, d as fetchUrls, e as clearUrls, _ as _export_sfc } from './__federation_expose_Config-BrrlTlE4.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 

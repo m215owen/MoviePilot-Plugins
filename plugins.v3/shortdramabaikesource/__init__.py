@@ -79,7 +79,7 @@ except Exception:  # pragma: no cover
 from .classification import classification_protocol_version, media_source_declaration
 # ⚠️ 这一批常量既是内部依赖，也是**包级导出**（单测与消费方按
 # ``app.plugins.shortdramabaikesource.<NAME>`` 取）：声明来源、比对身份都靠它们，
-# 所以即便本文件里没引用也不要删 —— ``MEDIA_SOURCE_LABEL`` 就是这类。
+# 所以即便本文件里没引用也不要删 —— ``MEDIA_SOURCE_LABEL`` 就是这类（见下方 ``__all__``）。
 from .constants import (
     ACTOR_ID_PREFIX,
     ACTOR_PATH,
@@ -126,6 +126,13 @@ from .payload import (
     media_source_value,  # 包级导出：身份比对工具（见上一条注释）
 )
 from .scrape import build_images, build_nfo
+
+# ⚠️ 这两个名字本文件内部**不用**，只是包级导出契约（消费方与单测按
+# ``app.plugins.shortdramabaikesource.<NAME>`` 取）。pyflakes 4 不支持 ``# noqa``
+# （那是 flake8 的功能），所以用 ``__all__`` 声明「有意保留」，否则静态检查会报
+# ``imported but unused``。
+# 注意：这里**只**列「有意不用但仍要导出」的名字，不是完整的公开 API 清单。
+__all__ = ["MEDIA_SOURCE_LABEL", "media_source_value"]
 from .store import SiteUrl, UrlStore
 from .tmdb import TmdbIdentity
 
@@ -203,7 +210,12 @@ class ShortDramaBaikeSource(_PluginBase):
     # ⚠️ 实测宿主会把它自己的系统主视频源**回填**进空 ``media_source``
     # （``chain/media/recognition.py``），所以「只选数据源、ID 留空」的请求到这里时
     # 身份是 TMDB 而不是 None —— 兜底判的是「不是本插件 + 没有 ID」，不是 None。
-    _identify_fallback: bool = True
+    #
+    # ⚠️ **默认关**（2026-10-15 按官方 FAQ 19 §2 对齐）：文档要求「来源不匹配就返回
+    # None，不要接别人的身份」。这条兜底是**对文档的一处有意例外**（开着时会在「别的
+    # 来源 + ID 留空」时抢答），因此默认必须是不越权的一侧；确实想要「留空自动识别」
+    # 体验的用户自己在面板打开即可（见 README「留空自动识别」一节）。
+    _identify_fallback: bool = False
 
     # ── 运行时状态（init_plugin 逐个重建，保证实例之间不串味） ──
     _cache: Dict[str, Tuple[float, Any]] = {}
@@ -239,7 +251,7 @@ class ShortDramaBaikeSource(_PluginBase):
         )
         self._proxy = bool(config.get("proxy"))
         self._follow_links = self._as_bool(config.get("follow_links"), True)
-        self._identify_fallback = self._as_bool(config.get("identify_fallback"), True)
+        self._identify_fallback = self._as_bool(config.get("identify_fallback"), False)
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定（它们是类属性）。
         self._cache = {}
@@ -1083,14 +1095,17 @@ class ShortDramaBaikeSource(_PluginBase):
            前缀本身就是身份声明，跟表单里选的来源无关；
         3. **别的来源 + 不带前缀的 ID** ⇒ **立刻返回 None**。那是别人的身份（``603`` 是
            TMDB 的编号），抢过来只会毁掉用户明确指定的那次识别；
-        4. **别的来源 + 没有 ID** ⇒ 走**库兜底**（见下），由 ``identify_fallback`` 控制。
+        4. **别的来源 + 没有 ID** ⇒ 默认**立刻返回 None**（文档 FAQ 19 §2 的默认形态）；
+           只有用户在面板显式打开 ``identify_fallback`` 才走**库兜底**（见下）。
 
-        **库兜底**：只在**本地 URL 库**里找一部同名短剧，命中就用、未命中立刻
-        ``return None`` 把机会还给宿主原来源。两点约束：
+        **库兜底**（``identify_fallback``，**默认关**）：只在**本地 URL 库**里找一部同名短剧，
+        命中就用、未命中立刻 ``return None`` 把机会还给宿主原来源。三点约束：
 
-        1. **绝不出网检索** —— 引擎单次 10~70s，挂在所有无从属的识别请求上会拖垮整理
+        1. **默认关** —— 它是本插件对文档的**唯一有意例外**（文档要求不接别人的身份），
+           所以默认取不越权的一侧；想用「留空自动识别」的人自己打开。
+        2. **绝不出网检索** —— 引擎单次 10~70s，挂在所有无从属的识别请求上会拖垮整理
            与扫描（见 :meth:`_resolve` 的 ``allow_search``）；
-        2. **只要完全同名的**（``EXACT_TITLE_SCORE``）—— 兜底抢的是别人（默认 TMDB）的
+        3. **只要完全同名的**（``EXACT_TITLE_SCORE``）—— 兜底抢的是别人（默认 TMDB）的
            识别机会，宁可漏也不能错。
 
         ⚠️ 为什么需要第 4 条：宿主 ``OptionalMediaIdentityMixin`` 要求 ``media_source`` 与
@@ -1796,7 +1811,7 @@ class ShortDramaBaikeSource(_PluginBase):
             ),
             "proxy": bool(merged.get("proxy")),
             "follow_links": self._as_bool(merged.get("follow_links"), True),
-            "identify_fallback": self._as_bool(merged.get("identify_fallback"), True),
+            "identify_fallback": self._as_bool(merged.get("identify_fallback"), False),
         }
         self.update_config(normalized)
         self.init_plugin(normalized)
@@ -1876,7 +1891,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_backend": DEFAULT_WEB_INDEX_BACKEND,
             "proxy": False,
             "follow_links": True,
-            "identify_fallback": True,
+            "identify_fallback": False,
         }
 
     def _current_config(self) -> Dict[str, Any]:
