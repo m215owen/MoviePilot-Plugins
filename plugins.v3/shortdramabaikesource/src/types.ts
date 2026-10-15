@@ -347,7 +347,7 @@ export interface StatusPayload {
   actor?: { enabled?: boolean; max_candidates?: number }
 }
 
-/** 配置模型（键与后端 `_default_config` 一致，共 9 项） */
+/** 配置模型（键与后端 `_default_config` 一致，共 10 项） */
 export interface PluginConfig {
   enabled: boolean
   domain: string
@@ -367,6 +367,8 @@ export interface PluginConfig {
   proxy: boolean
   /** 解析页面时顺带把页面里的演员 / 作品链接写进 URL 库 */
   follow_links: boolean
+  /** 演员作品补全的并发抓取线程数（1~32，默认 8） */
+  enrich_workers: number
 }
 
 /** `/config` GET 的可选项 */

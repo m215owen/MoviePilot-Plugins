@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import Config, { p as proxyImage, r as resolveApi, a as recognizeTitle, _ as _export_sfc, f as fetchStatus, b as fetchConfig, s as saveConfig, l as lookupKeyword, c as fetchActor, d as fetchUrls, e as clearUrls, g as fetchCache, h as deleteCacheEntry, i as clearCache, j as fetchCacheEntry } from './__federation_expose_Config-CRW61h5d.js';
+import Config, { p as proxyImage, r as resolveApi, a as recognizeTitle, _ as _export_sfc, f as fetchStatus, b as fetchConfig, s as saveConfig, l as lookupKeyword, c as fetchActor, d as fetchUrls, e as clearUrls, g as fetchCache, h as deleteCacheEntry, i as clearCache, j as fetchCacheEntry } from './__federation_expose_Config-CqMxwFcZ.js';
 
 function pretty(value) {
   return JSON.stringify(value ?? null, null, 2);

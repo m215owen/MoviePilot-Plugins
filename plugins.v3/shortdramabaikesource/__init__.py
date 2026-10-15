@@ -64,7 +64,6 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -171,13 +170,6 @@ try:  # 运行时设置（读系统「媒体识别来源」RECOGNIZE_SOURCE，�
 except Exception:  # pragma: no cover - 宿主版本差异兜底
     _get_runtime_setting = None
 
-# 同一个关键词在这个间隔内查过引擎就不再查（库里确实没有时也不必每次搜索都出网）。
-SEARCH_RETRY_INTERVAL = 300.0
-# 「上一次空手而归」的冷却：引擎召回本来就不稳（同一句话换个后端结果完全不同），
-# 失败也按 300s 记会把**一次抽风**变成「五分钟内怎么点都搜不到」—— 实测用户看到的
-# 就是「81s 前刚检索过（间隔需 300s）」，而那次检索其实一条可用候选都没拿回来。
-SEARCH_RETRY_INTERVAL_FAILED = 60.0
-
 # 「这条记录数据全不全」的判据（字段, 权重）。站点会给同一部剧建多条记录：实测
 # ``/drama/40354``（AI短剧）与 ``/drama/40445``（真人短剧）标题 / 简介 / 首播日期完全相同，
 # 但前者没有演员、集数、时长、出品方。权重按「缺了最影响使用」排 —— 演员最重要，
@@ -230,17 +222,15 @@ class ShortDramaBaikeSource(_PluginBase):
     # 缓存门面：后端（Redis / 进程内内存）与有效期都跟着宿主设置走，见 :mod:`cache`。
     # 实例级 —— 配置变更时整体重建，避免旧 TTL / 旧站点判定残留
     _cache: Optional["PluginCache"] = None
-    # 关键词 → 上次问引擎的时间戳（避免库里确实没有时每次搜索都出网）
-    _searched_at: Dict[str, float] = {}
-    # 关键词 → 上次问引擎**有没有拿回可用候选**（决定冷却用 300s 还是 60s）
-    _search_hits: Dict[str, bool] = {}
+    # 演员作品补全的并发抓取线程数（配置项 ``enrich_workers``，1~32）
+    _enrich_workers: int = 8
     # TMDB 身份补充器（init_plugin 里按实例重建；为 None 时该功能整体跳过）
     _tmdb: Optional["TmdbIdentity"] = None
 
     def __init__(self) -> None:
         super().__init__()
-        # 实例级对象：引擎节流状态与数据库句柄都不能挂在类上，否则宿主重建插件实例
-        # （reconcile 会反复重建）时会共用同一份状态
+        # 实例级对象：引擎检索门面（带 3 秒最小间隔的实例级节流）与数据库句柄都不能挂在
+        # 类上，否则宿主重建插件实例（reconcile 会反复重建）时会共用同一份状态
         self._web_index = WebIndex()
         self._url_store: Optional[UrlStore] = None
         self._store_lock = threading.RLock()
@@ -262,13 +252,14 @@ class ShortDramaBaikeSource(_PluginBase):
         )
         self._proxy = bool(config.get("proxy"))
         self._follow_links = self._as_bool(config.get("follow_links"), True)
+        self._enrich_workers = self._as_range(
+            config.get("enrich_workers"), ENRICH_WORKERS, 1, 32
+        )
 
         # ⚠️ 运行时容器必须在**每个实例**上重新绑定（它们是类属性）。
         # 缓存：后端与有效期都跟着宿主设置走（见 :mod:`cache`），插件配置只做显式覆盖
         self._cache = PluginCache()
         self._cache.configure(override_ttl=self._cache_ttl, domain=self._domain)
-        self._searched_at = {}
-        self._search_hits = {}
         self._web_index.reset_throttle()
         # TMDB 身份补充器：复用本插件的同步 GET（代理 / 超时 / UA 与站点请求一致）；
         # 它的身份缓存也走上面这层缓存（同一 region，类型 tmdb）
@@ -559,12 +550,12 @@ class ShortDramaBaikeSource(_PluginBase):
                 f"演员 {len(actors)}（另一类为空是必然的，零引擎请求）"
             )
             return works, actors
-        if not force and not self._should_search(key):
-            # 两类里缺了哪一类、为什么这次不问引擎 —— 「库里没有」与「刚查过被挡住」
-            # 表现一样（都是没结果），日志里必须分得开
+        if not force and not self._search_available():
+            # 站外索引不可用（开关关着 / 宿主缺依赖）时把原因说清 —— 否则「库里没有」
+            # 与「压根没得搜」表现一样（都是没结果），日志里必须分得开
             logger.info(
                 f"{PLUGIN_NAME}「{query}」库里只有 作品 {len(works)} / 演员 {len(actors)}，"
-                f"本次不问引擎：{self._search_skip_reason(key)}"
+                f"本次不问引擎：{self._search_unavailable_reason()}"
             )
             return works, actors
         found_works, found_actors = self._discover(query)
@@ -632,39 +623,15 @@ class ShortDramaBaikeSource(_PluginBase):
                 best[native_id] = row
         return [best[native_id] for native_id in order]
 
-    def _retry_interval(self, key: str) -> float:
-        """这个关键词现在的冷却时长：上次**拿回了可用候选** 300s，空手而归只 60s。
+    def _search_available(self) -> bool:
+        """站外索引现在可不可用（开关开着且宿主装了 ddgs）。"""
+        return self._web_index_search and self._web_index.available
 
-        「有没有拿回东西」与「该不该等五分钟」是两件事 —— 引擎召回不稳（同一句话换个
-        后端结果完全不同，甚至同一个后端也会一次空一次有），失败按 300s 记会把一次抽风
-        放大成「五分钟内怎么点都搜不到」。
-        """
-        return (
-            SEARCH_RETRY_INTERVAL
-            if self._search_hits.get(key)
-            else SEARCH_RETRY_INTERVAL_FAILED
-        )
-
-    def _should_search(self, key: str) -> bool:
-        """这个关键词现在该不该问引擎（含「站外索引」开关与重试间隔）。"""
-        if not self._web_index_search or not self._web_index.available:
-            return False
-        last = self._searched_at.get(key)
-        return last is None or (time.time() - last) >= self._retry_interval(key)
-
-    def _search_skip_reason(self, key: str) -> str:
-        """「这次不问引擎」的真实原因 —— 开关关着 / 环境缺依赖 / 刚查过，三者都要说得清。"""
+    def _search_unavailable_reason(self) -> str:
+        """「站外索引不可用」的原因 —— 开关关着 / 环境缺依赖，两者都要说得清。"""
         if not self._web_index_search:
             return "站外索引已关闭"
-        if not self._web_index.available:
-            return "宿主环境缺少 ddgs"
-        last = self._searched_at.get(key)
-        if last is None:
-            return "（无需跳过）"
-        gap = int(time.time() - last)
-        interval = int(self._retry_interval(key))
-        tail = "（上次没拿回可用候选，冷却 60s）" if interval < int(SEARCH_RETRY_INTERVAL) else ""
-        return f"{gap}s 前刚检索过（间隔需 {interval}s）{tail}"
+        return "宿主环境缺少 ddgs"
 
     def _discover(self, keyword: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """检索一次引擎，**两类 URL 一起抽、一起入库**，返回入库后的记录。
@@ -672,16 +639,11 @@ class ShortDramaBaikeSource(_PluginBase):
         ⚠️ 必须只查一次：引擎侧有 3 秒最小间隔，分头查「作品」与「演员」必然有一次
         被跳过，结果就是两块里恒有一块是空的。
         """
-        key = _normalize_title(keyword)
-        self._searched_at[key] = time.time()
-        # 先按「空手而归」记，真拿到可用候选再翻成 True —— 决定冷却时长（见
-        # :meth:`_retry_interval`）。三个返回点都要覆盖，中途抛异常也停在失败上。
-        self._search_hits[key] = False
         host = self._domain_host()
         rows = self._web_index.search(keyword, host, self._web_index_backend)
         if not rows:
-            # 引擎侧的原因（后端报错 / 环境缺依赖 / 被节流）已在 discover 模块里记过，
-            # 这里只补一句「结论」，让「搜了但没结果」与「压根没搜」在日志里分得开
+            # 引擎侧的原因（后端报错 / 环境缺依赖 / 被引擎最小间隔挡住）已在 discover
+            # 模块里记过，这里只补一句「结论」，让「搜了但没结果」与「压根没搜」分得开
             logger.info(f"{PLUGIN_NAME} 站外索引「{keyword}」没有返回任何结果")
             return [], []
         raw_works, raw_actors = extract_urls(rows, host)
@@ -691,7 +653,6 @@ class ShortDramaBaikeSource(_PluginBase):
                 f"但都不是作品页 / 演员页 —— 榜单页与外域地址一律剔除"
             )
             return [], []
-        self._search_hits[key] = True
         raw_works = raw_works[:MAX_CANDIDATES]
         raw_actors = raw_actors[:MAX_ACTOR_CANDIDATES]
         entries: List[Dict[str, Any]] = []
@@ -1064,12 +1025,10 @@ class ShortDramaBaikeSource(_PluginBase):
 
         1. **绝不拿 ``meta.title`` 检索** —— 它是原始文件名（容器内实测
            ``MetaInfo('雾锁情迷 - S01E71.mp4')`` → ``title = '雾锁情迷 - S01E71.mp4'``、
-           ``cn_name = '雾锁情迷'``）。以前我们读的就是 ``title``，脏串被一路带进三个
+           ``cn_name = '雾锁情迷'``）。以前我们读的就是 ``title``，脏串被一路带进两个
            地方：① 扔给搜索引擎（``site:… 雾锁情迷 - S01E71``）→ 召回更差；② 当 URL
            库的匹配键 → 库里存着「雾锁情迷」却查不回来（``UrlStore.match`` 比的是归一化
-           后的**相等**）；③ 当检索节流的键（``_searched_at``）→ 同一个脏键刚查过就被
-           ``SEARCH_RETRY_INTERVAL`` 挡 300s，日志上是「库里只有作品 0／本次不问引擎」，
-           看着就像插件坏了。
+           后的**相等**）。
         2. **中文名之外再补一个简体写法** —— TMDB 在链路里挨个试，第一个有结果就停
            （``themoviedb/__init__.py`` 的 ``SEARCH_NAME`` 循环）。本站是简体中文站，
            而文件名与引擎结果都可能带繁体，简体候选正好补这段差距。
@@ -1187,8 +1146,8 @@ class ShortDramaBaikeSource(_PluginBase):
     # 宿主识别状态机 = NATIVE → SUPPLEMENT 两步（``chain/_recognition.py``）：原生模块
     # （TMDB / 豆瓣…）拿不到带身份的结果时，宿主广播 ``MediaRecognize`` 事件，源码注释
     # 原文「允许插件（**如第三方媒体源**）按已知要素匹配并返回标准信息」。本插件在此
-    # 按片名走与 :meth:`recognize_media` 完全相同的检索口径（URL 库优先 → 站外索引，
-    # 节流共用），命中即回写带 ``media_source + media_id`` 的完整 MediaInfo —— 宿主对
+    # 按片名走与 :meth:`recognize_media` 完全相同的检索口径（URL 库优先 → 站外索引），
+    # 命中即回写带 ``media_source + media_id`` 的完整 MediaInfo —— 宿主对
     # 缺身份的回写不采信（``_media_info_from_plugin``）。
     #
     # 这条路与 FAQ 19 §2 **不冲突**：那里约束的是模块方法 ``recognize_media``（来源
@@ -1198,8 +1157,8 @@ class ShortDramaBaikeSource(_PluginBase):
     # 正是靠这条通道补位的。
     #
     # 触发面：宿主**所有**走完原生识别仍无身份的请求（自动整理 / 扫描 / 订阅…）都会
-    # 广播一次。检索口径自带两道闸：URL 库命中零引擎请求；未命中走站外索引但受
-    # ``SEARCH_RETRY_INTERVAL`` 节流（同一关键词 300s / 失败 60s 内不重复出网）。
+    # 广播一次。检索口径自带一道闸：URL 库命中零引擎请求；未命中才走站外索引
+    # （2026-10-16 用户拍板：不再做关键词级 300s/60s 冷却，引擎自身 3 秒最小间隔仍在）。
 
     @staticmethod
     def _event_get(data: Any, key: str, default: Any = None) -> Any:
@@ -1521,7 +1480,8 @@ class ShortDramaBaikeSource(_PluginBase):
         **并发抓、同步灌**（2026-10-16）：URL 库只存 URL 不存数据，所以一位没缓存过的
         演员要把每一部作品的详情页都抓一遍 —— 实测 46 部**串行 124s**（每部含一次站点页
         加一次 TMDB 身份查询），用户体感就是「搜个演员要等两分钟」。这里改成
-        :data:`ENRICH_WORKERS` 个线程并发抓（站点对详情页不设风控，实测 12 并发全部 200），
+        配置项 ``enrich_workers``（默认 8，1~32）个线程并发抓（站点对详情页不设风控，
+        实测 12 并发全部 200），
         46 部降到十几秒。
 
         三条边界：
@@ -1569,7 +1529,7 @@ class ShortDramaBaikeSource(_PluginBase):
             with results_lock:
                 results.append(filled)
 
-        if len(pending) == 1 or ENRICH_WORKERS <= 1:
+        if len(pending) == 1 or self._enrich_workers <= 1:
             for work in pending:
                 try:
                     fetch(work)
@@ -1580,7 +1540,7 @@ class ShortDramaBaikeSource(_PluginBase):
                     )
                     results.append(False)
         else:
-            pool_size = min(ENRICH_WORKERS, len(pending))
+            pool_size = min(self._enrich_workers, len(pending))
             with ThreadPoolExecutor(max_workers=pool_size) as pool:
                 futures = {pool.submit(fetch, work): work for work in pending}
                 for future in as_completed(futures):
@@ -1598,7 +1558,7 @@ class ShortDramaBaikeSource(_PluginBase):
         if filled:
             logger.info(
                 f"{PLUGIN_NAME} 演员「{profile.get('name') or '?'}」作品补全 {filled} 部"
-                f"（共 {len(works)} 部，{min(ENRICH_WORKERS, len(pending))} 路并发，"
+                f"（共 {len(works)} 部，{min(self._enrich_workers, len(pending))} 路并发，"
                 f"字段与 URL 库随抓随写）："
                 f"套用作品页字段（完整标签 / 首播 / 版权方 / 时长 / 简介 / 剧照 / 演员 / 推荐）"
             )
@@ -1901,9 +1861,6 @@ class ShortDramaBaikeSource(_PluginBase):
 
         范围由 ``kind`` / ``keyword`` 决定：两个都不给＝**整库清空**；只给 ``kind`` ＝
         清掉该类全部；两个都给＝清掉该关键词的记录。
-
-        清完顺手把「最近问过引擎」的时间戳清掉 —— 否则刚清完再搜同一个词会被
-        ``SEARCH_RETRY_INTERVAL`` 挡住，界面上只是「没搜到」，很容易误判成插件坏了。
         """
         body = payload if isinstance(payload, dict) else {}
         if payload is not None and not isinstance(payload, dict):
@@ -1926,10 +1883,6 @@ class ShortDramaBaikeSource(_PluginBase):
             logger.warning(f"{PLUGIN_NAME} 清库失败：{err}")
             return {"success": False, "message": f"清库失败：{err}",
                     "removed": 0, "stats": self._store_count()}
-        if not keyword:
-            # 允许马上重新检索同一个词（连「上次是空手而归」的记账一起清掉）
-            self._searched_at.clear()
-            self._search_hits.clear()
         scope = "、".join(part for part in (
             f"类型 {kind}" if kind else "", f"关键词「{keyword}」" if keyword else "") if part) or "整库"
         logger.warning(f"{PLUGIN_NAME} 手动清库（{scope}）：删除 {removed} 条")
@@ -2207,6 +2160,9 @@ class ShortDramaBaikeSource(_PluginBase):
             ),
             "proxy": bool(merged.get("proxy")),
             "follow_links": self._as_bool(merged.get("follow_links"), True),
+            "enrich_workers": self._as_range(
+                merged.get("enrich_workers"), ENRICH_WORKERS, 1, 32
+            ),
         }
         self.update_config(normalized)
         self.init_plugin(normalized)
@@ -2285,6 +2241,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_backend": DEFAULT_WEB_INDEX_BACKEND,
             "proxy": False,
             "follow_links": True,
+            "enrich_workers": ENRICH_WORKERS,
         }
 
     def _current_config(self) -> Dict[str, Any]:
@@ -2299,6 +2256,7 @@ class ShortDramaBaikeSource(_PluginBase):
             "web_index_backend": self._web_index_backend,
             "proxy": bool(self._proxy),
             "follow_links": bool(self._follow_links),
+            "enrich_workers": int(self._enrich_workers),
         }
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:

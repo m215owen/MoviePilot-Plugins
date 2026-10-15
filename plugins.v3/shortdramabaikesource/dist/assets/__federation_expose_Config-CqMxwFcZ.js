@@ -181,7 +181,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       web_index_search: true,
       web_index_backend: "auto",
       proxy: false,
-      follow_links: true
+      follow_links: true,
+      enrich_workers: 8
     };
     const FALLBACK_BACKENDS = ["auto", "duckduckgo", "yandex", "google", "brave", "mojeek"];
     const local = ref({ ...DEFAULTS, ...props.initialConfig || {} });
@@ -298,7 +299,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               icon: "mdi-television-classic",
               class: "mr-2"
             }),
-            _cache[10] || (_cache[10] = _createElementVNode("h3", { class: "ma-0" }, "短剧百科数据源 · 设置", -1)),
+            _cache[11] || (_cache[11] = _createElementVNode("h3", { class: "ma-0" }, "短剧百科数据源 · 设置", -1)),
             _createVNode(_component_v_spacer),
             _createVNode(_component_v_btn, {
               icon: "mdi-close",
@@ -314,7 +315,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             density: "compact",
             class: "mb-3"
           }, {
-            default: _withCtx(() => [..._cache[11] || (_cache[11] = [
+            default: _withCtx(() => [..._cache[12] || (_cache[12] = [
               _createTextVNode(" 本插件把 ", -1),
               _createElementVNode("b", null, "duanjubaike.org", -1),
               _createTextVNode(" 注册成 MoviePilot 的一等媒体数据源（与 TMDB / 豆瓣同级）， 补齐 TMDB、豆瓣上没有条目的短剧。站内检索被 Cloudflare 挡住、目录页已弃用， 片名与演员名 → ID 都走", -1),
@@ -391,7 +392,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               size: "18",
               class: "mr-1"
             }),
-            _cache[12] || (_cache[12] = _createTextVNode(" 站点与请求 ", -1))
+            _cache[13] || (_cache[13] = _createTextVNode(" 站点与请求 ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -451,11 +452,33 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   }, null, 8, ["modelValue"])
                 ]),
                 _: 1
+              }),
+              _createVNode(_component_v_col, {
+                cols: "12",
+                sm: "6",
+                md: "3"
+              }, {
+                default: _withCtx(() => [
+                  _createVNode(_component_v_text_field, {
+                    modelValue: local.value.enrich_workers,
+                    "onUpdate:modelValue": _cache[7] || (_cache[7] = ($event) => local.value.enrich_workers = $event),
+                    modelModifiers: { number: true },
+                    label: "补全并发",
+                    suffix: "线程",
+                    type: "number",
+                    min: 1,
+                    max: 32,
+                    density: "compact",
+                    variant: "outlined",
+                    "hide-details": ""
+                  }, null, 8, ["modelValue"])
+                ]),
+                _: 1
               })
             ]),
             _: 1
           }),
-          _cache[17] || (_cache[17] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[18] || (_cache[18] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createElementVNode("b", null, "0（默认）= 跟随宿主"),
             _createTextVNode("：有效期取系统设置的「单条元数据识别缓存有效期」 （设置 → 缓存 → "),
             _createElementVNode("code", null, "META_CACHE_EXPIRE"),
@@ -465,7 +488,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _createElementVNode("b", null, "不进宿主的缓存管理页"),
             _createTextVNode(" —— 要清缓存请用面板上的「缓存管理」。 插件"),
             _createElementVNode("b", null, "没有后台任务"),
-            _createTextVNode("：缓存只在被查询时按需重建。 ")
+            _createTextVNode("：缓存只在被查询时按需重建。 "),
+            _createElementVNode("b", null, "补全并发"),
+            _createTextVNode("是演员作品补全的抓取线程数（1~32，默认 8；站点对详情页不设风控， 实测 12 并发全部 200）—— 调大更快，占更多并发连接；1 ≈ 串行。 ")
           ], -1)),
           _createVNode(_component_v_divider, { class: "my-3" }),
           _createElementVNode("div", _hoisted_3, [
@@ -474,7 +499,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               size: "18",
               class: "mr-1"
             }),
-            _cache[13] || (_cache[13] = _createTextVNode(" 站外索引（片名 / 演员名 → 站点 ID 的唯一通道） ", -1))
+            _cache[14] || (_cache[14] = _createTextVNode(" 站外索引（片名 / 演员名 → 站点 ID 的唯一通道） ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -486,7 +511,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 default: _withCtx(() => [
                   _createVNode(_component_v_select, {
                     modelValue: local.value.web_index_backend,
-                    "onUpdate:modelValue": _cache[7] || (_cache[7] = ($event) => local.value.web_index_backend = $event),
+                    "onUpdate:modelValue": _cache[8] || (_cache[8] = ($event) => local.value.web_index_backend = $event),
                     items: backendOptions.value,
                     label: "检索后端",
                     density: "compact",
@@ -504,7 +529,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 default: _withCtx(() => [
                   _createVNode(_component_v_switch, {
                     modelValue: local.value.proxy,
-                    "onUpdate:modelValue": _cache[8] || (_cache[8] = ($event) => local.value.proxy = $event),
+                    "onUpdate:modelValue": _cache[9] || (_cache[9] = ($event) => local.value.proxy = $event),
                     label: "使用系统代理",
                     color: "primary",
                     "hide-details": ""
@@ -515,7 +540,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }),
-          _cache[18] || (_cache[18] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createTextVNode(" 实测 "),
             _createElementVNode("code", null, "auto"),
             _createTextVNode(" 与 "),
@@ -529,7 +554,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               size: "18",
               class: "mr-1"
             }),
-            _cache[14] || (_cache[14] = _createTextVNode(" URL 库（插件自有数据库） ", -1))
+            _cache[15] || (_cache[15] = _createTextVNode(" URL 库（插件自有数据库） ", -1))
           ]),
           _createVNode(_component_v_row, { dense: "" }, {
             default: _withCtx(() => [
@@ -541,7 +566,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 default: _withCtx(() => [
                   _createVNode(_component_v_switch, {
                     modelValue: local.value.follow_links,
-                    "onUpdate:modelValue": _cache[9] || (_cache[9] = ($event) => local.value.follow_links = $event),
+                    "onUpdate:modelValue": _cache[10] || (_cache[10] = ($event) => local.value.follow_links = $event),
                     label: "顺带沉淀页面里的链接",
                     color: "primary",
                     "hide-details": ""
@@ -552,7 +577,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             ]),
             _: 1
           }),
-          _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
+          _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-caption sdbs-dim mt-1" }, [
             _createTextVNode(" 库里只存「关键词 → 页面 URL」，"),
             _createElementVNode("b", null, "不存解析结果"),
             _createTextVNode("：站点内容随时在变，页面永远实时解析。 取数优先查库（命中即零引擎请求），库里没有才检索一次并把作品与演员两类 URL 一起入库。 开启本项后，解析作品页时顺带把演员链接写进库、解析演员页时顺带把作品链接写进库 —— 所以搜过一部剧，之后再搜它里面的演员名也是零引擎请求。 PostgreSQL 实例下这些表落在宿主库的独立 schema，SQLite 实例下落在插件数据目录的 "),
@@ -576,7 +601,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               "prepend-icon": "mdi-content-save-outline",
               onClick: doSave
             }, {
-              default: _withCtx(() => [..._cache[15] || (_cache[15] = [
+              default: _withCtx(() => [..._cache[16] || (_cache[16] = [
                 _createTextVNode(" 保存 ", -1)
               ])]),
               _: 1
@@ -586,7 +611,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               disabled: saving.value,
               onClick: resetToLoaded
             }, {
-              default: _withCtx(() => [..._cache[16] || (_cache[16] = [
+              default: _withCtx(() => [..._cache[17] || (_cache[17] = [
                 _createTextVNode("还原", -1)
               ])]),
               _: 1
@@ -609,6 +634,6 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-54abf9d8"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-8cace185"]]);
 
 export { _export_sfc as _, recognizeTitle as a, fetchConfig as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, fetchCache as g, deleteCacheEntry as h, clearCache as i, fetchCacheEntry as j, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };

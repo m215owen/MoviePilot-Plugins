@@ -73,6 +73,19 @@
           hide-details
         />
       </v-col>
+      <v-col cols="12" sm="6" md="3">
+        <v-text-field
+          v-model.number="local.enrich_workers"
+          label="补全并发"
+          suffix="线程"
+          type="number"
+          :min="1"
+          :max="32"
+          density="compact"
+          variant="outlined"
+          hide-details
+        />
+      </v-col>
     </v-row>
     <div class="text-caption sdbs-dim mt-1">
       <b>0（默认）= 跟随宿主</b>：有效期取系统设置的「单条元数据识别缓存有效期」
@@ -81,6 +94,8 @@
       缓存的后端也跟着宿主走（系统启用 Redis 时与宿主共用同一实例），
       但<b>不进宿主的缓存管理页</b> —— 要清缓存请用面板上的「缓存管理」。
       插件<b>没有后台任务</b>：缓存只在被查询时按需重建。
+      <b>补全并发</b>是演员作品补全的抓取线程数（1~32，默认 8；站点对详情页不设风控，
+      实测 12 并发全部 200）—— 调大更快，占更多并发连接；1 ≈ 串行。
     </div>
 
     <v-divider class="my-3" />
@@ -181,7 +196,7 @@ const props = defineProps<{
 
 const emit = defineEmits(['save', 'close', 'switch'])
 
-/** 与后端 `_default_config()` 逐键一致（共 9 项） */
+/** 与后端 `_default_config()` 逐键一致（共 10 项） */
 const DEFAULTS: PluginConfig = {
   enabled: false,
   domain: 'https://duanjubaike.org',
@@ -193,6 +208,7 @@ const DEFAULTS: PluginConfig = {
   web_index_backend: 'auto',
   proxy: false,
   follow_links: true,
+  enrich_workers: 8,
 }
 
 const FALLBACK_BACKENDS = ['auto', 'duckduckgo', 'yandex', 'google', 'brave', 'mojeek']
