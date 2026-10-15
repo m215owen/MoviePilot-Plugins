@@ -60,6 +60,10 @@ DEFAULT_TIMEOUT = 15
 DEFAULT_CACHE_TTL = 604800          # 详情页内容基本不变，缓存 7 天
 MAX_CANDIDATES = 12                 # 一个关键词最多回多少条作品候选
 MAX_ACTOR_CANDIDATES = 8            # 一个关键词最多回多少位演员候选
+# 一次识别/检索最多试几个候选名：中文名 + 它的简体写法（繁体文件名才会用到第二条）。
+# 照宿主 TMDB 源「逐个候选试、第一个有结果就停」的口径，但**不照抄它的英文候选** ——
+# 本站只收中文短剧，英文名既搜不到又要白白打一次搜索引擎（引擎侧有 3 秒最小间隔）。
+MAX_META_KEYWORDS = 2
 # 每个关键词在 URL 库里最多留几条 URL（多季 / 同名 / 演员重名都可能有多条）
 MAX_URLS_PER_KEYWORD = 12
 # 入库门槛：搜索引擎给的标题必须与**搜索的剧名完全相等**（``parser._match_title`` 满分
@@ -128,3 +132,23 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+# ── 文件名去噪 ────────────────────────────────────────────────────
+# 宿主把**整个文件名**塞进 ``MetaInfo.title``（实测 ``雾锁情迷 - S01E71.mp4`` →
+# ``title = '雾锁情迷 - S01E71.mp4'``、``name = '雾锁情迷'``）。这种脏串拿去问引擎、
+# 查 URL 库、写检索节流键都会落空 —— 库里明明存着「雾锁情迷」也查不回来。
+# 这里只剥**明确的文件级噪音**（扩展名 / ``S01E71`` / ``第71集``），不碰正常片名。
+VIDEO_EXT_RE = re.compile(
+    r"\.(mp4|mkv|avi|rmvb|rm|ts|m2ts|mov|flv|wmv|webm|vob|mpg|mpeg|m4v|iso|f4v|tp)\s*$",
+    re.I,
+)
+# ``S01E71`` / ``S1E2E3`` / ``s01.e71`` —— 允许前置分隔符完全缺省（``片名S01E71``）
+SEASON_EPISODE_RE = re.compile(
+    r"[\s._\-–—]*[Ss]\d{1,3}[\s._]?[Ee]\d{1,3}(?:[\s._\-–—]?[Ee]\d{1,3})*[\s._\-–—]*$"
+)
+# 只有季、没有集（``片名.S01`` / ``片名 S2``）
+SEASON_ONLY_RE = re.compile(r"[\s._\-–—]*[Ss][\s._]?\d{1,3}[\s._\-–—]*$")
+# 「第71集」/「71集」
+EPISODE_CN_RE = re.compile(r"[\s._\-–—]*第?\s*\d{1,4}\s*集[\s._\-–—]*$")
+# 剥完噪音留下的悬空分隔符（``片名 -``）
+FILENAME_EDGE_SEPARATOR_RE = re.compile(r"^[\s._\-–—]+|[\s._\-–—]+$")

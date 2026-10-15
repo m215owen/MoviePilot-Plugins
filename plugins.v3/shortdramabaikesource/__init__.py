@@ -62,6 +62,15 @@ from app.schemas.types import MediaType
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
 
+# 简繁转换：宿主 TMDB 源（``app/modules/themoviedb``）用的就是这一枚入口
+# （``from app.foundation.text import convert as zhconv_convert``）。
+# ⚠️ 必须容缺：它是 v3.1.5 才落到 ``app.foundation`` 的，老版本宿主与本地单测桩里都没有，
+# 拿不到就退化为「没有简体候选」，不影响主流程。
+try:  # pragma: no cover - 分支只取决于宿主版本
+    from app.foundation.text import convert as zhconv_convert
+except Exception:  # pragma: no cover
+    zhconv_convert = None
+
 from .constants import (
     ACTOR_ID_PREFIX,
     ACTOR_PATH,
@@ -76,6 +85,7 @@ from .constants import (
     LANG_PATH,
     MAX_ACTOR_CANDIDATES,
     MAX_CANDIDATES,
+    MAX_META_KEYWORDS,
     LEGACY_MEDIA_ID_PREFIXES,
     MEDIA_ID_PREFIX,
     MEDIA_SOURCE_ALIASES,
@@ -100,6 +110,7 @@ from .parser import (
     is_cloudflare_challenge,
     parse_org_actor,
     parse_org_detail,
+    video_name_of,
 )
 from .payload import (
     build_media_info,
@@ -922,6 +933,59 @@ class ShortDramaBaikeSource(_PluginBase):
 
     # ── 模块接口：识别（宿主静态合同）──────────────────────────────
 
+    @classmethod
+    def _meta_keywords(cls, meta: Any) -> List[str]:
+        """按**宿主 TMDB 源的口径**准备候选检索名（有序、去重、去空）。
+
+        照 ``app/modules/themoviedb`` 的 ``_prepare_search_names`` 写::
+
+            zh_name = zhconv_convert(meta.cn_name, "zh-hans") if meta.cn_name else None
+            return list(dict.fromkeys([k for k in [meta.cn_name, zh_name, meta.en_name] if k]))
+
+        两点必须跟住：
+
+        1. **绝不拿 ``meta.title`` 检索** —— 它是原始文件名（容器内实测
+           ``MetaInfo('雾锁情迷 - S01E71.mp4')`` → ``title = '雾锁情迷 - S01E71.mp4'``、
+           ``cn_name = '雾锁情迷'``）。以前我们读的就是 ``title``，脏串被一路带进三个
+           地方：① 扔给搜索引擎（``site:… 雾锁情迷 - S01E71``）→ 召回更差；② 当 URL
+           库的匹配键 → 库里存着「雾锁情迷」却查不回来（``UrlStore.match`` 比的是归一化
+           后的**相等**）；③ 当检索节流的键（``_searched_at``）→ 同一个脏键刚查过就被
+           ``SEARCH_RETRY_INTERVAL`` 挡 300s，日志上是「库里只有作品 0／本次不问引擎」，
+           看着就像插件坏了。
+        2. **中文名之外再补一个简体写法** —— TMDB 在链路里挨个试，第一个有结果就停
+           （``themoviedb/__init__.py`` 的 ``SEARCH_NAME`` 循环）。本站是简体中文站，
+           而文件名与引擎结果都可能带繁体，简体候选正好补这段差距。
+
+        ⚠️ **英文名不给候选**（TMDB 那份清单里有，我们不照抄）：本站只收中文短剧，
+           英文名既搜不到又会白白打一次搜索引擎（引擎侧有 3 秒最小间隔）。
+
+        ⚠️ ``cn_name`` 缺失时才退回 ``name`` / ``title``：宿主的部分入口（搜索框、订阅）
+        会直接 ``MetaInfo(title=关键词)``，那时只有这两个字段有值，而且还可能是带扩展名
+        的原始串，所以一律过一遍 :func:`parser.video_name_of`。
+        """
+        cn = video_name_of(getattr(meta, "cn_name", "") or "")
+        if not cn:
+            for attr in ("name", "title"):
+                cn = video_name_of(getattr(meta, attr, "") or "")
+                if cn:
+                    break
+        names: List[str] = []
+        for value in (cn, cls._to_simplified(cn)):
+            if value and value not in names:
+                names.append(value)
+        return names[:MAX_META_KEYWORDS]
+
+    @staticmethod
+    def _to_simplified(text: str) -> str:
+        """繁体 → 简体（宿主 TMDB 源同一入口）。拿不到就返回空串，交给别的候选。"""
+        if not text or zhconv_convert is None:
+            return ""
+        try:
+            return _clean(zhconv_convert(text, "zh-hans"))
+        except Exception as err:  # pragma: no cover - 宿主 native 转换异常
+            logger.debug(f"{PLUGIN_NAME} 简繁转换失败：{err}")
+            return ""
+
     def recognize_media(
         self,
         media_source: Any = None,
@@ -936,18 +1000,24 @@ class ShortDramaBaikeSource(_PluginBase):
         """
         if not self._enabled or not self._is_our_source(media_source):
             return None
+        keywords = self._meta_keywords(meta) if meta is not None else []
         record = None
         if _clean(media_id):
             record = self._resolve_item(media_id=_clean(media_id))
-        if record is None and meta is not None:
-            record = self._resolve_item(
-                keyword=_clean(getattr(meta, "title", "") or getattr(meta, "name", "")),
-                year=_clean(getattr(meta, "year", "")),
-            )
+        if record is None:
+            # 与宿主 TMDB 源同款：候选名挨个试，**第一个有结果就停**
+            # （``themoviedb/__init__.py`` 的 ``SEARCH_NAME`` 循环）
+            for keyword in keywords:
+                record = self._resolve_item(
+                    keyword=keyword,
+                    year=_clean(getattr(meta, "year", "")),
+                )
+                if record is not None:
+                    break
         if record is None:
             logger.debug(
                 f"{PLUGIN_NAME} 识别未命中：media_id={_clean(media_id) or '-'}"
-                f" 片名={_clean(getattr(meta, 'title', '') or getattr(meta, 'name', '')) or '-'}"
+                f" 片名={'/'.join(keywords) or '-'}"
             )
             return None
         logger.debug(
@@ -979,13 +1049,20 @@ class ShortDramaBaikeSource(_PluginBase):
                 return []
         elif not self._is_our_source(media_source):
             return []
-        query = _clean(getattr(meta, "title", "") or getattr(meta, "name", ""))
-        if not query:
+        keywords = self._meta_keywords(meta) if meta is not None else []
+        if not keywords:
             return []
         year = _clean(getattr(meta, "year", ""))
-        works, _ = self._resolve(query)
+        query = ""
+        works: List[Dict[str, Any]] = []
+        # 与识别同一份「候选名挨个试」的口径（照宿主 TMDB 源的 SEARCH_NAME 循环）
+        for candidate in keywords:
+            works, _ = self._resolve(candidate)
+            if works:
+                query = candidate
+                break
         if not works:
-            logger.debug(f"{PLUGIN_NAME} 检索「{query}」没有拿到作品候选")
+            logger.debug(f"{PLUGIN_NAME} 检索「{keywords[0]}」没有拿到作品候选")
             return []
         scored: List[Tuple[int, Dict[str, Any]]] = []
         for row in works:

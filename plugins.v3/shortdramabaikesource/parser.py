@@ -18,9 +18,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from .constants import (
     ACTOR_ID_PREFIX,
     ACTOR_PATH,
+    EPISODE_CN_RE,
+    FILENAME_EDGE_SEPARATOR_RE,
     LANG_PATH,
     MEDIA_ID_PREFIX,
     ORG_DEFAULT_DOMAIN,
+    SEASON_EPISODE_RE,
+    SEASON_ONLY_RE,
+    VIDEO_EXT_RE,
     WEB_INDEX_ACTOR_RE,
     WEB_INDEX_DETAIL_RE,
     WEB_INDEX_HOST_SUFFIX_RE,
@@ -39,6 +44,7 @@ __all__ = [
     "_normalize_title",
     "_match_title",
     "_strip_org_suffix",
+    "video_name_of",
     "web_index_native_id",
     "web_index_actor_id",
     "canonical_page_url",
@@ -150,6 +156,32 @@ def _normalize_title(title: str) -> str:
         chr(ord(char) - 0xFEE0) if "\uFF01" <= char <= "\uFF5E" else char for char in text
     )
     return text.casefold()
+
+
+def video_name_of(text: Any) -> str:
+    """把带「文件名味」的字符串还原成能拿去检索的片名。
+
+    宿主把**整个文件名**原样塞进 ``MetaInfo.title``（容器内实测
+    ``MetaInfo('雾锁情迷 - S01E71.mp4')`` → ``title = '雾锁情迷 - S01E71.mp4'``、
+    ``name = '雾锁情迷'``）。这种脏串无论拿去问搜索引擎、去 URL 库 `match`、
+    还是当检索节流的键，都必然落空 —— 库里存着的「雾锁情迷」永远查不回来。
+
+    逐个**剥到不变为止**：扩展名 → ``S01E71`` → ``S01`` → ``第71集``，最后修掉
+    残留的首尾分隔符。只认明确的文件级噪音，不去动正常片名里的字。
+    """
+    value = _clean(text)
+    if not value:
+        return ""
+    while True:
+        stripped = SEASON_EPISODE_RE.sub("", VIDEO_EXT_RE.sub("", value))
+        stripped = EPISODE_CN_RE.sub("", SEASON_ONLY_RE.sub("", stripped))
+        stripped = _clean(FILENAME_EDGE_SEPARATOR_RE.sub("", stripped))
+        if stripped == value:
+            return value
+        if not stripped:
+            # 全是噪音（``S01E71.mp4``）：宁可把原文交回去，上层还能按原文再试一次
+            return value
+        value = stripped
 
 
 def _match_title(candidate: str, target: str) -> int:
