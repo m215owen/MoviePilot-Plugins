@@ -35,9 +35,10 @@ URL 会**自己长大**：解析作品页时顺带把 ``actor[].url`` 入库，�
 2. **来源标识不是封闭枚举**：``MediaSource("duanjubaike")`` 可直接构造。
 3. **模块方法签名照宿主静态合同，一个字都不能改**：``recognize_media`` /
    ``async_recognize_media`` / ``search_medias`` / ``async_search_medias`` /
-   ``obtain_images`` / ``async_obtain_images``。
+   ``obtain_images`` / ``async_obtain_images`` / ``metadata_nfo`` / ``metadata_img``。
 4. **默认视频识别源是硬编码的 TMDB** ⇒ 本插件**不会**自动成为全局兜底，
    ``media_source`` 不匹配时**必须返回 None**，绝不能劫持其它来源的识别。
+   刮削出口（``metadata_nfo`` / ``metadata_img``）同理，只服务自己的来源，见 :mod:`scrape`。
 5. **图片域名要登记**：宿主图片代理只放行 ``SECURITY_IMAGE_DOMAINS`` 内的域名。
 
 站点能力边界（2026-10-14 / 15 实测）
@@ -119,6 +120,7 @@ from .payload import (
     build_public_record,
     media_source_value,
 )
+from .scrape import build_images, build_nfo
 from .store import SiteUrl, UrlStore
 from .tmdb import TmdbIdentity
 
@@ -307,6 +309,11 @@ class ShortDramaBaikeSource(_PluginBase):
 
         前两个返回宿主 ``MediaInfo``（与 TMDB / 豆瓣模块同一个模型）；演员那两个是本插件
         **自定义**方法名，返回纯 Python 列表，消费方不必做任何转换。
+
+        ``metadata_nfo`` / ``metadata_img`` 是**宿主刮削链**的两个出口（NFO 文本 / 图片
+        清单）：这两个契约对插件是「先跑、非空即短路」的，而内置的五个 NFO 生成器又都按
+        ``scrape_source`` 把自己过滤掉了 ⇒ 不暴露这两个方法，插件来源的刮削永远是空的。
+        细节见 :mod:`scrape`。
         """
         return {
             "recognize_media": self.recognize_media,
@@ -315,6 +322,9 @@ class ShortDramaBaikeSource(_PluginBase):
             "async_search_medias": self.async_search_medias,
             "obtain_images": self.obtain_images,
             "async_obtain_images": self.async_obtain_images,
+            # 刮削出口（宿主 chain/scraping.py 调用，签名见 scrape.py）
+            "metadata_nfo": self.metadata_nfo,
+            "metadata_img": self.metadata_img,
             # 自定义能力（宿主模块合同里没有这两个名字，走 legacy 契约放行）
             "search_actors": self.search_actors,
             "async_search_actors": self.async_search_actors,
@@ -1157,6 +1167,49 @@ class ShortDramaBaikeSource(_PluginBase):
 
     async def async_obtain_images(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.to_thread(self.obtain_images, *args, **kwargs)
+
+    # ── 模块接口：刮削（宿主静态合同）─────────────────────────────
+    #
+    # 与上面的 ``obtain_images`` 是两件事，别混：
+    # ``obtain_images`` 只把图片**地址**补进 MediaInfo（识别 / 入库用），
+    # 下面两个是刮削链真正**写盘**前的出口（NFO 文本 / 图片清单）。
+    # 契约对插件是「先跑、非空即短路」，而内置生成器又按 ``scrape_source`` 过滤掉了
+    # 自己 ⇒ 不实现这两个方法，插件来源的刮削就永远是空的。
+
+    def metadata_nfo(
+        self,
+        meta: Any = None,
+        mediainfo: Any = None,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Optional[str]:
+        """生成 NFO 文本（``tvshow`` / ``season`` / ``episodedetails`` / ``movie``）。
+
+        按宿主合同收 ``meta`` / ``mediainfo`` / ``season`` / ``episode`` 四个关键字参数；
+        ``meta`` 只用于别的来源补分集信息，本站没有分集级数据，用不上。
+        """
+        del meta, kwargs
+        if not self._enabled:
+            return None
+        return build_nfo(mediainfo, season=season, episode=episode)
+
+    def metadata_img(
+        self,
+        mediainfo: Any = None,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """返回刮削要落盘的图片清单（媒体库根目录的 ``poster`` / ``backdrop``）。
+
+        分季 / 分集一律返回空字典（站点没有这两级素材，见 :mod:`scrape`）；返回空字典
+        不等于「失败」—— 宿主的刮削链对空结果会自己跳过并记日志。
+        """
+        del kwargs
+        if not self._enabled:
+            return {}
+        return build_images(mediainfo, season=season, episode=episode)
 
     # ── 演员数据（供其它插件调用）────────────────────────────────
 

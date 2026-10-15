@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import (
     CLASSIFICATION_FIELDS,
@@ -83,7 +83,7 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
         vote_average = 0.0
 
     tags = [tag for tag in (item.get("tags") or []) if tag]
-    actors = [actor for actor in (item.get("actors") or []) if actor.get("name")]
+    actors = _media_info_actors(item)
     studio = _clean(item.get("studio"))
     release_date = _clean(item.get("release_date")) or None
     episode_minutes = _episode_minutes(item)
@@ -190,6 +190,28 @@ def build_classification_facts(item: Dict[str, Any]) -> Dict[str, Any]:
         if field_id in declared:
             facts[field_id] = value
     return facts
+
+
+def _media_info_actors(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """阵容按宿主形体交给 ``MediaInfo``，顺带补一份 ``avatar``。
+
+    宿主通用刮削器（``app.domain.scraper.MediaScraperHelper``）写 NFO 时读的是
+    ``actor.get("avatar") or actor.get("images")``，而站点给的是 ``profile_path``
+    （绝对地址）⇒ 不补这一手，NFO 里每个演员都会留一个空的 ``<thumb/>``。
+    ``profile_path`` 原样保留，别处（跨插件载荷、演员接口）照旧。
+
+    ⚠️ **必须拷贝**：``item`` 是解析缓存里的同一个字典，直接改会污染缓存与后续调用。
+    """
+    actors: List[Dict[str, Any]] = []
+    for raw in item.get("actors") or []:
+        if not raw.get("name"):
+            continue
+        actor = dict(raw)
+        avatar = _clean(actor.get("profile_path"))
+        if avatar and not actor.get("avatar"):
+            actor["avatar"] = {"large": avatar}
+        actors.append(actor)
+    return actors
 
 
 def _episode_minutes(item: Dict[str, Any]) -> Optional[int]:

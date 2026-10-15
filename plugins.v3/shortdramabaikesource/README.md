@@ -59,6 +59,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | **URL 库** | `get_database_models()` | 插件自有数据库里存「关键词 → 页面 URL」，取数**库优先** |
 | **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 分季），换回宿主详情页的演职员 / 推荐 / 分季区块 |
 | **分类扩展字段** | `get_media_source()` + `MediaInfo.classification_facts` | 声明 `extensions.duanjubaike.*` 三个字段并给出事实，**让宿主能把它归到「短剧」分类 —— 分类不匹配就整理不了**，见下节 |
+| **刮削出口** | `metadata_nfo` / `metadata_img` | 刮削时自己出 NFO 文本与图片清单（简介 / 题材 / 演员含角色与头像 / 海报 / 背景图）；不实现的话内置生成器全被来源过滤掉，**永远 NFO 生成失败**，见下节 |
 | **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + URL 库查看器 + 可展开原始数据 |
 | 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / URL 库 / 缓存等 9 项 |
 
@@ -144,6 +145,52 @@ if rule.sources and normalized_media_source not in rule.sources:
 
 > 不想改分类策略也行：整理时在「目标路径」手填媒体库目录即可 —— 走的是
 > `plan_transfer` 的 `target_path` 分支，不经过分类匹配。
+
+## 刮削：NFO 与图片（`metadata_nfo` / `metadata_img`）
+
+**机制**：刮削链在写盘前各问一次模块 —— `chain/scraping.py` 的 `_scrape_nfo_generic` /
+`_scrape_images_generic` → `run_module("metadata_nfo" | "metadata_img", …)`。这两个契约
+（`runtime/extensions/module/contracts.py`）都是 `public_to_plugins=True` +
+`plugin_short_circuit=True` + `FIRST_NON_EMPTY` ⇒ 调度器**先跑插件**，插件返回非空就
+直接短路，宿主模块根本不会被问。
+
+**不实现就永远出不来**：五个内置 NFO 生成器（themoviedb / douban / bangumi / anilist /
+imdb）的第一句都是
+
+```python
+if (mediainfo.scrape_source or get_runtime_setting('SCRAP_SOURCE')) != "<自己的来源>":
+    return None
+```
+
+而整理与手动刮削会把 `scrape_source` 设成**媒体来源**（`chain/transfer/execution.py`、
+`api/endpoints/media.py`）⇒ `duanjubaike` 下五个生成器全返回 `None`，日志里只会留下
+`xxx.nfo NFO 文件生成失败！`，磁盘上什么都没有。
+
+**本插件的做法**（`scrape.py`）：直接把宿主**公开**的
+`app.domain.scraper.MediaScraperHelper` 拿来用（anilist / bangumi / imdb 三个内置来源
+就是同一个姿势），字段取统一 `MediaInfo`：
+
+| 目标 | 产出 |
+| --- | --- |
+| 剧集根目录 | `tvshow.nfo` + `poster.jpg` + `backdrop.jpg`（宿主自动再写 `fanart.jpg` 别名） |
+| 季目录 | `season.nfo` |
+| 单集文件 | 同名 `.nfo`（`episodedetails`） |
+
+NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqueid>`、简介、
+题材标签、出品方、演员（**含角色名与头像**）、首播日期。两个刻意的边界：
+
+* **只服务自己的来源** —— 插件 provider 排在宿主模块之前，不做身份判断就会劫持
+  TMDB / 豆瓣 等来源的刮削（`scrape.is_own_media` 是唯一闸门）；
+* **不造分季 / 分集素材** —— 站点只有剧级海报与剧照，没有分季海报、更没有分集剧照，
+  所以 `season` / `episode` 一律返回空，让媒体服务器走自己的兜底显示。
+
+> 演员头像走的是宿主刮削器认的 `avatar` 键（`actor.get("avatar") or actor.get("images")`），
+> 站点给的是 `profile_path` ⇒ `payload.build_media_info` 补一份 `avatar`（**拷贝后再补**，
+> 原始记录是解析缓存里的同一对象）。
+
+真机实测（临时目录，`POST /api/v1/media/scrape/local?media_source=duanjubaike&media_id=duanju:60017`）：
+目录目标落盘 `tvshow.nfo` + `poster.jpg` + `backdrop.jpg` + `fanart.jpg`；单集目标落盘同名
+`.nfo`；日志里能看到 `请求插件 短剧百科数据源 执行：metadata_nfo / metadata_img`。
 
 ## 检索：库优先，库空了才打引擎
 
