@@ -1886,6 +1886,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-209750f2"]]);
+const Page = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-efdfdd52"]]);
 
 export { Page as default };

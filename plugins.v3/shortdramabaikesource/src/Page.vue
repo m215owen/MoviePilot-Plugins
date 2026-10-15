@@ -1455,18 +1455,15 @@ load()
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-/* URL 库 / 缓存：大屏并排各占一半（与宿主结果区的 md 断点一致），窄屏上下堆叠 */
+/* URL 库 / 缓存：并排各占一半。
+   用 auto-fit 而不是固定断点 —— 宿主详情弹窗的宽度各处不同（全屏页 vs 侧栏），
+   按「一张卡至少 360px」自适应：够宽就两列各半，不够就自动上下堆叠。 */
 .sdbs-duo {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   gap: 12px;
   margin-bottom: 4px;
-}
-@media (min-width: 960px) {
-  .sdbs-duo {
-    grid-template-columns: 1fr 1fr;
-    align-items: start;
-  }
+  align-items: start;
 }
 /* 折叠卡片头：整行可点，悬停有反馈 */
 .sdbs-fold {
