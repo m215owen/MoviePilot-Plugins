@@ -1518,7 +1518,7 @@ class ShortDramaBaikeSource(_PluginBase):
         ⚠️ 这是**一贯口径**，没有开关：演员页作品天然就是摘要，不补就缺字段；
         详情有 TTL 缓存，同一个演员第二次打开基本不再出网。
 
-        **并发抓、串行灌**（2026-10-16）：URL 库只存 URL 不存数据，所以一位没缓存过的
+        **并发抓、同步灌**（2026-10-16）：URL 库只存 URL 不存数据，所以一位没缓存过的
         演员要把每一部作品的详情页都抓一遍 —— 实测 46 部**串行 124s**（每部含一次站点页
         加一次 TMDB 身份查询），用户体感就是「搜个演员要等两分钟」。这里改成
         :data:`ENRICH_WORKERS` 个线程并发抓（站点对详情页不设风控，实测 12 并发全部 200），
@@ -1526,10 +1526,11 @@ class ShortDramaBaikeSource(_PluginBase):
 
         三条边界：
 
-        1. **并发只在抓取阶段** —— 页面记录解析完就回到本线程，``work`` 的字段覆盖、
-           ``origin`` 标记、日志都在池子结束后串行做，不碰共享可变状态。
-        2. **URL 库只写一次** —— 各线程在抓取时**收集** ``follow_links`` 的链接，池子结束后
-           由本线程一次性 :meth:`_remember_links`（并发 upsert 同一批演员行会撞唯一约束）。
+        1. **抓完一部立即落地** —— 字段覆盖、``origin`` 标记与 URL 库写入都在工作线程里
+           随抓随做，不等整批跑完：中途取消 / 池子异常已完成的部不白抓。
+        2. **URL 写入用锁串行化** —— 同一演员的各作品页 ``follow_links`` 高度重叠（都会
+           链回演员页），并发 upsert 同一行会撞 ``(kind, keyword, url)`` 唯一约束；写锁
+           保证 check-then-insert 不竞态，代价只是写库瞬间互斥（毫秒级），抓取不排队。
         3. **单部作品不开池子** —— 为一个任务建池子纯属浪费，也少一层出错面。
         """
         works = profile.get("works") or []
@@ -1544,21 +1545,40 @@ class ShortDramaBaikeSource(_PluginBase):
         if not pending:
             return 0
 
-        buffer: List[Dict[str, Any]] = []
-        buffer_lock = threading.Lock()
+        results: List[bool] = []
+        results_lock = threading.Lock()
+        write_lock = threading.Lock()
 
-        def collect(rows: List[Dict[str, Any]]) -> None:
-            with buffer_lock:
-                buffer.extend(rows)
-
-        def fetch(work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            return self._fetch_detail(
-                _clean(work.get("native_id")), _clean(work.get("url")), collect
+        def fetch(work: Dict[str, Any]) -> None:
+            rows: List[Dict[str, Any]] = []
+            detail = self._fetch_detail(
+                _clean(work.get("native_id")), _clean(work.get("url")), rows.extend
             )
+            filled = False
+            if detail:
+                # 详情优先：卡片上的标签是截断的（1~3 个），集数 / 时长也可能与详情页不一致；
+                # ``native_id`` / ``url`` 这类本地字段详情里同样有，照覆盖即可。
+                for field, value in detail.items():
+                    if _has_value(value):
+                        work[field] = value
+                work["origin"] = "detail"
+                filled = True
+            if rows:
+                with write_lock:  # 见 docstring 边界 2：只互斥写库，不互斥抓取
+                    self._remember_links(rows)
+            with results_lock:
+                results.append(filled)
 
-        fetched: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
         if len(pending) == 1 or ENRICH_WORKERS <= 1:
-            fetched = [(work, fetch(work)) for work in pending]
+            for work in pending:
+                try:
+                    fetch(work)
+                except Exception as err:  # pragma: no cover - 单部失败不该拖垮整批
+                    logger.debug(
+                        f"{PLUGIN_NAME} 作品 {work.get('native_id')} 补全异常："
+                        f"{type(err).__name__}: {err}"
+                    )
+                    results.append(False)
         else:
             pool_size = min(ENRICH_WORKERS, len(pending))
             with ThreadPoolExecutor(max_workers=pool_size) as pool:
@@ -1566,31 +1586,20 @@ class ShortDramaBaikeSource(_PluginBase):
                 for future in as_completed(futures):
                     work = futures[future]
                     try:
-                        fetched.append((work, future.result()))
+                        future.result()
                     except Exception as err:  # pragma: no cover - 单部失败不该拖垮整批
                         logger.debug(
                             f"{PLUGIN_NAME} 作品 {work.get('native_id')} 补全异常："
                             f"{type(err).__name__}: {err}"
                         )
-                        fetched.append((work, None))
+                        results.append(False)
 
-        filled = 0
-        for work, detail in fetched:
-            if not detail:
-                continue
-            # 详情优先：卡片上的标签是截断的（1~3 个），集数 / 时长也可能与详情页不一致；
-            # ``native_id`` / ``url`` 这类本地字段详情里同样有，照覆盖即可。
-            for field, value in detail.items():
-                if _has_value(value):
-                    work[field] = value
-            work["origin"] = "detail"
-            filled += 1
-        if buffer:
-            self._remember_links(buffer)
+        filled = sum(1 for ok in results if ok)
         if filled:
             logger.info(
                 f"{PLUGIN_NAME} 演员「{profile.get('name') or '?'}」作品补全 {filled} 部"
-                f"（共 {len(works)} 部，{min(ENRICH_WORKERS, len(pending))} 路并发）："
+                f"（共 {len(works)} 部，{min(ENRICH_WORKERS, len(pending))} 路并发，"
+                f"字段与 URL 库随抓随写）："
                 f"套用作品页字段（完整标签 / 首播 / 版权方 / 时长 / 简介 / 剧照 / 演员 / 推荐）"
             )
         return filled
