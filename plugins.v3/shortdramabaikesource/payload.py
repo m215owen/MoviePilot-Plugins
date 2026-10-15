@@ -9,9 +9,9 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from .constants import MEDIA_SOURCE_KEY, PLUGIN_NAME, TAGLINE_MAX_ACTORS
+from .constants import MEDIA_SOURCE_KEY, PLUGIN_NAME
 from .parser import _clean, _has_value, _normalize_image
 
 try:  # 宿主媒体信息领域模型（与 TMDB / 豆瓣模块返回的是同一个类）
@@ -95,7 +95,6 @@ def build_media_info(item: Dict[str, Any]) -> Any:
         # 站点给的是**全集总时长**，直接塞 runtime 会显示成「153 分钟」（80 集短剧），是错的；
         # 单集按集数折算（parser 已算），全集时长留在 record 的 ``duration_minutes`` 里。
         "runtime": episode_minutes,
-        "tagline": build_tagline(item) or None,
         "genres": [{"name": tag} for tag in tags],
         "names": list(tags),
         "actors": actors,
@@ -133,7 +132,10 @@ def build_media_info(item: Dict[str, Any]) -> Any:
 
 
 def _episode_minutes(item: Dict[str, Any]) -> Optional[int]:
-    """单集时长（分钟）：优先取 parser 算好的，否则按「全集 ÷ 集数」现场折算。"""
+    """单集时长（分钟）：优先取 parser 算好的，否则按「全集 ÷ 集数」现场折算。
+
+    宿主详情页那行「N 分钟」对电视剧读的就是单集时长（见 ``build_media_info`` 里的注释）。
+    """
     value = item.get("episode_minutes")
     if isinstance(value, int) and value > 0:
         return value
@@ -142,38 +144,6 @@ def _episode_minutes(item: Dict[str, Any]) -> Optional[int]:
     if isinstance(episodes, int) and episodes > 0 and isinstance(total, int) and total > 0:
         return max(1, round(total / episodes))
     return None
-
-
-def build_tagline(item: Optional[Dict[str, Any]]) -> str:
-    """把「详情页没有位置、但用户想看」的字段压成一行摘要（写进 ``tagline``）。
-
-    宿主详情页的自由文本位只有这一处（渲染在简介标题正上方，**无条件**）：评分星条、
-    状态、出品方、演职员区全挂在 ``tmdb_id``/``douban_id``/``bangumi_id``/``anilist_id``
-    上，而插件来源没有这些 ID（伪造只会把页面连到别处）。所以这里放：
-
-        ``评分 8.3 · 全 80 集 · 单集约 2 分钟 · 主演 梁雯晶、业文Kevin 等``
-
-    取不到的部分整段跳过；一个字段都没有时返回空串（调用方据此不写 tagline，
-    宁可整行没有，也不要留一行空白）。
-    """
-    if not item:
-        return ""
-    parts: List[str] = []
-    rating = _clean(item.get("rating"))
-    if rating:
-        parts.append(f"评分 {rating}")
-    episodes = item.get("episode_count")
-    if isinstance(episodes, int) and episodes > 0:
-        parts.append(f"全 {episodes} 集")
-    per = _episode_minutes(item)
-    if per:
-        parts.append(f"单集约 {per} 分钟")
-    names = [_clean(actor.get("name")) for actor in (item.get("actors") or [])]
-    names = [name for name in names if name]
-    if names:
-        picked = "、".join(names[:TAGLINE_MAX_ACTORS])
-        parts.append(f"主演 {picked}" + (" 等" if len(names) > TAGLINE_MAX_ACTORS else ""))
-    return " · ".join(parts)
 
 
 def _schema_media_info() -> Any:
