@@ -62,7 +62,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
@@ -91,6 +92,7 @@ from .constants import (
     DEFAULT_WEB_INDEX_BACKEND,
     DETAIL_PATH,
     DISCOVER_TITLE_ENRICH_LIMIT,
+    ENRICH_WORKERS,
     EXACT_TITLE_SCORE,
     IMAGE_DOMAINS,
     LANG_PATH,
@@ -784,13 +786,22 @@ class ShortDramaBaikeSource(_PluginBase):
 
     # ── 抓取与解析 ────────────────────────────────────────────────
 
-    def _fetch_detail(self, native_id: str, url: str = "") -> Optional[Dict[str, Any]]:
+    def _fetch_detail(
+        self,
+        native_id: str,
+        url: str = "",
+        collect: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """抓作品详情页并解析（带 TTL 缓存）。取不到返回 None。
 
         :param native_id: 站点作品 ID（裸数字）
         :param url: 优先使用的地址（库里的 URL / 引擎给的地址）；为空则按 ID 拼兜底。
             无论哪种都会被 :func:`parser.canonical_page_url` 归一化成简体地址 ——
             库里可能还留着旧版写的繁体/无前缀地址。
+        :param collect: 只在**并发补全**（:meth:`_enrich_works`）里传 —— 给定时不在本方法
+            里写 URL 库，而是把 ``follow_links`` 发现的链接交给这个回调**收集**，由调用方
+            在池子结束后一次性批量入库。理由：``store.add`` 是先读后写，多线程并发 upsert
+            同一批演员行（同一部剧的主演反复出现）会撞唯一约束刷 warning。
         """
         native_id = _clean(native_id)
         if not native_id.isdigit():
@@ -837,7 +848,7 @@ class ShortDramaBaikeSource(_PluginBase):
         # 剧 —— 面板上要看得出一位演员是搜哪部剧时带出来的
         if self._follow_links:
             title = _clean(record.get("title") or "")
-            self._remember_links(
+            links = (
                 [{"kind": "work", "keyword": title, "native_id": native_id,
                   "label": title, "url": record.get("url") or target}]
                 + [
@@ -849,6 +860,10 @@ class ShortDramaBaikeSource(_PluginBase):
                     if actor.get("id") and actor.get("name")
                 ]
             )
+            if collect is None:
+                self._remember_links(links)
+            else:
+                collect(links)
         return dict(record)
 
     def _fetch_actor(self, actor_id: str, url: str = "") -> Optional[Dict[str, Any]]:
@@ -1419,19 +1434,66 @@ class ShortDramaBaikeSource(_PluginBase):
         消费方（面板 / 其它插件 / 脚本）不必再分两套结构处理。
 
         ⚠️ 这是**一贯口径**，没有开关：演员页作品天然就是摘要，不补就缺字段；
-        详情有 TTL 缓存（默认 7 天），同一个演员第二次打开基本不再出网。
+        详情有 TTL 缓存，同一个演员第二次打开基本不再出网。
+
+        **并发抓、串行灌**（2026-10-16）：URL 库只存 URL 不存数据，所以一位没缓存过的
+        演员要把每一部作品的详情页都抓一遍 —— 实测 46 部**串行 124s**（每部含一次站点页
+        加一次 TMDB 身份查询），用户体感就是「搜个演员要等两分钟」。这里改成
+        :data:`ENRICH_WORKERS` 个线程并发抓（站点对详情页不设风控，实测 12 并发全部 200），
+        46 部降到十几秒。
+
+        三条边界：
+
+        1. **并发只在抓取阶段** —— 页面记录解析完就回到本线程，``work`` 的字段覆盖、
+           ``origin`` 标记、日志都在池子结束后串行做，不碰共享可变状态。
+        2. **URL 库只写一次** —— 各线程在抓取时**收集** ``follow_links`` 的链接，池子结束后
+           由本线程一次性 :meth:`_remember_links`（并发 upsert 同一批演员行会撞唯一约束）。
+        3. **单部作品不开池子** —— 为一个任务建池子纯属浪费，也少一层出错面。
         """
         works = profile.get("works") or []
         if not isinstance(works, list) or not works:
             return 0
-        filled = 0
+        pending: List[Dict[str, Any]] = []
         for work in works:
             if not isinstance(work, dict):
                 continue
-            native_id = _clean(work.get("native_id"))
-            if not native_id:
-                continue
-            detail = self._fetch_detail(native_id, _clean(work.get("url")))
+            if _clean(work.get("native_id")):
+                pending.append(work)
+        if not pending:
+            return 0
+
+        buffer: List[Dict[str, Any]] = []
+        buffer_lock = threading.Lock()
+
+        def collect(rows: List[Dict[str, Any]]) -> None:
+            with buffer_lock:
+                buffer.extend(rows)
+
+        def fetch(work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            return self._fetch_detail(
+                _clean(work.get("native_id")), _clean(work.get("url")), collect
+            )
+
+        fetched: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
+        if len(pending) == 1 or ENRICH_WORKERS <= 1:
+            fetched = [(work, fetch(work)) for work in pending]
+        else:
+            pool_size = min(ENRICH_WORKERS, len(pending))
+            with ThreadPoolExecutor(max_workers=pool_size) as pool:
+                futures = {pool.submit(fetch, work): work for work in pending}
+                for future in as_completed(futures):
+                    work = futures[future]
+                    try:
+                        fetched.append((work, future.result()))
+                    except Exception as err:  # pragma: no cover - 单部失败不该拖垮整批
+                        logger.debug(
+                            f"{PLUGIN_NAME} 作品 {work.get('native_id')} 补全异常："
+                            f"{type(err).__name__}: {err}"
+                        )
+                        fetched.append((work, None))
+
+        filled = 0
+        for work, detail in fetched:
             if not detail:
                 continue
             # 详情优先：卡片上的标签是截断的（1~3 个），集数 / 时长也可能与详情页不一致；
@@ -1441,10 +1503,12 @@ class ShortDramaBaikeSource(_PluginBase):
                     work[field] = value
             work["origin"] = "detail"
             filled += 1
+        if buffer:
+            self._remember_links(buffer)
         if filled:
             logger.info(
                 f"{PLUGIN_NAME} 演员「{profile.get('name') or '?'}」作品补全 {filled} 部"
-                f"（共 {len(works)} 部）："
+                f"（共 {len(works)} 部，{min(ENRICH_WORKERS, len(pending))} 路并发）："
                 f"套用作品页字段（完整标签 / 首播 / 版权方 / 时长 / 简介 / 剧照 / 演员 / 推荐）"
             )
         return filled
