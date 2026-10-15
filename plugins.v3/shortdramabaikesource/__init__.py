@@ -75,6 +75,7 @@ from .constants import (
     ACTOR_ID_PREFIX,
     ACTOR_PATH,
     ACTOR_WORKS_ENRICH_LIMIT,
+    CLASSIFICATION_FIELDS,
     DEFAULT_CACHE_TTL,
     DEFAULT_TIMEOUT,
     DEFAULT_WEB_INDEX_BACKEND,
@@ -275,12 +276,22 @@ class ShortDramaBaikeSource(_PluginBase):
     # ── 数据源声明 ────────────────────────────────────────────────
 
     def get_media_source(self) -> List[Dict[str, Any]]:
-        """声明本插件提供的媒体数据源（短剧在 MoviePilot 里统一按电视剧处理）。"""
+        """声明本插件提供的媒体数据源（短剧在 MoviePilot 里统一按电视剧处理）。
+
+        顺带声明 :data:`constants.CLASSIFICATION_FIELDS` 三个扩展分类字段 —— 宿主的
+        「媒体分类策略」只认插件自己声明过的 ``extensions.<来源>.<字段>``，而**分类
+        决定了整理时能不能匹配到媒体库目录**（详见那里的注释）。声明在插件加载时由
+        ``PluginClassificationRegistry`` 校验：字段 ID 不在本源命名空间、值类型与
+        操作符不匹配、媒体类型超出来源声明，都会让**整份声明**被拒。
+        """
         return [
             {
                 "name": MEDIA_SOURCE_LABEL,
                 "media_source": media_source_value(),
                 "media_types": [MediaType.TV],
+                "classification_fields": [
+                    dict(field) for field in CLASSIFICATION_FIELDS
+                ],
             }
         ]
 

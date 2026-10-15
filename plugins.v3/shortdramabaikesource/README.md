@@ -58,6 +58,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | **演员档案** | `search_actors` / `actor_works` | 演员名 → 候选演员；演员 → **全部作品**（实测 21 部一次全渲染、不分页） |
 | **URL 库** | `get_database_models()` | 插件自有数据库里存「关键词 → 页面 URL」，取数**库优先** |
 | **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 分季），换回宿主详情页的演职员 / 推荐 / 分季区块 |
+| **分类扩展字段** | `get_media_source()` + `MediaInfo.classification_facts` | 声明 `extensions.duanjubaike.*` 三个字段并给出事实，**让宿主能把它归到「短剧」分类 —— 分类不匹配就整理不了**，见下节 |
 | **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + URL 库查看器 + 可展开原始数据 |
 | 配置页 | `./Config` 联邦组件 | 站点域名 / 站外索引 / URL 库 / 缓存等 9 项 |
 
@@ -78,6 +79,71 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 
 短剧在 TMDB / 豆瓣上大量没有条目，宿主识别器因此建不起媒体身份（本机实例实证：
 站点能搜到剧名，但宿主 `media_info` 全为 null）。本插件补的正是这一段空白。
+
+## 整理（媒体整理 / 目录匹配）与分类：为什么必须声明扩展字段
+
+**症状**：识别明明成功（`duanju:24755《疯了吧！我演个反派，我上犯罪榜了》`），
+手动整理却报「**未找到有效的媒体库目录**」。
+
+**链路**（`application/directory.py` + `modules/filemanager/module.py`）：
+
+1. `plan_transfer` 要一个目标：要么请求带 `target_path`，要么由
+   `DirectoryHelper.get_dir()` 按**源路径**匹配到一条目录配置；
+2. 目录配置若**固定了分类**（本例「短剧」目录：`media_category=短剧`、
+   `media_category_id=legacy.tv.43ad153372ee83c5`），`media_match_rank` 会拿
+   目录的分类 ID 和**媒体的分类 ID** 比，不一致就返回 `None` ⇒ 该目录被弃；
+3. 于是 `target_directory` 与 `target_path` 双空 ⇒ `TransferPlanningRejectedError`。
+
+**媒体的分类从哪来**：宿主的分类策略（`MediaClassificationPolicy`，`first_match`）
+逐条规则求值，`domain/classification/evaluator.py` 起手就是：
+
+```python
+if rule.sources and normalized_media_source not in rule.sources:
+    continue
+```
+
+而已有规则全部是迁移自旧版配置的 legacy 规则，`sources` 一律 `["themoviedb"]` ——
+我们的 `duanjubaike` 一条都进不去，落到兜底 `tv.uncategorized`（**未分类**），
+与「短剧」目录对不上。
+
+**为什么不能直接用「来源=短剧百科」当条件**：校验器要求条件字段在规则所选来源上
+「可用」，而标准字段（`identity.media_source` / `media.*`）的能力表只登记了内置来源，
+插件来源一律 `unavailable`，实测发布被拒：
+
+```json
+{"code":"unavailable_field_support",
+ "message":"字段 identity.media_source 在所选来源中均不可用：duanjubaike"}
+```
+
+宿主留给插件的只有 `extensions.<来源>.<字段>` 命名空间（由 `get_media_source()`
+的 `classification_fields` 声明，`runtime/extensions/plugin/classification.py` 校验）。
+
+**本插件的做法**：
+
+| 字段 | 类型 | 值 | 说明 |
+| --- | --- | --- | --- |
+| `extensions.duanjubaike.is_short_drama` | boolean | 恒 `True` | 本站只收录短剧；规则拿它做「本源识别出来的都归短剧」的兜底 |
+| `extensions.duanjubaike.kind` | string | `真人短剧` / `AI短剧` | 详情页角标，页面没给就不带 |
+| `extensions.duanjubaike.tags` | string_list | 题材标签 | 便于以后按题材再细分目录 |
+
+事实通过 `MediaInfo.classification_facts` 交给宿主（`build_classification_facts`），
+**只发声明过的字段，缺值就不发**，不伪造。
+
+配套在宿主「设置 → 媒体分类策略」里加一条规则（revision 3，可回滚到 2）：
+
+```json
+{"id": "legacy.tv.43ad153372ee83c5.rule.duanjubaike", "kind": "category",
+ "media_types": ["电视剧"], "sources": ["duanjubaike"],
+ "when": {"field": "extensions.duanjubaike.is_short_drama", "operator": "is_true"},
+ "target": {"category_id": "legacy.tv.43ad153372ee83c5"}}
+```
+
+加完之后实测：识别结果 `classification.effective` 命中该规则（`state: complete`），
+不带 `target_path` 的手动整理也能自动落到
+`/vol2/1000/media/短剧/<剧名> (2025)/Season 1/<剧名> - S01E18 … .mp4`。
+
+> 不想改分类策略也行：整理时在「目标路径」手填媒体库目录即可 —— 走的是
+> `plan_transfer` 的 `target_path` 分支，不经过分类匹配。
 
 ## 检索：库优先，库空了才打引擎
 

@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from .constants import MEDIA_SOURCE_KEY, PLUGIN_NAME
+from .constants import (
+    CLASSIFICATION_FIELDS,
+    CLASSIFICATION_FIELD_PREFIX,
+    MEDIA_SOURCE_KEY,
+    PLUGIN_NAME,
+)
 from .parser import _clean, _has_value, _normalize_image
 
 try:  # 宿主媒体信息领域模型（与 TMDB / 豆瓣模块返回的是同一个类）
@@ -151,7 +156,40 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
             setattr(mediainfo, name, extra[name])
         except Exception as err:  # pragma: no cover - 只读模型兜底
             logger.debug(f"{PLUGIN_NAME} 写入 {name} 失败：{err}")
+    # 分类事实：``MediaInfo.classification_facts`` 是宿主给插件来源留的口子
+    # （``application/classification/analysis.py`` 的 ``_media_extension_facts``
+    # 只读 ``extensions.<来源>.<字段>`` 前缀的键）。没有它，宿主的分类策略在我们的
+    # 来源上一条规则都命中不了 ⇒ 落「未分类」⇒ 目录匹配拒绝 ⇒ **整理不了**。
+    try:
+        mediainfo.classification_facts = build_classification_facts(item)
+    except Exception as err:  # pragma: no cover - 只读模型兜底
+        logger.debug(f"{PLUGIN_NAME} 写入分类事实失败：{err}")
     return mediainfo
+
+
+def build_classification_facts(item: Dict[str, Any]) -> Dict[str, Any]:
+    """给宿主分类策略的扩展事实（键必须带 ``extensions.<来源>.`` 前缀）。
+
+    * ``is_short_drama``：恒为 ``True``。本站只收录短剧，规则拿它做「是本源识别出来的
+      就归短剧」的兜底条件 —— 宿主不允许用 ``identity.media_source`` 当条件（插件来源
+      上该字段被判「不可用」），这是唯一能稳定表达「来源=短剧百科」的事实。
+    * ``kind`` / ``tags``：站点真实字段（角标形态 / 题材标签），页面没给就不带，
+      便于以后按真人 / AI 或题材再细分目录。**不伪造**：缺就是缺。
+    """
+    declared = {str(field.get("id")) for field in CLASSIFICATION_FIELDS}
+    facts: Dict[str, Any] = {}
+    for key, value in (
+        ("is_short_drama", True),
+        ("kind", _clean(item.get("kind"))),
+        ("tags", [tag for tag in (item.get("tags") or []) if tag]),
+    ):
+        if not value:
+            continue
+        field_id = f"{CLASSIFICATION_FIELD_PREFIX}{key}"
+        # 只发声明过的字段：没登记的事实会被宿主判为「忽略插件分类事实」并刷警告
+        if field_id in declared:
+            facts[field_id] = value
+    return facts
 
 
 def _episode_minutes(item: Dict[str, Any]) -> Optional[int]:

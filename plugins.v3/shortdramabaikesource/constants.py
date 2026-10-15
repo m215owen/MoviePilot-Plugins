@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Any, Dict, Tuple
 
 # ── 插件元数据（须与 package.v3.json 保持一致） ──────────────────────
 PLUGIN_NAME = "短剧百科数据源"
@@ -85,6 +85,52 @@ DISCOVER_TITLE_ENRICH_LIMIT = 3
 ACTOR_WORKS_ENRICH_LIMIT = 10
 # 自检（/probe）在「检索没命中」时用来兜底的详情样本：实测存在且字段完整的作品
 PROBE_SAMPLE_MEDIA_ID = "duanju:45982"
+
+# ── 分类扩展字段（宿主「媒体分类策略」用）──────────────────────────
+# 为什么要有这一段：宿主的目录匹配是**按分类**挑媒体库目录的
+# （``application/directory.py`` 的 ``media_match_rank``：目录固定了分类时，
+# 媒体的分类 ID 不一致就直接判不匹配）⇒ 分类不匹配 = 「未找到有效的媒体库目录」
+# = 整理失败。而宿主的分类规则**不能用来源身份做条件** —— 校验器要求条件字段在
+# 规则所选来源里「可用」，标准字段（``identity.media_source`` / ``media.*``）的能力
+# 表只登记了内置来源，插件来源一律是 unavailable，实测发布规则会被拒：
+#   ``字段 identity.media_source 在所选来源中均不可用：duanjubaike``
+# 宿主留给插件的只有 ``extensions.<来源>.<字段>`` 命名空间（``MediaSourceInfo``
+# 的 ``classification_fields``，见 ``runtime/extensions/plugin/classification.py``）
+# ⇒ 想让「短剧百科识别出来的都归到短剧分类」，只能由插件自己声明并给出事实。
+CLASSIFICATION_FIELD_PREFIX = f"extensions.{MEDIA_SOURCE_KEY}."
+# 三个字段：一个恒真（兜底，保证规则一定命中）+ 两个站点真实字段（便于以后细分）。
+# ⚠️ 值类型与操作符必须匹配 ``domain/classification/fields.VALUE_TYPE_OPERATORS``，
+# 否则插件加载时声明会被整体拒绝（``PluginClassificationDeclarationError``）。
+CLASSIFICATION_FIELDS: Tuple[Dict[str, Any], ...] = (
+    {
+        "id": f"{CLASSIFICATION_FIELD_PREFIX}is_short_drama",
+        "label": "短剧百科收录",
+        "group": "短剧百科",
+        "description": "由短剧百科识别成功的条目；本站只收录短剧，因此恒为真",
+        "value_type": "boolean",
+        "operators": ["is_true", "is_false", "exists", "not_exists"],
+    },
+    {
+        "id": f"{CLASSIFICATION_FIELD_PREFIX}kind",
+        "label": "短剧形态（真人 / AI）",
+        "group": "短剧百科",
+        "description": "详情页角标：真人短剧 / AI短剧；页面没给出角标时不带这一条",
+        "value_type": "string",
+        "operators": ["equals", "not_equals", "in", "not_in", "exists", "not_exists"],
+        "options": [
+            {"value": "真人短剧", "label": "真人短剧"},
+            {"value": "AI短剧", "label": "AI短剧"},
+        ],
+    },
+    {
+        "id": f"{CLASSIFICATION_FIELD_PREFIX}tags",
+        "label": "短剧百科题材标签",
+        "group": "短剧百科",
+        "description": "详情页的题材标签（都市 / 逆袭 / 系统 …）",
+        "value_type": "string_list",
+        "operators": ["contains_any", "contains_all", "contains_none", "exists", "not_exists"],
+    },
+)
 
 # ⚠️ 宿主详情页（``/media``）里，评分星条 / 状态 / 上映日期 / 出品方 / 演职员区**全部**挂在
 # ``tmdb_id``/``douban_id``/``bangumi_id``/``anilist_id`` 四个分支上（前端 ``media-*.js``
