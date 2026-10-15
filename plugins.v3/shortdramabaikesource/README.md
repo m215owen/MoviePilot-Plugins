@@ -237,6 +237,29 @@ NFO 里带站点真实数据：`<uniqueid type="duanjubaike">duanju:60017</uniqu
 
 站点详情页目前没有别名数据，故 `names` 恒为 `[]`；题材只进 `genres`。
 
+### ⚠️ `season_years` 必须填（电视剧的年份校验**只认它**）
+
+宿主判断种子是不是目标剧时，对**电视剧**的年份白名单只有 `season_years` 一处
+（`app/application/torrent/download.py`）：
+
+```python
+if torrent_meta.year and torrent_meta.year not in mediainfo.season_years.values():
+    return False        # 判「年份不匹配」，资源直接丢
+```
+
+所以**不填 `season_years` 会把「名字里带年份」的资源全部丢掉**：AGSV 的
+`… 2025 S01 720p WEB-DL …` 2026-10-15 就是这么死的（过滤已通过，卡在匹配）。
+TMDB 源填 `{季号: 该季首播年}`，豆瓣源在缺分季数据时兜底 `{1: 年份}`；
+本站点只有「首播年」一个粒度，因此照豆瓣口径**按单季折算**（页面声明了
+「第 N 季」就用 N），TMDB 真身份命中时改用 TMDB 的**真分季**。
+
+顺带一起填的还有 `seasons`（各季集清单）：宿主的**媒体库存在性检查**没有它会直接
+报错退出（`chain/download/existence.py`：「媒体信息中没有季集信息」）。集数拿不到
+就不写 —— 宁缺毋滥，不编一个假集数。
+
+⚠️ 注意方向：**没年份的种子本来就会跳过年份校验**（`if torrent_meta.year`），
+PTS 这类**整个站点都不带年份**的来源不受影响；这里只放宽、不新增拦截。
+
 ### 两级取数
 
 取数只有一条路，但**分两级**：

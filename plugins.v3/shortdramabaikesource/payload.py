@@ -165,6 +165,13 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
             setattr(mediainfo, name, extra[name])
         except Exception as err:  # pragma: no cover - 只读模型兜底
             logger.debug(f"{PLUGIN_NAME} 写入 {name} 失败：{err}")
+    # 各季年份 / 各季集清单：宿主**只能**靠 season_years 给电视剧做年份校验，
+    # 缺了它带年份的种子（AGSV 的「… 2025 S01 …」）会被判「年份不匹配」整条丢掉 —— 详见 _season_fields
+    for name, value in _season_fields(item, extra).items():
+        try:
+            setattr(mediainfo, name, value)
+        except Exception as err:  # pragma: no cover - 只读模型兜底
+            logger.debug(f"{PLUGIN_NAME} 写入 {name} 失败：{err}")
     # 分类事实：``MediaInfo.classification_facts`` 是宿主给插件来源留的口子
     # （``application/classification/analysis.py`` 的 ``_media_extension_facts``
     # 只读 ``extensions.<来源>.<字段>`` 前缀的键）。没有它，宿主的分类策略在我们的
@@ -221,6 +228,64 @@ def _media_info_actors(item: Dict[str, Any]) -> List[Dict[str, Any]]:
             actor["avatar"] = {"large": avatar}
         actors.append(actor)
     return actors
+
+
+def _season_fields(item: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    """把「这部作品有哪些季、各季是哪一年」交给宿主（``seasons`` / ``season_years``）。
+
+    ⚠️ **不填就会丢掉带年份的资源**。宿主对电视剧的年份白名单只认 ``season_years``
+    （``application/torrent/download.py``）::
+
+        if torrent_meta.year and torrent_meta.year not in mediainfo.season_years.values():
+            return False          # 判「年份不匹配」，资源直接丢
+
+    没有了年份的种子（PTS 这类站点**整个站点都不带年份**）反而会跳这一段
+    （``if torrent_meta.year``），所以缺 ``season_years`` 只会伤到 AGSV 这种带年份的站点。
+
+    本站点只有「首播年」一个粒度，没有分季数据，所以按**单季**折算 —— 与宿主豆瓣来源的
+    兜底口径完全一致（``domain/projection/douban.py``：``{season or 1: year}``）。
+    TMDB 严格匹配上时（:mod:`tmdb` 的 ``season_info``）用**真分季**：季号、各季首播年、
+    各季集数都是 TMDB 给的，比兜底准确。
+
+    ``seasons`` 是各季的集清单，宿主的**媒体库存在性检查**缺它会直接报错退出
+    （``chain/download/existence.py``：没有季集信息 ⇒ ``媒体信息中没有季集信息``），
+    详情页的季集聚合也读它。拿不到集数就不写（宁缺毋滥，不编一个假集数）。
+    """
+    seasons: Dict[int, List[int]] = {}
+    season_years: Dict[int, str] = {}
+
+    for row in (extra or {}).get("season_info") or []:  # TMDB 真实分季（严格匹配过才有）
+        if not isinstance(row, dict):
+            continue
+        number = row.get("season_number")
+        if not isinstance(number, int):
+            continue
+        air_date = _clean(row.get("air_date"))
+        if air_date:
+            season_years[number] = air_date[:4]
+        count = row.get("episode_count")
+        if isinstance(count, int) and count > 0:
+            seasons[number] = list(range(1, count + 1))
+
+    # 站点兜底：整部作品按一季算（站点页面声明了「第 N 季」就用那个季号）
+    season = item.get("season")
+    if not isinstance(season, int) or season <= 0:
+        season = 1
+    if not season_years:
+        year = _clean(item.get("year"))
+        if year:
+            season_years[season] = year
+    if not seasons:
+        episodes = item.get("episode_count")
+        if isinstance(episodes, int) and episodes > 0:
+            seasons[season] = list(range(1, episodes + 1))
+
+    fields: Dict[str, Any] = {}
+    if seasons:
+        fields["seasons"] = seasons
+    if season_years:
+        fields["season_years"] = season_years
+    return fields
 
 
 def _episode_minutes(item: Dict[str, Any]) -> Optional[int]:
