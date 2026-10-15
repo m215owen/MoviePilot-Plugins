@@ -290,25 +290,36 @@ works  = self.run_module("actor_works", name="魏依珂")      # 名字也可以
 从宿主的搜索框 / 媒体页点开一部作品，前端会跳到
 `/media?media_source=duanjubaike&media_id=org:<id>`，
 再由宿主调 `GET /api/v1/media/{media_id}?media_source=…&type_name=…` →
-`recognize_media` 取数。**宿主前端对自定义来源是有结构性限制的**（v3.1.5 实测）：
+`recognize_media` 取数。前端产物 `media-<hash>.js` 逐块核对过（v3.1.5）：
 
 | 详情页区块 | 渲染条件 | 本插件 |
 | --- | --- | --- |
 | 海报 / 背景图 / 标题 / 年份 | 无条件 | ✅ |
-| 时长 + **类型标签**（`289 分钟 \| 东方仙侠、玄幻脑洞`） | 无条件（读 `runtime` + `genres`） | ✅ |
+| 时长 + **类型标签**（`2 分钟 \| 东方仙侠、玄幻脑洞`） | 无条件（读 `runtime`，缺则 `episode_run_time[0]`，再拼 `genres`） | ✅ 填的是**单集时长** |
 | **简介** | 无条件 | ✅ |
-| **评分（星条）**、TMDB/豆瓣 ID、出品方、状态 | 仅当媒体有 `tmdb_id` | ❌ 结构上不渲染 |
-| 评分 / 豆瓣 ID | 仅当有 `douban_id` | ❌ 同上 |
-| 评分 / 来源 ID | 仅当有 `bangumi_id` / `anilist_id` | ❌ 同上 |
-| **演职员**（`tmdb/credits/{id}` 等列表） | 同上，三选一 | ❌ 同上 |
-| 分季分集、剧照、推荐 | 同上（TMDB 专有数据） | ❌ 同上 |
+| **`tagline`**（简介标题正上方那行） | **无条件** ← 自定义来源唯一的自由文本位 | ✅ 放评分 / 集数 / 单集时长 / 主演 |
+| 「已在媒体库」徽章、订阅、搜索资源按钮 | 无条件（走通用 `media_source`/`media_id`） | ✅ |
+| **评分星条**、来源 ID、状态、首播日期、原语言、制片国家、出品方 | 仅当有 `tmdb_id` / `douban_id` / `bangumi_id` / `anilist_id` 四选一 | ❌ 结构上不渲染 |
+| **演职员**（另起 `{来源}/credits/…` 接口，**不是读 `MediaInfo.actors`**） | 同上四选一 | ❌ 同上 |
+| 推荐 / 相似（`{来源}/recommend|similar`） | 同上；**相似仅 TMDB** | ❌ 同上 |
+| 分季分集 / 剧集组（`media/groups/{tmdb_id}`） | `type=电视剧 && tmdb_id`，函数体内再要求 `source=themoviedb` | ❌ 同上 |
+| 来源链接 chips（TMDB/豆瓣/IMDb/TheTvDb/Bangumi/AniList 各一个） | 六个独立条件，**没有 homepage 通用链接** | ❌ 同上 |
 
-也就是说：**评分区与演职员区是前端按 TMDB / 豆瓣 / Bangumi 三个来源硬编码的**，
-自定义来源拿不到这两个位置 —— 这不是插件能通过字段补上的缺口（试图伪造 `tmdb_id`
-只会把页面连到 TMDB 上另一部剧）。v2.0~v2.1 曾把「评分 · 全 N 集 · 主演…」写进
-`tagline`（简介上方那行摘要）作补偿，**v2.2.1 起按用户要求整体移除**：`tagline`
-一律不写，详情页只保留标题与简介。完整的「评分 / 演员 / 剧照」字段一直都在
-`recognize_media()` / `/actor` 的返回值里，面板的「原始数据」与其它插件都可以照常取用。
+两个**全前端零渲染点**的字段：`MediaInfo.actors` 与 `number_of_episodes`
+（`grep -rl '\.actors' /public/assets` 命中 0）。所以：
+
+- **演员/集数不是没数据，是没有位置**：插件的演员（含角色名与头像）只在面板、「原始数据」
+  与跨插件接口里可见。想让它出现在详情页，只能改宿主。
+- **`runtime` 必须填单集时长**：宿主那行的语义是单集（实测 TMDB 剧集样本
+  `runtime=null` + `episode_run_time=[45]`），而站点给的 `duration` 是**全集总时长**。
+  插件因此把折算出的 `episode_minutes` 写进 `runtime` / `episode_run_time`，
+  全集总时长只留在 record 的 `duration_minutes` 里 —— 否则详情页会把 80 集短剧显示成「153 分钟」。
+- **`tagline` 是唯一的补偿位**（v2.2.1 曾按用户要求整体移除，现按要求恢复）：
+  「评分 8.3 · 全 80 集 · 单集约 2 分钟 · 主演 甲、乙、丙 等」，取不到的段落自动跳过，
+  一个字段都没有时整行不写（不留空白行）。
+- 评分另有位置：**探索页 / 搜索结果的卡片**（`MediaCard`）**无条件**渲染 `vote_average`，
+  所以站内评分在卡片上本来就能看到，只有详情页那一处星条拿不到。
+- ⚠️ **不要伪造 `tmdb_id`**：只会把页面连到 TMDB 上另一部剧。
 
 ## 供其它插件调用
 
