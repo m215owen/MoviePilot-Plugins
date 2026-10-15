@@ -167,16 +167,17 @@ def build_media_info(item: Dict[str, Any], extra: Optional[Dict[str, Any]] = Non
             mediainfo.original_language = language
         except Exception as err:  # pragma: no cover - 只读模型兜底
             logger.debug(f"{PLUGIN_NAME} 写入语言失败：{err}")
-    # 分季信息同样构造后赋值（详情页的「分季分集」区块按 season_info 渲染，缺了会只剩标题）
-    for name in ("season_info", "number_of_seasons"):
-        if extra.get(name) is None:
-            continue
+    # ``number_of_seasons`` 只有 TMDB 命中才知道，照旧构造后赋值。
+    # ``season_info`` **不在这里**写 —— 它由 _season_fields 统一给，且**总是**有值
+    # （TMDB 命中用真分季，否则站点兜底单季）。理由见该函数：第三方插件只认它读开播日期。
+    if extra.get("number_of_seasons") is not None:
         try:
-            setattr(mediainfo, name, extra[name])
+            mediainfo.number_of_seasons = extra["number_of_seasons"]
         except Exception as err:  # pragma: no cover - 只读模型兜底
-            logger.debug(f"{PLUGIN_NAME} 写入 {name} 失败：{err}")
-    # 各季年份 / 各季集清单：宿主**只能**靠 season_years 给电视剧做年份校验，
-    # 缺了它带年份的种子（AGSV 的「… 2025 S01 …」）会被判「年份不匹配」整条丢掉 —— 详见 _season_fields
+            logger.debug(f"{PLUGIN_NAME} 写入 number_of_seasons 失败：{err}")
+    # 分季三件套：各季集清单 / 各季首播年 / 各季详情。宿主**只能**靠 season_years 给电视剧做
+    # 年份校验，缺了它带年份的种子（AGSV 的「… 2025 S01 …」）会被判「年份不匹配」整条丢掉；
+    # season_info 则是「开播日期」唯一的对外载体 —— 详见 _season_fields
     for name, value in _season_fields(item, extra).items():
         try:
             setattr(mediainfo, name, value)
@@ -216,9 +217,12 @@ def _media_info_actors(item: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _season_fields(item: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
-    """把「这部作品有哪些季、各季是哪一年」交给宿主（``seasons`` / ``season_years``）。
+    """把「这部作品有哪些季、各季是哪一年、各季什么时候开播」交给宿主。
 
-    ⚠️ **不填就会丢掉带年份的资源**。宿主对电视剧的年份白名单只认 ``season_years``
+    产出三项：``seasons``（各季集清单）/ ``season_years``（各季首播年）/
+    ``season_info``（各季详情）。
+
+    ⚠️ **``season_years`` 不填就会丢掉带年份的资源**。宿主对电视剧的年份白名单只认它
     （``application/torrent/download.py``）::
 
         if torrent_meta.year and torrent_meta.year not in mediainfo.season_years.values():
@@ -227,10 +231,28 @@ def _season_fields(item: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any
     没有了年份的种子（PTS 这类站点**整个站点都不带年份**）反而会跳这一段
     （``if torrent_meta.year``），所以缺 ``season_years`` 只会伤到 AGSV 这种带年份的站点。
 
-    本站点只有「首播年」一个粒度，没有分季数据，所以按**单季**折算 —— 与宿主豆瓣来源的
-    兜底口径完全一致（``domain/projection/douban.py``：``{season or 1: year}``）。
-    TMDB 严格匹配上时（:mod:`tmdb` 的 ``season_info``）用**真分季**：季号、各季首播年、
-    各季集数都是 TMDB 给的，比兜底准确。
+    ⚠️ **``season_info`` 不填则订阅必被暂停**。它是「开播日期」唯一的对外载体：
+    宿主自己的 UI 与搜索都不读它，但订阅助手增强（SubscribeAssistantEnhanced）的
+    「上映前暂停”只认 ``season_info[].air_date``
+    （``subscribeassistantenhanced/pause/airing.py::check_pre_air``）::
+
+        air_date = parse_date(get_tv_season_air_date(mediainfo, subscribe.season))
+        if air_date is None:
+            air_date = first_available_scope_episode_air_date(subscribe, episodes)
+        if air_date is None:
+            return PauseRecord(reason="pre_air", detail="开播日期未知")   # ⇒ 置 S（暂停）
+
+    它**不读** ``release_date`` / ``first_air_date``；``episodes`` 那条兜底又要 ``tmdb_id``
+    才取得到分集表。短剧基本不在 TMDB 上（:mod:`tmdb` 抽 14 部只命中 1 部）⇒ 从前
+    ``season_info`` 恒空 ⇒ 从本来源建的每一条订阅都在创建后几秒被判「开播日期未知」而
+    暂停，且条件永不解除（真机实测：``duanju:397`` 01:01:18 建、01:01:23 置 S）。
+
+    ⚠️ **所以兜底必须有**，且口径与 ``seasons`` / ``season_years`` 完全一致（同一个 ``season``
+    季号）：TMDB 严格匹配上时用 TMDB 的真分季（季号、各季首播年、各季集数都更准），
+    否则用站点自己的**单季** —— 站点页面只有「首播日期 + 集数」一个粒度，没有分季数据。
+
+    本站点只有「首播年」一个粒度，所以按**单季**折算 —— 与宿主豆瓣来源的兜底口径完全
+    一致（``domain/projection/douban.py``：``{season or 1: year}``）。
 
     ``seasons`` 是各季的集清单，宿主的**媒体库存在性检查**缺它会直接报错退出
     （``chain/download/existence.py``：没有季集信息 ⇒ ``媒体信息中没有季集信息``），
@@ -238,10 +260,9 @@ def _season_fields(item: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any
     """
     seasons: Dict[int, List[int]] = {}
     season_years: Dict[int, str] = {}
+    tmdb_seasons = [row for row in ((extra or {}).get("season_info") or []) if isinstance(row, dict)]
 
-    for row in (extra or {}).get("season_info") or []:  # TMDB 真实分季（严格匹配过才有）
-        if not isinstance(row, dict):
-            continue
+    for row in tmdb_seasons:  # TMDB 真实分季（严格匹配过才有）
         number = row.get("season_number")
         if not isinstance(number, int):
             continue
@@ -270,7 +291,36 @@ def _season_fields(item: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any
         fields["seasons"] = seasons
     if season_years:
         fields["season_years"] = season_years
+    # TMDB 分季原样透传；没有就用站点单季兜底 —— **总是**给，第三方插件的开播日期判定靠它
+    fields["season_info"] = tmdb_seasons or [_site_season_entry(item, season)]
     return fields
+
+
+def _site_season_entry(item: Dict[str, Any], season: int) -> Dict[str, Any]:
+    """站点兜底的「唯一一季」：季号 / 集数 / 首播日期（有哪些给哪些）。
+
+    键名照宿主 ``MediaSeason``（``schemas/context.py``）：``season_number`` /
+    ``episode_count`` / ``air_date`` / ``name`` / ``overview`` / ``poster_path``。
+    消费方按 ``item.get(...)`` 取值（``api/endpoints/media.py::_build_media_seasons``、
+    订阅助手增强的 ``shared/media.py::get_tv_season_info``），所以缺的键直接不出现。
+
+    ⚠️ **不编日期**：站点没给 ``release_date`` 就不写 ``air_date`` —— 空白比假日期诚实，
+    而且「未知」只会让上映前暂停继续保守（与从前的行为相同），不会放出未开播的剧。
+    """
+    entry: Dict[str, Any] = {"season_number": season, "name": f"第 {season} 季"}
+    count = item.get("episode_count")
+    if isinstance(count, int) and count > 0:
+        entry["episode_count"] = count
+    air_date = _clean(item.get("release_date"))
+    if air_date:
+        entry["air_date"] = air_date
+    overview = _clean(item.get("overview"))
+    if overview:
+        entry["overview"] = overview
+    poster = _normalize_image(item.get("poster"))
+    if poster:
+        entry["poster_path"] = poster
+    return entry
 
 
 def _episode_minutes(item: Dict[str, Any]) -> Optional[int]:

@@ -59,7 +59,7 @@ MoviePilot **V3** 插件。把「短剧百科」（`duanjubaike.org`）注册为
 | 标准媒体信息 | `MediaInfo` 字段 | 标题 / 年份 / **语言**（详情页 `inLanguage` 归一成 ISO 639-1，`zh-Hans` → `zh`）/ 风格 / 演员含角色 / 出品方 / 集数 / 单集时长 / 首播 / 海报与背景图；**国家或地区、内容分级站点没有 ⇒ 留空，不伪造** |
 | **演员档案** | `search_actors` / `actor_works` / `actor_profile` | 演员名 → 候选演员；演员 → **全部作品**（实测 21 部一次全渲染、不分页），**每条作品都已补成作品页记录**；`actor_profile` 再给完整档案（头像 / 简介 / 性别 / 国籍 / 作品数 + 全部作品） |
 | **URL 库** | `get_database_models()` | 插件自有数据库里存「关键词 → 页面 URL」，取数**库优先** |
-| **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 分季），换回宿主详情页的演职员 / 推荐 / 分季区块 |
+| **TMDB 身份补充** | `tmdb.py` | 片名 + 首播年查 TMDB，**严格匹配**才附上真实 `tmdb_id`（+ 真分季），换回宿主详情页的演职员 / 推荐 / 分季区块；**没命中时分季信息按站点单季兜底** —— 订阅助手的开播日期判定读它，缺了订阅必被暂停（见「`season_info` 必须填」） |
 | **分类扩展字段** | `get_media_source()` + `MediaInfo.classification_facts` | 声明 `extensions.duanju.*` 三个字段并给出事实，**让宿主能把它归到「短剧」分类 —— 分类不匹配就整理不了**，见下节 |
 | **刮削出口** | `metadata_nfo` / `metadata_img` | 刮削时自己出 NFO 文本与图片清单（简介 / 题材 / 演员含角色与头像 / 海报 / 背景图）；不实现的话内置生成器全被来源过滤掉，**永远 NFO 生成失败**，见下节 |
 | **插件面板** | `./Page` 联邦组件 | 一个搜索框 + 两块结果卡片 + URL 库查看器 + 缓存管理器 + 可展开原始数据 |
@@ -418,6 +418,43 @@ TMDB 源填 `{季号: 该季首播年}`，豆瓣源在缺分季数据时兜底 `
 ⚠️ 注意方向：**没年份的种子本来就会跳过年份校验**（`if torrent_meta.year`），
 PTS 这类**整个站点都不带年份**的来源不受影响；这里只放宽、不新增拦截。
 
+### ⚠️ `season_info` 必须填（订阅助手靠它读**开播日期**）
+
+`season_info` 是「开播日期」唯一的对外载体：宿主自己的 UI 与搜索都不读它，但
+**订阅助手增强**（SubscribeAssistantEnhanced，用户主机上装了这个）的「上映前暂停」
+只认 `season_info[].air_date`（`pause/airing.py::check_pre_air`）：
+
+```python
+air_date = parse_date(get_tv_season_air_date(mediainfo, subscribe.season))   # 读 season_info[].air_date
+if air_date is None:
+    air_date = first_available_scope_episode_air_date(subscribe, episodes)   # 这条要 tmdb_id 才取到分集表
+if air_date is None:
+    return PauseRecord(reason="pre_air", detail="开播日期未知")   # ⇒ 置 S（暂停）
+```
+
+它**不读** `release_date` / `first_air_date`。短剧基本不在 TMDB 上（`tmdb.py` 抽 14 部
+只命中 1 部）⇒ 从前 `season_info` 恒空 ⇒ **从本来源建的每一条订阅都在创建后几秒被判
+「开播日期未知」而暂停**，且条件永不解除。真机实测 `duanju:397`
+（2026-10-16 01:01:18 建）：
+
+```
+01:01:23,545  订阅新增：毕业后，捡个睡美人当老婆 S1 满足上映前暂停条件，置为禁用
+01:01:23,562  暂停管理：… 写暂停记录（原因=pre_air，detail=开播日期未知）并置订阅为禁用(S)
+```
+
+因此这里也按单季兜底，与 `seasons` / `season_years` 用**同一个季号**：
+
+```python
+{"season_number": 站点季号, "name": "第 N 季", "episode_count": 集数, "air_date": 首播日期}
+```
+
+TMDB 严格匹配上时**原样**用 TMDB 的真分季（一列都不掺）；集数与首播日期拿不到就不写
+那两个键 —— **不编日期**：空白只会让上映前暂停继续保守（与从前行为相同），
+编一个日期反而可能把真正未开播的剧放出来。
+
+> 这个兜底只对「读 `season_info` 的消费方」有意义：宿主详情页的「分季分集」区块渲染
+> 条件是 `type=电视剧 && tmdb_id`，没有 TMDB 身份时它本来就不渲染，页面观感不变。
+
 ### 两级取数
 
 取数只有一条路，但**分两级**：
@@ -752,6 +789,8 @@ vs 串行约 12s），所以并发是安全的；取 8 而不拉满，是给「�
   （附错 ID 会让页面显示另一部剧的演员与推荐）；
 - 命中后返回 `tmdb_id` + `season_info`（TMDB `/tv/{id}` 的季列表，否则「分季分集」区块会只剩标题）；
   分集内容由宿主按 ID 自己去 TMDB 取；
+  **没命中时 `season_info` 不空着** —— `payload.py` 用站点自己的单季兜底（季号 / 集数 /
+  首播日期），因为订阅助手靠它读开播日期，缺了每条订阅都会被判「开播日期未知」而暂停；
 - **负结果也缓存**，失败只记 debug，任何异常都不影响识别主流程；缓存与作品详情 / 演员档案
   共用同一套（独立 region，有效期跟随系统设置，见「缓存：用系统的那一套」）。
 
