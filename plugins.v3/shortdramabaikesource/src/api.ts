@@ -13,6 +13,7 @@
 import type {
   ActorProfile,
   CacheClearPayload,
+  CacheDetailPayload,
   CachePayload,
   ConfigOptions,
   LookupPayload,
@@ -237,6 +238,16 @@ export function fetchCache(
     keyword: options.keyword || undefined,
     limit: options.limit ?? 200,
   })
+}
+
+/**
+ * 读**单条**缓存的完整内容（面板在缓存列表里点开某条时用）。
+ *
+ * 返回里同时有「原始解析结果」与「对外投影」—— 面板用后者渲染成与搜索一样的卡片。
+ * 键里带 `:` 与 `|`（`detail:60017` / `tmdb|片名|2026`），必须编码后再拼进路径。
+ */
+export function fetchCacheEntry(api: PluginApi, key: string) {
+  return getJson<CacheDetailPayload>(api, `/cache/${encodeURIComponent(key)}`)
 }
 
 /** 删一条缓存（键如 `detail:60017`） */

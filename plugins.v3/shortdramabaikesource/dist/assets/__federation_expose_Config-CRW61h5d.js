@@ -107,6 +107,9 @@ function fetchCache(api, options = {}) {
     limit: options.limit ?? 200
   });
 }
+function fetchCacheEntry(api, key) {
+  return getJson(api, `/cache/${encodeURIComponent(key)}`);
+}
 async function deleteCacheEntry(api, key) {
   try {
     const response = await api.delete(`${API_BASE}/cache/${encodeURIComponent(key)}`);
@@ -608,4 +611,4 @@ const _export_sfc = (sfc, props) => {
 
 const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-54abf9d8"]]);
 
-export { _export_sfc as _, fetchConfig as a, recognizeTitle as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, fetchCache as g, deleteCacheEntry as h, clearCache as i, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };
+export { _export_sfc as _, recognizeTitle as a, fetchConfig as b, fetchActor as c, fetchUrls as d, Config as default, clearUrls as e, fetchStatus as f, fetchCache as g, deleteCacheEntry as h, clearCache as i, fetchCacheEntry as j, lookupKeyword as l, proxyImage as p, resolveApi as r, saveConfig as s };

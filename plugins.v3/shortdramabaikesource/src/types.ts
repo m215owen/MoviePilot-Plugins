@@ -274,6 +274,13 @@ export interface CacheEntry {
   ref?: string
   /** 写入时间（秒级时间戳） */
   cached_at?: number
+  /**
+   * 附属于这条记录、与它同属一部作品的其它缓存。
+   *
+   * TMDB 身份是按「片名 + 年份」单独建键的，所以同一部剧在列表里会占两行 ——
+   * 后端按片名把它们挂到作品详情这条下面，面板跟着缩进渲染一行，看着不再重复。
+   */
+  attached?: CacheEntry[]
 }
 
 /** `/cache` —— 缓存管理界面的数据 */
@@ -288,6 +295,34 @@ export interface CachePayload {
   kind_labels?: Record<string, string>
   cache?: CacheStatus
   data?: CacheEntry[]
+}
+
+/**
+ * `GET /cache/{key}` —— **单条**缓存的完整内容（面板点开某条时用）。
+ *
+ * 后端一次给三样东西：`data`（缓存里原始的解析结果，排障看它）、
+ * `record` / `actor`（同一份数据的对外投影，与 `/recognize`、`/actor` 同形状 ——
+ * 面板直接用搜索结果那两张卡片渲染）、`summary`（TMDB 身份这类没卡片可渲染的条目靠它说话）。
+ */
+export interface CacheDetailPayload {
+  success?: boolean
+  message?: string
+  key?: string
+  kind?: string
+  kind_label?: string
+  label?: string
+  ref?: string
+  cached_at?: number
+  /** 实际有效期（秒） */
+  ttl?: number
+  /** 缓存里那份未投影的解析结果 */
+  data?: unknown
+  /** 一句话摘要 */
+  summary?: string
+  /** `kind=detail` 时的作品投影 */
+  record?: MediaRecord | null
+  /** `kind=actor` 时的演员投影 */
+  actor?: ActorProfile | null
 }
 
 /** `DELETE /cache` 的返回值 */

@@ -128,37 +128,81 @@
             <div
               v-for="row in libraryRecords"
               :key="`${row.kind}:${row.url}`"
-              class="d-flex align-center py-1"
             >
-              <v-chip
-                size="x-small"
-                variant="tonal"
-                :color="row.kind === 'actor' ? 'purple' : 'primary'"
-                class="mr-2"
+              <div class="d-flex align-center py-1">
+                <v-chip
+                  size="x-small"
+                  variant="tonal"
+                  :color="row.kind === 'actor' ? 'purple' : 'primary'"
+                  class="mr-2"
+                >
+                  {{ row.kind === 'actor' ? '演员' : '作品' }}
+                </v-chip>
+                <span
+                  class="text-body-2 flex-grow-1 sdbs-lib-text sdbs-clickable"
+                  :title="`点一下在下方展开${row.kind === 'actor' ? '这位演员' : '这部作品'}的内容`"
+                  @click="toggleLibraryRow(row)"
+                >
+                  {{ row.label || row.keyword || row.display }}
+                  <span class="text-caption sdbs-dim ml-1">{{ row.origin === 'page' ? '页面顺带' : '引擎' }}</span>
+                </span>
+                <span
+                  v-if="rowKeyInfo(row)"
+                  class="text-caption sdbs-dim mr-2"
+                  title="「命中词」＝搜这个词时发现的它；键／标题／命中词任何一个都能把它查回来"
+                >
+                  {{ rowKeyInfo(row) }}
+                </span>
+                <v-btn
+                  v-if="row.url"
+                  size="x-small"
+                  variant="text"
+                  :href="row.url"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  打开
+                </v-btn>
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  :icon="libraryOpenKey === rowId(row) ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                  :title="libraryOpenKey === rowId(row) ? '收起' : '展开这条记录的内容'"
+                  @click="toggleLibraryRow(row)"
+                />
+              </div>
+
+              <!-- 展开区：库里只有 URL，所以这一下是真的抓页面（抓到即进缓存） -->
+              <div
+                v-if="libraryExpanded && libraryExpanded.id === rowId(row)"
+                class="sdbs-expand mb-2"
               >
-                {{ row.kind === 'actor' ? '演员' : '作品' }}
-              </v-chip>
-              <span class="text-body-2 flex-grow-1 sdbs-lib-text">
-                {{ row.label || row.keyword || row.display }}
-                <span class="text-caption sdbs-dim ml-1">{{ row.origin === 'page' ? '页面顺带' : '引擎' }}</span>
-              </span>
-              <span
-                v-if="rowKeyInfo(row)"
-                class="text-caption sdbs-dim mr-2"
-                title="「命中词」＝搜这个词时发现的它；键／标题／命中词任何一个都能把它查回来"
-              >
-                {{ rowKeyInfo(row) }}
-              </span>
-              <v-btn
-                v-if="row.url"
-                size="x-small"
-                variant="text"
-                :href="row.url"
-                target="_blank"
-                rel="noopener"
-              >
-                打开
-              </v-btn>
+                <div class="text-caption sdbs-dim mb-1">{{ libraryMetaLine(row) }}</div>
+                <div v-if="libraryExpanded.loading" class="d-flex align-center py-2">
+                  <v-progress-circular size="16" width="2" indeterminate class="mr-2" />
+                  <span class="text-caption sdbs-dim">正在抓页面（首次约 1~3 秒，抓到即进缓存）…</span>
+                </div>
+                <RecordCard
+                  v-else-if="libraryExpanded.record"
+                  :record="libraryExpanded.record"
+                  :api="props.api"
+                  :extra="`URL 库 · ${row.origin === 'page' ? '页面顺带' : '引擎'}`"
+                />
+                <ActorCard
+                  v-else-if="libraryExpanded.actor"
+                  :profile="libraryExpanded.actor"
+                  :api="props.api"
+                  compact
+                />
+                <v-alert
+                  v-else-if="libraryExpanded.message"
+                  type="warning"
+                  variant="tonal"
+                  density="compact"
+                >
+                  {{ libraryExpanded.message }}
+                </v-alert>
+              </div>
             </div>
           </div>
         </div>
@@ -284,29 +328,95 @@
             {{ cacheEmptyText }}
           </v-alert>
           <div class="sdbs-scroll">
-            <div v-for="row in cacheEntries" :key="row.key" class="d-flex align-center py-1">
-              <v-chip
-                size="x-small"
-                variant="tonal"
-                :color="cacheKindColor(row.kind)"
-                class="mr-2"
-              >
-                {{ row.kind_label || row.kind }}
-              </v-chip>
-              <span class="text-body-2 flex-grow-1 sdbs-lib-text" :title="row.key">
-                {{ row.label || row.key }}
-              </span>
-              <span v-if="row.ref" class="text-caption sdbs-dim mr-2">{{ row.ref }}</span>
-              <span class="text-caption sdbs-dim mr-2">{{ cacheTime(row.cached_at) }}</span>
-              <v-btn
-                size="x-small"
-                variant="text"
-                color="error"
-                :loading="cacheDeleting === row.key"
-                @click="deleteCacheRow(row.key || '')"
-              >
-                删除
-              </v-btn>
+            <div v-for="row in cacheEntries" :key="row.key">
+              <!-- 一条主记录一行；挂它的附属记录（同一部作品的 TMDB 身份）缩进跟在下面 -->
+              <div v-for="(item, position) in rowsOf(row)" :key="item.key">
+                <div class="d-flex align-center py-1" :class="{ 'sdbs-attached': position > 0 }">
+                  <v-icon
+                    v-if="position > 0"
+                    icon="mdi-subdirectory-arrow-right"
+                    size="14"
+                    class="mr-1 sdbs-dim"
+                  />
+                  <v-chip
+                    size="x-small"
+                    variant="tonal"
+                    :color="cacheKindColor(item.kind)"
+                    class="mr-2"
+                  >
+                    {{ item.kind_label || item.kind }}
+                  </v-chip>
+                  <span
+                    class="text-body-2 flex-grow-1 sdbs-lib-text sdbs-clickable"
+                    :title="item.key"
+                    @click="toggleCacheRow(item)"
+                  >
+                    {{ item.label || item.key }}
+                  </span>
+                  <span v-if="item.ref" class="text-caption sdbs-dim mr-2">{{ item.ref }}</span>
+                  <span class="text-caption sdbs-dim mr-2">{{ cacheTime(item.cached_at) }}</span>
+                  <v-btn
+                    size="x-small"
+                    variant="text"
+                    color="error"
+                    :loading="cacheDeleting === item.key"
+                    @click="deleteCacheRow(item.key || '')"
+                  >
+                    删除
+                  </v-btn>
+                  <v-btn
+                    size="x-small"
+                    variant="text"
+                    :icon="cacheOpenKey === item.key ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                    :title="cacheOpenKey === item.key ? '收起' : '展开这条缓存里的内容'"
+                    @click="toggleCacheRow(item)"
+                  />
+                </div>
+
+                <!-- 展开区：这条缓存里到底存了什么（与搜索卡片同一套渲染） -->
+                <div v-if="cacheExpanded && cacheExpanded.key === item.key" class="sdbs-expand mb-2">
+                  <div class="text-caption sdbs-dim mb-1">{{ cacheMetaLine(item) }}</div>
+                  <div v-if="cacheExpanded.loading" class="d-flex align-center py-2">
+                    <v-progress-circular size="16" width="2" indeterminate class="mr-2" />
+                    <span class="text-caption sdbs-dim">正在读取缓存内容…</span>
+                  </div>
+                  <template v-else-if="cacheExpanded.payload">
+                    <v-alert
+                      v-if="cacheExpanded.message"
+                      type="warning"
+                      variant="tonal"
+                      density="compact"
+                    >
+                      {{ cacheExpanded.message }}
+                    </v-alert>
+                    <template v-else>
+                      <div v-if="cacheExpanded.payload.summary" class="text-caption sdbs-dim mb-2">
+                        {{ cacheExpanded.payload.summary }}
+                      </div>
+                      <RecordCard
+                        v-if="cacheExpanded.record"
+                        :record="cacheExpanded.record"
+                        :api="props.api"
+                      />
+                      <ActorCard
+                        v-else-if="cacheExpanded.actor"
+                        :profile="cacheExpanded.actor"
+                        :api="props.api"
+                        compact
+                      />
+                      <div class="d-flex align-center mb-1 flex-wrap" style="gap: 8px">
+                        <v-btn size="x-small" variant="text" @click="cacheRawOpen = !cacheRawOpen">
+                          {{ cacheRawOpen ? '收起缓存原文' : '缓存原文' }}
+                        </v-btn>
+                        <span class="text-caption sdbs-dim">
+                          缓存里那份未投影的解析结果（含 tmdb_identity / stills 等内部字段）
+                        </span>
+                      </div>
+                      <pre v-if="cacheRawOpen" class="sdbs-pre">{{ pretty(cacheExpanded.payload.data) }}</pre>
+                    </template>
+                  </template>
+                </div>
+              </div>
             </div>
           </div>
           <div v-if="cacheMoreText" class="text-caption sdbs-dim mt-1">{{ cacheMoreText }}</div>
@@ -441,71 +551,10 @@
             </div>
           </v-card>
 
-          <!-- 作品卡片 -->
-          <v-card v-if="titleRecord" variant="outlined" class="pa-3 mt-3">
-            <div class="d-flex" style="gap: 12px">
-              <v-img
-                :src="proxyImage(titleRecord.poster)"
-                width="92"
-                height="123"
-                aspect-ratio="2/3"
-                cover
-                class="rounded flex-shrink-0 sdbs-poster"
-              />
-              <div class="flex-grow-1" style="min-width: 0">
-                <div class="text-subtitle-2">{{ titleRecord.title || '（无标题）' }}</div>
-                <div class="text-caption sdbs-dim mt-1">{{ titleMeta }}</div>
-                <div v-if="titleRecord.tags?.length" class="mt-1">
-                  <v-chip
-                    v-for="tag in titleRecord.tags"
-                    :key="tag"
-                    size="x-small"
-                    variant="tonal"
-                    class="mr-1 mb-1"
-                  >
-                    {{ tag }}
-                  </v-chip>
-                </div>
-                <div v-if="titleRecord.overview" class="text-caption mt-2 sdbs-clamp">
-                  {{ titleRecord.overview }}
-                </div>
-                <div v-if="titleCast" class="text-caption sdbs-dim mt-2">主演：{{ titleCast }}</div>
-                <!-- 同页「推荐短剧」：站点自己给的关联作品，也一并解析出来了 -->
-                <div v-if="titleRecord.related?.length" class="mt-2">
-                  <span class="text-caption sdbs-dim mr-1">同页推荐：</span>
-                  <v-chip
-                    v-for="rel in titleRecord.related.slice(0, 8)"
-                    :key="rel.media_id || rel.title"
-                    size="x-small"
-                    variant="tonal"
-                    class="mr-1 mb-1"
-                    :href="rel.url"
-                    target="_blank"
-                    rel="noopener"
-                  >
-                    {{ rel.title }}
-                  </v-chip>
-                </div>
-              </div>
-            </div>
-            <div class="d-flex align-center mt-2 flex-wrap" style="gap: 8px">
-              <v-btn
-                v-if="titleRecord.url"
-                size="x-small"
-                variant="tonal"
-                :href="titleRecord.url"
-                target="_blank"
-                rel="noopener"
-                prepend-icon="mdi-open-in-new"
-              >
-                站点页面
-              </v-btn>
-              <v-btn size="x-small" variant="text" @click="titleRawOpen = !titleRawOpen">
-                {{ titleRawOpen ? '收起原始数据' : '原始数据' }}
-              </v-btn>
-            </div>
-            <pre v-if="titleRawOpen" class="sdbs-pre mt-2">{{ pretty(titleRecord) }}</pre>
-          </v-card>
+          <!-- 作品卡片（与展开区共用同一个组件：点开看到的和搜出来看到的一模一样） -->
+          <div v-if="titleRecord" class="mt-3">
+            <RecordCard :record="titleRecord" :api="props.api" />
+          </div>
 
           <v-alert
             v-else-if="titleMessage"
@@ -581,126 +630,9 @@
             </div>
           </v-card>
 
-          <!-- 演员档案 + 作品墙 -->
+          <!-- 演员档案 + 作品墙（与展开区共用同一个组件） -->
           <div v-if="actorProfile" class="mt-3">
-            <v-card variant="outlined" class="pa-3">
-              <div class="d-flex" style="gap: 12px">
-                <v-avatar size="64" rounded class="flex-shrink-0">
-                  <v-img :src="proxyImage(actorProfile.profile)" cover />
-                </v-avatar>
-                <div class="flex-grow-1" style="min-width: 0">
-                  <div class="text-subtitle-2">
-                    {{ actorProfile.name || '（无姓名）' }}
-                    <span class="text-caption sdbs-dim ml-2">actor:{{ actorProfile.actor_id }}</span>
-                  </div>
-                  <div class="text-caption sdbs-dim mt-1">{{ actorMeta }}</div>
-                  <div v-if="actorProfile.bio" class="text-caption mt-2 sdbs-clamp">
-                    {{ actorProfile.bio }}
-                  </div>
-                </div>
-              </div>
-              <div v-if="actorProfile.coactors?.length" class="mt-2">
-                <span class="text-caption sdbs-dim mr-1">常合作演员：</span>
-                <v-chip
-                  v-for="co in actorProfile.coactors.slice(0, 12)"
-                  :key="co.id || co.name"
-                  size="x-small"
-                  variant="tonal"
-                  class="mr-1 mb-1"
-                >
-                  {{ co.name }}
-                </v-chip>
-              </div>
-              <div class="d-flex align-center mt-2 flex-wrap" style="gap: 8px">
-                <v-btn
-                  v-if="actorProfile.url"
-                  size="x-small"
-                  variant="tonal"
-                  :href="actorProfile.url"
-                  target="_blank"
-                  rel="noopener"
-                  prepend-icon="mdi-open-in-new"
-                >
-                  演员页
-                </v-btn>
-                <v-btn size="x-small" variant="text" @click="actorRawOpen = !actorRawOpen">
-                  {{ actorRawOpen ? '收起原始数据' : '原始数据' }}
-                </v-btn>
-              </div>
-              <pre v-if="actorRawOpen" class="sdbs-pre mt-2">{{ pretty(actorProfile) }}</pre>
-            </v-card>
-
-            <!-- 作品墙 -->
-            <div class="text-subtitle-2 mt-3 mb-2">
-              <v-icon icon="mdi-movie-open-outline" size="18" class="mr-1" />
-              全部作品
-              <span class="text-caption sdbs-dim ml-1">共 {{ actorProfile.works?.length || 0 }} 部</span>
-            </div>
-            <v-row dense>
-              <v-col
-                v-for="(work, index) in actorProfile.works || []"
-                :key="work.media_id || index"
-                cols="12" sm="6"
-              >
-                <v-card variant="outlined" class="pa-2 h-100 d-flex flex-column">
-                  <div class="d-flex" style="gap: 8px">
-                    <v-img
-                      :src="proxyImage(work.poster)"
-                      width="60"
-                      height="80"
-                      aspect-ratio="2/3"
-                      cover
-                      class="rounded flex-shrink-0 sdbs-poster"
-                    />
-                    <div class="flex-grow-1" style="min-width: 0">
-                      <div class="text-body-2 sdbs-work-title">{{ work.title || '（无标题）' }}</div>
-                      <div class="text-caption sdbs-dim mt-1">{{ workMeta(workView(index)) }}</div>
-                      <div v-if="workTags(index, work).length" class="mt-1">
-                        <v-chip
-                          v-for="tag in workTags(index, work)"
-                          :key="tag"
-                          size="x-small"
-                          variant="tonal"
-                          class="mr-1 mb-1"
-                        >
-                          {{ tag }}
-                        </v-chip>
-                      </div>
-                    </div>
-                  </div>
-                  <v-spacer />
-                  <div class="d-flex align-center mt-1">
-                    <v-btn
-                      v-if="work.url"
-                      size="x-small"
-                      variant="text"
-                      :href="work.url"
-                      target="_blank"
-                      rel="noopener"
-                    >
-                      站点
-                    </v-btn>
-                    <v-btn
-                      size="x-small"
-                      variant="text"
-                      :loading="workLoadingIndex === index"
-                      :disabled="workComplete(index, work)"
-                      :title="workComplete(index, work)
-                        ? '已是作品页那份数据（完整标签 / 首播 / 版权方 / 时长 / 简介 / 剧照）'
-                        : '演员页卡片是摘要（标签只印 1~3 个、没有版权方），抓一次详情页补全'"
-                      @click="loadWorkDetail(index)"
-                    >
-                      {{ workComplete(index, work) ? '已补全' : '完整信息' }}
-                    </v-btn>
-                    <v-spacer />
-                    <v-btn size="x-small" variant="text" @click="toggleWorkRaw(index)">
-                      {{ openWorks.has(index) ? '收起' : '原始数据' }}
-                    </v-btn>
-                  </div>
-                  <pre v-if="openWorks.has(index)" class="sdbs-pre mt-1">{{ pretty(workView(index)) }}</pre>
-                </v-card>
-              </v-col>
-            </v-row>
+            <ActorCard :profile="actorProfile" :api="props.api" />
           </div>
 
           <v-alert
@@ -742,25 +674,29 @@
  * 展开是给排障/核对用的，两者看的是同一份后端返回。
  */
 import { computed, ref, watch } from 'vue'
+import ActorCard from './ActorCard.vue'
 import Config from './Config.vue'
+import RecordCard from './RecordCard.vue'
 import {
   clearCache,
   clearUrls,
   deleteCacheEntry,
   fetchActor,
   fetchCache,
+  fetchCacheEntry,
   fetchConfig,
   fetchStatus,
   fetchUrls,
-  proxyImage,
   lookupKeyword,
   recognizeTitle,
   resolveApi,
   saveConfig,
 } from './api'
+import { pretty } from './format'
 import type {
   ActorCandidate,
   ActorProfile,
+  CacheDetailPayload,
   CacheEntry,
   CacheStatus,
   MediaRecord,
@@ -770,7 +706,6 @@ import type {
   TitleCandidate,
   UrlRecord,
   UrlsPayload,
-  WorkItem,
 } from './types'
 
 const props = defineProps<{
@@ -805,28 +740,13 @@ const hint = ref('')
 const titleCandidates = ref<TitleCandidate[]>([])
 const titleRecord = ref<MediaRecord | null>(null)
 const titleMessage = ref('')
-const titleRawOpen = ref(false)
 const titleLoadingId = ref('')
 
 // ── 演员结果 ──
 const actorCandidates = ref<ActorCandidate[]>([])
 const actorProfile = ref<ActorProfile | null>(null)
 const actorMessage = ref('')
-const actorRawOpen = ref(false)
 const actorLoadingId = ref('')
-/** 已展开原始数据的作品下标（作品可能几十部，逐个展开比一次全铺清爽） */
-const openWorks = ref(new Set<number>())
-/**
- * 作品墙里**已补全**的作品（下标 → 完整记录）。
- *
- * ⚠️ 演员页的卡片是**摘要视图**：站点在卡片上只印 1~3 个题材标签（实测《失控交易》
- * 卡片上只有「爱情」，而它详情页有 5 个），完整标签只有详情页的 JSON-LD 里才有。
- * 一个演员动辄几十部作品，一次性全抓既不现实也容易撞风控 —— 所以这里按需补：
- * 点卡片上的「完整标签」才抓这一部的详情页，抓到就整条替换进卡片。
- */
-const workFull = ref<Record<number, MediaRecord>>({})
-/** 正在补全的作品下标（按钮 loading 态） */
-const workLoadingIndex = ref<number | null>(null)
 
 // ── URL 库（插件自有数据库） ──
 const libraryLoading = ref(false)
@@ -855,16 +775,26 @@ const cacheClearing = ref(false)
 /** 正在删的那条（按钮 loading 态） */
 const cacheDeleting = ref('')
 const cacheEmptyText = ref('缓存还是空的 —— 搜一次片名或演员名就会写入。')
+/** 本次铺出来的**条目数**（后端 `returned`：合并后的行把附属条目也算进去） */
+const cacheShown = ref(0)
 
-const pretty = (value: unknown) => JSON.stringify(value ?? null, null, 2)
-
-/** 把大数字还原成人看得懂的量级（后端给的已经是绝对值：354万 → 3540000） */
-function formatCount(value?: number): string {
-  if (!value) return ''
-  if (value >= 100000000) return `${(value / 100000000).toFixed(1)} 亿`
-  if (value >= 10000) return `${Math.round(value / 10000)} 万`
-  return String(value)
-}
+// ── 展开区：点名字就地看内容（两个列表各一条手风琴，展开结果缓存复用） ──
+/** 当前展开的缓存条目键（同一时刻只开一条：作品卡 / 演员卡都不短） */
+const cacheOpenKey = ref('')
+/** 已取回来的缓存内容（键 → 载荷）；收起再展开直接复用，不重复请求 */
+const cacheOpenData = ref<Record<string, CacheDetailPayload>>({})
+/** 正在取的那条（loading 态） */
+const cacheOpenLoading = ref('')
+/** 「缓存原文」开关：显示缓存里那份**未投影**的解析结果 */
+const cacheRawOpen = ref(false)
+/** 当前展开的 URL 库记录 id（`kind:站点ID`） */
+const libraryOpenKey = ref('')
+/** 已抓回来的页面内容（id → 作品 / 演员 / 错误） */
+const libraryOpenData = ref<
+  Record<string, { record?: MediaRecord; actor?: ActorProfile; error?: string }>
+>({})
+/** 正在抓的那条（loading 态） */
+const libraryOpenLoading = ref('')
 
 /**
  * 标题栏的缓存 chip。
@@ -883,51 +813,6 @@ const storeChip = computed(() => {
   return `${store.total} 条`
 })
 
-const titleMeta = computed(() => {
-  const record = titleRecord.value
-  if (!record) return ''
-  const parts: string[] = []
-  if (record.year) parts.push(record.year)
-  if (record.release_date) parts.push(`首播 ${record.release_date}`)
-  if (record.episode_count) parts.push(`共 ${record.episode_count} 集`)
-  // ⚠️ 站点给的「时长」是**全集总时长**（77 集共 130 分钟那种），不是单集时长；
-  // 旧版把它标成「单集 N 分钟」是错的。单集时长由后端按集数折算给出。
-  if (record.duration_minutes) {
-    parts.push(
-      `全集 ${record.duration_minutes} 分钟`
-      + (record.episode_minutes ? `（单集约 ${record.episode_minutes} 分钟）` : ''),
-    )
-  }
-  if (record.studio) parts.push(record.studio)
-  if (record.kind) parts.push(record.kind)
-  if (record.rating) parts.push(`评分 ${record.rating}`)
-  if (record.heat) parts.push(`热度 ${formatCount(record.heat)}`)
-  if (record.play_count) parts.push(`播放 ${formatCount(record.play_count)}`)
-  if (record.favorite_count) parts.push(`收藏 ${formatCount(record.favorite_count)}`)
-  parts.push(`来源 ${record.origin === 'detail' ? '详情页' : '检索结果'}`)
-  return parts.join(' ｜ ')
-})
-
-const titleCast = computed(() => {
-  const actors = titleRecord.value?.actors || []
-  if (!actors.length) return ''
-  return actors
-    .slice(0, 10)
-    .map((actor) => (actor.character ? `${actor.name}（饰 ${actor.character}）` : actor.name))
-    .join('、')
-})
-
-const actorMeta = computed(() => {
-  const actor = actorProfile.value
-  if (!actor) return ''
-  const parts: string[] = []
-  if (actor.job_title) parts.push(actor.job_title)
-  if (actor.gender) parts.push(`性别 ${actor.gender}`)
-  if (actor.nationality) parts.push(actor.nationality)
-  parts.push(`作品 ${actor.works_count ?? (actor.works || []).length} 部`)
-  return parts.join(' ｜ ')
-})
-
 /** 两块结果各自只有「有内容」时才占位；两边都没命中就靠顶部那行 hint 说话 */
 const hasTitlePanel = computed(
   () => Boolean(titleCandidates.value.length || titleRecord.value || titleMessage.value),
@@ -936,22 +821,6 @@ const hasActorPanel = computed(
   () => Boolean(actorCandidates.value.length || actorProfile.value || actorMessage.value),
 )
 const hasResult = computed(() => hasTitlePanel.value || hasActorPanel.value)
-
-function workMeta(work: WorkItem): string {
-  const parts: string[] = []
-  if (work.kind) parts.push(work.kind)
-  if (work.release_date) parts.push(`首播 ${work.release_date}`)
-  if (work.episode_count) parts.push(`${work.episode_count} 集`)
-  // 站点给的「时长」是**全集**总时长，不点破会被当成单集时长
-  if (work.duration_minutes) {
-    parts.push(`全集 ${work.duration_minutes} 分钟` + (work.episode_minutes ? `（单集约 ${work.episode_minutes} 分钟）` : ''))
-  }
-  if (work.studio) parts.push(work.studio)
-  if (work.rating) parts.push(`评分 ${work.rating}`)
-  if (work.heat) parts.push(`热度 ${formatCount(work.heat)}`)
-  if (work.play_count) parts.push(`播放 ${formatCount(work.play_count)}`)
-  return parts.join(' ｜ ') || '—'
-}
 
 /** 拉运行状态；失败静默（面板不铺错误，只少一块信息） */
 async function load(): Promise<void> {
@@ -1031,7 +900,6 @@ async function pickTitle(candidate: TitleCandidate): Promise<void> {
   if (!api || !candidate.media_id) return
   titleLoadingId.value = candidate.media_id
   titleMessage.value = ''
-  titleRawOpen.value = false
   try {
     const report = await recognizeTitle(api, { media_id: candidate.media_id })
     if (report?.success && report.record) {
@@ -1049,7 +917,6 @@ function resetTitle(): void {
   titleCandidates.value = []
   titleRecord.value = null
   titleMessage.value = ''
-  titleRawOpen.value = false
   titleLoadingId.value = ''
 }
 
@@ -1058,11 +925,7 @@ function resetActor(): void {
   actorCandidates.value = []
   actorProfile.value = null
   actorMessage.value = ''
-  actorRawOpen.value = false
   actorLoadingId.value = ''
-  openWorks.value = new Set<number>()
-  workFull.value = {}
-  workLoadingIndex.value = null
 }
 
 async function pickActor(candidate: ActorCandidate): Promise<void> {
@@ -1070,8 +933,6 @@ async function pickActor(candidate: ActorCandidate): Promise<void> {
   if (!api || !candidate.actor_id) return
   actorLoadingId.value = candidate.actor_id
   actorMessage.value = ''
-  actorRawOpen.value = false
-  openWorks.value = new Set<number>()
   try {
     const report = await fetchActor(api, { actor_id: candidate.actor_id })
     if (report?.success && report.actor) {
@@ -1090,66 +951,6 @@ function clearAll(): void {
   hint.value = ''
   resetTitle()
   resetActor()
-}
-
-/**
- * 卡片上真正用来渲染的那条记录：补全过就用完整记录，否则用演员页卡片的摘要。
- *
- * 两者字段一致（都出自同一套解析），只是完整记录多出标签 / 简介 / 剧照这些
- * 详情页才有的内容。
- */
-function workView(index: number): WorkItem {
-  const works = actorProfile.value?.works || []
-  return (workFull.value[index] as WorkItem | undefined) ?? works[index] ?? {}
-}
-
-/**
- * 这部作品是否已是「作品页那份数据」。
- *
- * 后端**一贯**把全部作品补过详情（`origin === 'detail'`），这时面板不必再点
- * 「完整信息」—— 载荷里就是完整记录；只有 `enrich=0` 的老缓存 / 手动跳过时才需要
- * 按需补（点哪部补哪部）。
- */
-function workComplete(index: number, work?: WorkItem): boolean {
-  return Boolean(workFull.value[index]) || work?.origin === 'detail'
-}
-
-/**
- * 卡片上的标签：已是完整记录就全给，摘要则**照旧只给卡片上那 1~3 个**。
- *
- * 卡片印多少就是多少，不补齐也不假装 —— 摘要里没有的东西不能凭空造。
- */
-function workTags(index: number, work: WorkItem): string[] {
-  const tags = (workFull.value[index]?.tags ?? work.tags) || []
-  return workComplete(index, work) ? tags : tags.slice(0, 3)
-}
-
-/**
- * 抓一部作品的详情页，把卡片补成完整记录（按需，一部一次请求）。
- *
- * 只在后端没补全时才有意义：演员页作品卡只印 1~3 个题材标签（《失控交易》只有
- * 「爱情」，详情页却有 5 个）。后端一贯全补，这个按钮是 `enrich=0` 老缓存时的兜底。
- */
-async function loadWorkDetail(index: number): Promise<void> {
-  const api = resolveApi(props)
-  const work = (actorProfile.value?.works || [])[index]
-  if (!api || !work?.media_id || workComplete(index, work)) return
-  workLoadingIndex.value = index
-  try {
-    const report = await recognizeTitle(api, { media_id: work.media_id })
-    if (report?.success && report.record) {
-      workFull.value = { ...workFull.value, [index]: report.record }
-    }
-  } finally {
-    workLoadingIndex.value = null
-  }
-}
-
-function toggleWorkRaw(index: number): void {
-  const next = new Set(openWorks.value)
-  if (next.has(index)) next.delete(index)
-  else next.add(index)
-  openWorks.value = next
 }
 
 // ── URL 库操作 ──
@@ -1180,6 +981,10 @@ async function loadLibrary(): Promise<void> {
       return
     }
     libraryRecords.value = report.records || []
+    // 列表重拉过，展开区里可能已经是另一批记录 —— 一并收掉，免得显示已删掉的内容
+    libraryOpenKey.value = ''
+    libraryOpenData.value = {}
+    libraryOpenLoading.value = ''
     const stats = report.stats || {}
     libraryStatsRaw.value = stats
     libraryStats.value = `作品 ${stats.work ?? 0} / 演员 ${stats.actor ?? 0}｜关键词 ${stats.keywords ?? 0} 个`
@@ -1272,12 +1077,15 @@ const cacheTotal = computed(() => Number(cacheWhere.value.count ?? 0))
  *
  * 后端一次最多回 200 条（按写入时间倒序），超出部分不铺出来 —— 面板不假装
  * 「这就是全部」，老老实实说清楚还剩多少、怎么查到。
+ *
+ * ⚠️ 拿后端报的 `returned`（**条目数**）比，不能拿 `cacheEntries.length`（**行数**）：
+ * 同一部作品的两条缓存会被合并成一行，行数天然少于条目数。
  */
 const cacheMoreText = computed(() => {
   const total = cacheTotal.value
-  const shown = cacheEntries.value.length
-  if (!total || shown >= total) return ''
-  return `列表按写入时间倒序显示前 ${shown} 条（共 ${total} 条）—— 用上面的框按片名 / 演员名 / 站点 ID 过滤。`
+  const shown = cacheShown.value
+  if (!total || !shown || shown >= total) return ''
+  return `列表按写入时间倒序显示 ${shown} 条（共 ${total} 条）—— 用上面的框按片名 / 演员名 / 站点 ID 过滤。`
 })
 
 /** 有效期的人话版本（秒 → 小时） */
@@ -1343,10 +1151,16 @@ async function loadCache(): Promise<void> {
     })
     if (!report?.success) {
       cacheEntries.value = []
+      cacheShown.value = 0
       cacheEmptyText.value = report?.message || '缓存读不出来（宿主缓存后端未就绪？）'
       return
     }
     cacheEntries.value = report.data || []
+    cacheShown.value = Number(report.returned ?? cacheEntries.value.length)
+    // 同上：列表重拉过就收掉展开区（清空 / 删除后不该还挂着那条的内容）
+    cacheOpenKey.value = ''
+    cacheOpenData.value = {}
+    cacheOpenLoading.value = ''
     cacheStatus.value = report.cache || null
     cacheEmptyText.value = query
       ? `缓存里没有「${query}」——换个完整片名 / 演员名，或站点 ID 试试。`
@@ -1394,6 +1208,157 @@ async function clearCacheAll(): Promise<void> {
   } finally {
     cacheClearing.value = false
   }
+}
+
+// ── 展开区：点名字就地看内容 ──
+
+/**
+ * 缓存列表里一行要渲染的条目：主条目 + 挂它的附属条目。
+ *
+ * TMDB 身份是按「片名 + 年份」单独建键的，后端已按片名把它挂到作品详情这条下面
+ * （``attached``），面板跟着缩进铺出来 —— 同一部剧不再占两行。
+ */
+function rowsOf(row: CacheEntry): CacheEntry[] {
+  return [row, ...(row.attached || [])]
+}
+
+/** 一条 URL 库记录的身份：同一页面只留一条记录，所以 kind + 站点 ID 就能唯一定位 */
+function rowId(row: UrlRecord): string {
+  return `${row.kind || ''}:${row.native_id || row.url || ''}`
+}
+
+/**
+ * 缓存展开区要渲染的东西（同一时刻只展开一条，所以是一个单值 computed）。
+ *
+ * 后端已经把缓存内容按类型拆好了：`record`（作品投影）/ `actor`（演员投影）/
+ * `data`（原始解析结果）—— 这里只做「渲染哪一块」的分发，不再解析字段。
+ */
+const cacheExpanded = computed(() => {
+  const key = cacheOpenKey.value
+  if (!key) return null
+  const payload = cacheOpenData.value[key] || null
+  return {
+    key,
+    loading: cacheOpenLoading.value === key,
+    payload,
+    record: payload?.record || null,
+    actor: payload?.actor || null,
+    message: payload && payload.success === false ? payload.message || '这条缓存读不出来' : '',
+  }
+})
+
+/** URL 库展开区同理：作品 / 演员 / 错误三选一 */
+const libraryExpanded = computed(() => {
+  const id = libraryOpenKey.value
+  if (!id) return null
+  const data = libraryOpenData.value[id]
+  return {
+    id,
+    loading: libraryOpenLoading.value === id,
+    record: data?.record || null,
+    actor: data?.actor || null,
+    message: data?.error || '',
+  }
+})
+
+/**
+ * 点缓存条目的名字：在它下方展开「这条缓存里到底存了什么」。
+ *
+ * 内容按需向后端取一次（``GET /cache/{key}``），取到就留着 —— 反复收放不重复请求。
+ */
+async function toggleCacheRow(row: CacheEntry): Promise<void> {
+  const key = String(row.key || '')
+  if (!key) return
+  if (cacheOpenKey.value === key) {
+    cacheOpenKey.value = ''
+    return
+  }
+  cacheOpenKey.value = key
+  cacheRawOpen.value = false
+  if (cacheOpenData.value[key]) return
+  const api = resolveApi(props)
+  if (!api) return
+  cacheOpenLoading.value = key
+  try {
+    const report = await fetchCacheEntry(api, key)
+    cacheOpenData.value = {
+      ...cacheOpenData.value,
+      [key]: report || { success: false, message: '读不出这条缓存（接口没有响应）' },
+    }
+  } finally {
+    cacheOpenLoading.value = ''
+  }
+}
+
+/**
+ * 点 URL 库条目的名字：在它下方展开「这个页面是什么」。
+ *
+ * ⚠️ 库里只存 URL、不存解析结果（站点内容随时在变），所以这一下是**真的抓一次页面**：
+ * 作品走 `/recognize`、演员走 `/actor` —— 与搜索框里点「识别」「看作品」同一条路。
+ * 结果留在展开区里（同时进了插件缓存），反复收放不重复抓。
+ */
+async function toggleLibraryRow(row: UrlRecord): Promise<void> {
+  const id = rowId(row)
+  if (libraryOpenKey.value === id) {
+    libraryOpenKey.value = ''
+    return
+  }
+  libraryOpenKey.value = id
+  if (libraryOpenData.value[id]) return
+  const api = resolveApi(props)
+  if (!api) return
+  const nativeId = String(row.native_id || '')
+  if (!nativeId) {
+    libraryOpenData.value = {
+      ...libraryOpenData.value,
+      [id]: { error: '这条记录没有站点 ID（老记录，或页面标题里没带），只能点「打开」去站点看。' },
+    }
+    return
+  }
+  libraryOpenLoading.value = id
+  try {
+    if (row.kind === 'actor') {
+      const report = await fetchActor(api, { actor_id: nativeId })
+      libraryOpenData.value = {
+        ...libraryOpenData.value,
+        [id]: report?.success && report.actor
+          ? { actor: report.actor }
+          : { error: report?.message || '抓演员页失败（多半是站点风控，稍后再试）' },
+      }
+    } else {
+      const report = await recognizeTitle(api, { media_id: nativeId })
+      libraryOpenData.value = {
+        ...libraryOpenData.value,
+        [id]: report?.success && report.record
+          ? { record: report.record }
+          : { error: report?.message || '抓作品页失败（多半是站点风控，稍后再试）' },
+      }
+    }
+  } finally {
+    libraryOpenLoading.value = ''
+  }
+}
+
+/** URL 库展开区顶部那行：这条记录自己是谁、从哪来、用过几次 */
+function libraryMetaLine(row: UrlRecord): string {
+  const parts: string[] = []
+  if (row.keyword && row.label && row.keyword !== row.label) parts.push(`键 ${row.keyword}`)
+  const origin = row.origin === 'page' ? '页面顺带发现' : '引擎发现'
+  parts.push(row.backend ? `${origin}（${row.backend}）` : origin)
+  if (row.native_id) parts.push(`${row.kind === 'actor' ? 'actor' : 'work'}:${row.native_id}`)
+  if (row.hits && row.hits > 1) parts.push(`用过 ${row.hits} 次`)
+  const seen = cacheTime(row.last_used_at || row.first_seen_at)
+  if (seen) parts.push(`最近 ${seen}`)
+  return parts.join(' ｜ ')
+}
+
+/** 缓存展开区顶部那行：这条缓存的键与写入时间 */
+function cacheMetaLine(row: CacheEntry): string {
+  const parts: string[] = [String(row.key || '')]
+  const at = cacheTime(row.cached_at)
+  if (at) parts.push(`写入 ${at}`)
+  if (row.kind_label || row.kind) parts.push(String(row.kind_label || row.kind))
+  return parts.join(' ｜ ')
 }
 
 /** 先取配置再挂载弹窗：Config 只在 onMounted 读一次 initialConfig，先挂载会拿到空快照 */
@@ -1478,6 +1443,25 @@ void loadCache()
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 2px;
+}
+/* 点名字就地展开：展开块用淡底 + 圆角与列表行区分开 */
+.sdbs-expand {
+  margin: 2px 0 6px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background-color: rgba(128, 128, 128, 0.1);
+}
+/* 附属条目（同一部作品的 TMDB 身份）：缩进 + 淡一点，看得出它挂在上一行下面 */
+.sdbs-attached {
+  padding-left: 22px;
+  opacity: 0.85;
+}
+/* 可点的名字：不加按钮外壳，靠指针与下划线提示「点得动」 */
+.sdbs-clickable {
+  cursor: pointer;
+}
+.sdbs-clickable:hover {
+  text-decoration: underline;
 }
 /* URL 库：关键词输入框限宽，记录行的标题可省略号截断（地址可能很长） */
 .sdbs-lib-search {

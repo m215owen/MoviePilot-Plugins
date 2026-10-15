@@ -1619,6 +1619,13 @@ class ShortDramaBaikeSource(_PluginBase):
             },
             {
                 "path": "/cache/{key}",
+                "methods": ["GET"],
+                "endpoint": self.api_cache_detail,
+                "summary": "缓存管理：读单条缓存的完整内容（面板点开条目时用）",
+                "auth": "bear",
+            },
+            {
+                "path": "/cache/{key}",
                 "methods": ["DELETE"],
                 "endpoint": self.api_cache_delete,
                 "summary": "缓存管理：删除单条缓存",
@@ -1848,6 +1855,11 @@ class ShortDramaBaikeSource(_PluginBase):
 
         与宿主的 ``GET /api/v1/tmdb/cache`` 同构（``count`` + 分类计数 + ``data``），
         额外给出「这个缓存跟着哪些系统开关」——面板要能解释清楚为什么有效期是这个值。
+
+        同一部作品会因为「详情」与「TMDB 身份」各占一个键而在列表里出现两行，看着像重复
+        数据 —— 按片名合并成一行（``attached``），见 :meth:`_merge_cache_rows`。
+        ``count`` 仍是**条目数**（缓存里有多少条），``returned`` 是**铺出来的条目数**
+        （合并后的行把附属条目也计入）——面板靠这两个数判断「是不是被截断了」。
         """
         cache = self._cache
         if cache is None:
@@ -1860,11 +1872,14 @@ class ShortDramaBaikeSource(_PluginBase):
         size = int(_as_int(limit, 200) or 200)
         cache.refresh()
         entries = cache.entries(kind=kind, keyword=query)
-        rows = [entry.as_dict() for entry in entries[: max(size, 1)]]
+        # 先合并再截断：反过来的话，可能这一页只剩 TMDB 行、而它的详情行被截掉了，
+        # 面板上又变回「同一部剧两行」
+        rows = self._merge_cache_rows([entry.as_dict() for entry in entries])[: max(size, 1)]
+        returned = sum(1 + len(row.get("attached") or []) for row in rows)
         return {
             "success": True,
             "count": len(entries),
-            "returned": len(rows),
+            "returned": returned,
             "kind": kind,
             "keyword": query,
             "kinds": list(CACHE_KINDS),
@@ -1872,6 +1887,119 @@ class ShortDramaBaikeSource(_PluginBase):
             "cache": self._cache_stats(),
             "data": rows,
         }
+
+    def api_cache_detail(self, key: str = "") -> Dict[str, Any]:
+        """``GET /cache/{key}`` —— 读**单条**缓存的完整内容（面板点开某条时看）。
+
+        三样东西一起给，各有各的用处：
+
+        * ``data`` —— 缓存里存的**原始解析结果**（含 ``tmdb_identity`` / ``stills`` 这类
+          不对外投影的字段），排障时要看的就是它；
+        * ``record`` / ``actor`` —— 同一份数据的**对外投影**
+          （:func:`build_public_record` / :func:`build_public_actor`）——
+          面板直接用搜索那两张卡片渲染，点开看到的与搜出来看到的字段口径完全一致；
+        * ``summary`` —— 一句话摘要，TMDB 身份那种没有卡片可渲染的条目靠它说话。
+
+        只读，不写任何东西；取不到（已过期 / 被清）返回 ``success: False``。
+        """
+        key = _clean(key)
+        if not key:
+            return {"success": False, "message": "缺少 key", "key": ""}
+        cache = self._cache
+        if cache is None:
+            return {"success": False, "message": "缓存未就绪", "key": key}
+        cache.refresh()
+        found = cache.lookup(key)
+        if found is None:
+            return {
+                "success": False,
+                "message": f"缓存「{key}」不存在（已过期或被清空）",
+                "key": key,
+            }
+        entry, payload = found
+        row: Dict[str, Any] = {
+            "success": True,
+            "key": entry.key,
+            "kind": entry.kind,
+            "kind_label": entry.kind_label,
+            "label": entry.label,
+            "ref": entry.ref,
+            "cached_at": entry.cached_at,
+            "ttl": cache.ttl,
+            "data": payload,
+            "summary": "",
+            "record": None,
+            "actor": None,
+        }
+        item = payload if isinstance(payload, dict) else {}
+        if entry.kind == "detail":
+            row["record"] = build_public_record(item, origin="detail")
+            row["summary"] = (
+                f"作品详情：{len(item)} 个字段"
+                f"｜演员 {len(item.get('actors') or [])} 位"
+                f"｜剧照 {len(item.get('stills') or [])} 张"
+                f"｜推荐 {len(item.get('related') or [])} 条"
+            )
+        elif entry.kind == "actor":
+            row["actor"] = build_public_actor(item)
+            row["summary"] = (
+                f"演员档案：作品 {len(item.get('works') or [])} 部"
+                f"｜合作演员 {len(item.get('coactors') or [])} 位"
+            )
+        else:
+            row["summary"] = self._tmdb_cache_summary(payload)
+        return row
+
+    @staticmethod
+    def _tmdb_cache_summary(payload: Any) -> str:
+        """TMDB 身份缓存的一句话摘要。
+
+        ⚠️ 「查过、没有匹配」是**特意**存下来的负结果（免得每次识别都重问一次 TMDB），
+        不能把空值当成坏数据 —— 面板上必须点破。
+        """
+        if payload in (None, "", {}, []):
+            return "TMDB 身份：查过、没有同名同年的条目（负结果，存下来是为了不再重复问）"
+        if isinstance(payload, dict):
+            ident = payload.get("tmdb_id") or payload.get("id")
+            title = str(payload.get("title") or payload.get("name") or "")
+            year = str(payload.get("year") or payload.get("release_date") or "")
+            if ident:
+                suffix = f"《{title}》" if title else ""
+                suffix += f"（{year}）" if year else ""
+                return f"TMDB 身份：命中 #{ident}{suffix}"
+        return "TMDB 身份：已缓存一条查询结果"
+
+    @staticmethod
+    def _merge_cache_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """把「同一部作品」的多条缓存合成一行（作品详情 + TMDB 身份）。
+
+        TMDB 身份是按**片名 + 年份**单独建键的（:mod:`tmdb` 里 ``tmdb|<片名>|<年份>``），
+        所以同一部剧在缓存管理里必然占两行 —— 看上去就是两份重复数据。这里按**片名**
+        把 TMDB 条目挂到那条作品详情的 ``attached`` 下，列表就只剩一行。
+
+        两条刻意保留的边界：
+
+        * 只合并**同一次结果集内**的条目：按类型筛选时（``kind=tmdb``）依旧看到独立的
+          TMDB 行 —— 否则「筛 tmdb」就什么都筛不出来了；
+        * 找不到同名详情行的 TMDB 条目**保持独立**（详情缓存被单独删掉、或那部剧本来
+          就没抓过详情页）—— 不能为了让列表好看就把数据藏起来。
+        """
+        parents: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            if row.get("kind") != "detail":
+                continue
+            name = _normalize_title(str(row.get("label") or ""))
+            if name and name not in parents:
+                parents[name] = row
+        merged: List[Dict[str, Any]] = []
+        for row in rows:
+            if row.get("kind") == "tmdb":
+                parent = parents.get(_normalize_title(str(row.get("label") or "")))
+                if parent is not None:
+                    parent.setdefault("attached", []).append(row)
+                    continue
+            merged.append(row)
+        return merged
 
     def api_cache_delete(self, key: str = "") -> Dict[str, Any]:
         """``DELETE /cache/{key}`` —— 删除单条（键形如 ``detail:60017`` / ``actor:371``）。"""
