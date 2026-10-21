@@ -101,5 +101,20 @@
     "history": {
       "v1.1.5": "修改版（m215owen，基于 xijin285 v1.1.4）：① 修复 iStoreOS 24.10 等新版 ubus 上「系统概况」显示不全——luci.getCPUUsage/getTempInfo 不存在时不再误清 ubus 会话（导致固件/内核/架构连环 N/A、CPU 恒 0），CPU 改读 /proc/stat 双采样、温度改读 /sys/class/thermal、固件版本取 system.board 的 release.description；② 修复「网络流量」表不显示——原 wrtbwmon 数据源已废弃，改为 Bandix（eBPF）优先、rtbwmon / wrtbwmon 兜底，数据接口可在设置页选择（自动/Bandix/rtbwmon/wrtbwmon/关闭）并支持统计窗口（1h~7d）；③ 流量数值全部人类可读（自动 KB/MB/GB/TB），删除恒为 0 的包数列，占比升级为 SVG 环图 + 图例（详情页与仪表盘均生效）；④ 流量表限高滚动，设备名反查主机名并去掉 .lan 后缀。"
     }
+  },
+  "DouBanWatching": {
+    "name": "豆瓣书影音档案",
+    "description": "将剧集电影的在看、看完状态同步到豆瓣书影音档案。（本仓库版本为 MoviePilot v3.1.x API 兼容修补版）",
+    "labels": "豆瓣,媒体库",
+    "version": "1.9.7",
+    "icon": "douban.png",
+    "author": "honue",
+    "level": 1,
+    "release": true,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.9.7": "适配 MoviePilot v3.1.x：媒体识别改用 media_source + media_id 成对身份（v3.1.x 已移除 recognize_media 的 tmdbid 关键字，原版每个播放事件都在此抛 TypeError，导致完全无法同步）；事件侧不再依赖已删除的 WebhookEventInfo.tmdb_id；媒体服务器未上报季/集编号时打印告警并跳过该条，不再 int(None) 崩溃。功能与用法完全不变。",
+      "v1.9.6": "上游原版（honue）。"
+    }
   }
 }
