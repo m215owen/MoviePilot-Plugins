@@ -116,5 +116,18 @@
       "v1.9.7": "适配 MoviePilot v3.1.x：媒体识别改用 media_source + media_id 成对身份（v3.1.x 已移除 recognize_media 的 tmdbid 关键字，原版每个播放事件都在此抛 TypeError，导致完全无法同步）；事件侧不再依赖已删除的 WebhookEventInfo.tmdb_id；媒体服务器未上报季/集编号时打印告警并跳过该条，不再 int(None) 崩溃。功能与用法完全不变。",
       "v1.9.6": "上游原版（honue）。"
     }
+  },
+  "MagicubeDaily": {
+    "name": "魔搭魔粒签到",
+    "description": "每天自动「登录」魔搭社区（modelscope.cn）领取 200 魔粒（绑定阿里云 +50）。魔粒 24 小时过期，断一天丢一天。登录态默认复用宿主 CookieCloud，无需手填密码；执行结果按魔粒流水核对，领没领一目了然。",
+    "labels": "工具,签到,魔搭",
+    "version": "1.0.0",
+    "icon": "MagicubeDaily.png",
+    "author": "m215owen",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "首次发布：魔搭每日魔粒自动领取（CookieCloud 登录态 + 流水核对 + 定时通知）。"
+    }
   }
 }
