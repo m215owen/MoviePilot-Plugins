@@ -1,6 +1,10 @@
-# MoviePilot V2 插件开发指南
+# MoviePilot V2 插件开发指南（历史版本）
 
-本文档说明如何开发适用于 MoviePilot V2 的插件，并尽量以当前 `MoviePilot` 与 `MoviePilot-Frontend` 主仓库的真实实现为准，而不是停留在早期兼容阶段的概念说明。
+> 本文只供仍在维护 MoviePilot V2 实现的开发者参考。当前新插件统一面向 V3，
+> 请从 [MoviePilot 插件开发指南（V3）](./Plugin_Development.md) 开始；把已有 V2
+> 插件迁移到 V3 时，再查看 [V2 插件迁移到 V3](./V3_Plugin_Adaptation.md)。
+
+本文档说明如何维护适用于 MoviePilot V2 的历史插件实现。
 
 关联阅读：
 
@@ -177,10 +181,13 @@ class MyPlugin(_PluginBase):
     "version": "1.0.0",
     "icon": "Moviepilot_A.png",
     "author": "your-name",
+    "system_version": ">=2.12.0",
     "level": 1
   }
 }
 ```
+
+`system_version` 是可选字段。插件依赖某个 MoviePilot 主系统版本才提供的能力时再声明，格式参考 pip 依赖版本范围；不声明时宿主不会做主系统版本检查。
 
 ## 4. `_PluginBase` 的核心能力
 
@@ -264,10 +271,14 @@ MoviePilot 支持插件分身，因此建议遵守这些规则：
 
 - 不要把插件 ID 写死到字符串里到处拼接
 - 优先使用 `self.__class__.__name__`
-- `plugin_config_prefix` 必须唯一
+- 不要在基类配置和数据方法中显式传入写死的源插件 ID
+- `plugin_config_prefix` 由宿主按运行实例保证唯一，插件自己的表单字段仍应使用该前缀
 - 如果你需要通过宿主 API 反向查找自己，优先从当前类名或运行时实例出发
 
-这样插件被分身后，配置前缀、类名替换和数据隔离更容易保持正确。
+V3 宿主新建分身时不再复制和改写源码，而是在实例专属模块命名空间中重新执行同一份
+源插件代码；升级前已经存在的物理分身仍继续兼容。基类配置、数据目录、结构化数据、
+事件、动态 API 和定时服务会按运行实例 ID 隔离。插件自行创建的进程级单例、固定监听
+端口、固定外部 Webhook 或写死的绝对路径不在宿主隔离范围内，需要插件通过配置分配。
 
 ## 6. V2 常见能力面
 
@@ -524,10 +535,23 @@ def get_render_mode(self) -> Tuple[str, str]:
 - `get_form()` / `get_page()` 可返回 `([], {})`、`[]` 或 `None`
 - 前端会通过 `/api/v1/plugin/remotes` 获取远程组件列表
 - 静态资源由 `MoviePilot` 后端负责对外提供
+- 虚拟分身复用源插件的同一份联邦构建产物
+- 宿主会传入实例 `pluginId`、`sourcePluginId` 和实例作用域 `api`；组件应优先使用这些
+  props，不要只依赖全局 `window.MoviePilotAPI`
 
 若需要独立侧栏页面，还要实现 `get_sidebar_nav()`。
 
-### 7.3 侧栏全页入口 `get_sidebar_nav()`
+### 7.3 本地监听构建
+
+本地开发时，可将前端工程的 `dev` 脚本配置为 `vite build --watch`，然后运行：
+
+```bash
+yarn dev
+```
+
+通过 `PLUGIN_LOCAL_REPO_PATHS` 开发已安装插件，并启用 `DEV` 或 `PLUGIN_AUTO_RELOAD` 后，MoviePilot 会同步新的构建产物；刷新页面即可查看修改。
+
+### 7.4 侧栏全页入口 `get_sidebar_nav()`
 
 只有 Vue 模式插件才会被主界面侧栏聚合。
 
@@ -565,6 +589,16 @@ def get_sidebar_nav(self) -> List[Dict[str, Any]]:
 - `nav_key` 不能包含 `/`、`?`、`#`、空格
 
 多入口全页插件的联邦暴露名规则，详见前端仓库的模块联邦开发指南。
+
+### 7.5 联邦组件 CSS 约束
+
+Vue 联邦组件和主程序共享同一个页面文档。插件不得打包或发布 Vuetify/MDI 全局基础样式，
+也不得直接声明未限定插件根节点的 `.v-*`、`.rounded-*`、`.elevation-*`、`html`、`body`
+或 `:root` 规则。共享 `vuetify/styles` 时必须使用 `generate: false`，并在 PostCSS 中移除
+来自 `node_modules/vuetify`、`node_modules/@mdi` 的 CSS。
+
+允许使用 Vue `<style scoped>`、`:deep()`，或 `.plugin-root .v-btn` 这类明确限定在插件内的
+局部覆盖。完整配置、错误示例和构建门禁见 [V3 插件开发文档的联邦 CSS 章节](./Plugin_Development.md#83-联邦组件-css-不得污染主程序)。
 
 ## 8. 公共服务封装建议
 
@@ -607,8 +641,22 @@ def run_with_downloader(self, name: str):
 ```bash
 python3 -m py_compile plugins.v2/myplugin/__init__.py
 python3 -m compileall plugins.v2/myplugin
+python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 git diff --check
 ```
+
+版本门禁按索引文件定位对应目录：`package.json` 对应 `plugins/`，
+`package.v2.json` 对应 `plugins.v2/`，`package.v3.json` 对应 `plugins.v3/`。V1/V2
+沿用只检查 `"release": true` 条目的规则；V3 是独立实现，所有索引条目都必须通过版本一致性检查。
+索引里的 `version` 必须与插件 `__init__.py` 中的 `plugin_version` 一致。
+
+如果希望在本地推送前提前发现版本不一致，可以启用仓库提供的 pre-push hook：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Git 不会自动启用仓库内 hook；本地 hook 只是开发辅助，PR 门禁和 Release 打包前门禁仍会在 GitHub Actions 中执行。
 
 ### 9.2 API 层
 
@@ -636,8 +684,9 @@ git diff --check
 4. 索引里的 `version` 与代码里的 `plugin_version` 一致
 5. `history` 已补齐本次变更说明
 6. 若使用 Release 分发，条目已声明 `"release": true`
-7. Python 代码完成最小语法校验
-8. 若有 Vue 远程组件，构建产物已更新
+7. `python3 .github/scripts/check_plugin_versions.py package.json package.v2.json` 已通过
+8. Python 代码完成最小语法校验
+9. 若有 Vue 远程组件，构建产物已更新
 
 ## 11. 什么时候还要回去看宿主源码
 
