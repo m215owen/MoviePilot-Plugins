@@ -88,5 +88,18 @@
     "history": {
       "v1.0.0": "首版发布（插件仍在测试期，版本号定为首版，不跟随内部迭代次数往上堆）。把「短剧百科」(duanjubaike.org) 注册为 MoviePilot 的**一等媒体数据源**（与 TMDB / 豆瓣 / Bangumi 同级），为 TMDB、豆瓣上没有条目的短剧补上片名检索、详情识别与演员数据。① **发现**：站内检索被 Cloudflare 挑战挡住（服务端直连恒 403，浏览器仿真也过不去），改为**站外索引** —— 把 `site:duanjubaike.org <关键词>` 交给多引擎搜索（ddgs，后端可选，相邻两次至少隔 3 秒），引擎返回的每行都带完整 URL，按 `/drama/<id>` 与 `/actor/<id>` 分流成作品与演员两类，图集页 / 榜单页 / 外域结果一律剔除。② **沉淀**：URL 存进**插件自有数据库**（PostgreSQL 下是宿主库里的独立 schema，SQLite 下是插件数据目录的 plugin.db），库里**只存 URL、不存解析结果**；取数**库优先**（命中即零引擎请求），解析作品页顺带沉淀演员链接、解析演员页顺带沉淀作品链接（`follow_links` 可关），URL 库会自己长大；一个页面只留一条记录（同一个 ID 走了两条发现路径会自动合并），**只有与搜索词完全相等的剧名才建库**（宁可漏不可错）。③ **解析**：页面实时抓取，JSON-LD 优先、HTML 兜底补齐 —— 作品取评分 / 热度 / 播放 / 收藏 / 集数 / 全集时长（另附按集数折算的 `episode_minutes`）/ 首播 / 类型 / 出品方 / 真人-AI 角标 / 剧照 / 演员阵容含角色 / 同页推荐；演员页另有职务 / 性别 / 国籍 / 简介 / 全部作品 / 合作演员。④ **三处实测驱动的修正**：地址一律归一化成 `/zh-Hans`（引擎会给无前缀或 `/zh-Hant` 地址，站点 301 到繁体页后演员作品**静默解析出 0 部**、热度恒为 null）；繁体标题的候选补抓一次简体页换真标题（否则按简体关键词打分恒为 0 被丢弃）；同名多版本（AI 版 / 真人版标题一字不差）并列时逐条比字段完整度、取数据全的那条。⑤ **对外提供服务**：宿主模块分发（`search_actors` / `actor_works`）与 HTTP 纯 JSON 接口（`/lookup`、`/recognize`、`/actor`、`/urls`、`/urls/clear`、`/probe`、`/status`、`/config`），全部 `auth: \"bear\"`；宿主数据源接口另有 get_media_source / search_medias / recognize_media / obtain_images / get_module。⑥ **面板**是 Vue 联邦前端（宿主的 Vuetify JSON 页面承载不了搜索框），只有一个输入框（片名与演员名都收，`GET /lookup` 一次检索出两块结果），另有 URL 库查看器（容量统计 + 最近入库 + 按关键词/类型查 + 清空库带二次确认）与每条结果的「原始数据」展开。⑦ 配置 **9 项**（enabled / domain / search_in_global / timeout / cache_ttl / web_index_search / web_index_backend / proxy / follow_links）；插件**不注册任何后台任务**、不含任何本地索引或请求闸门。⑧ 排查上把几类**静默故障**（演员作品 0 部、引擎后端报错、URL 入库失败、撞风控、解析不出标题）都补了明确日志。"
     }
+  },
+  "OpenWrtBackup": {
+    "name": "OpenWrt路由助手",
+    "description": "OpenWrt/iStoreOS 路由器管理助手：配置定时备份（支持 WebDAV 异地容灾）、系统状态监控（CPU/内存/温度/负载/固件，CPU 与温度兼容无 luci.getCPUUsage 的新版 ubus）、按设备的网络流量统计（数据源可配 Bandix / rtbwmon / wrtbwmon，含 SVG 占比环图）、LuCI 插件服务管理与消息交互。本仓库版在原版（xijin285）1.1.4 基础上修复系统概况显示不全、流量表数据源失效等问题并增强。",
+    "labels": "系统,网络,路由器,备份,流量",
+    "version": "1.1.5",
+    "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/openwrt.png",
+    "author": "xijin285",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.1.5": "修改版（m215owen，基于 xijin285 v1.1.4）：① 修复 iStoreOS 24.10 等新版 ubus 上「系统概况」显示不全——luci.getCPUUsage/getTempInfo 不存在时不再误清 ubus 会话（导致固件/内核/架构连环 N/A、CPU 恒 0），CPU 改读 /proc/stat 双采样、温度改读 /sys/class/thermal、固件版本取 system.board 的 release.description；② 修复「网络流量」表不显示——原 wrtbwmon 数据源已废弃，改为 Bandix（eBPF）优先、rtbwmon / wrtbwmon 兜底，数据接口可在设置页选择（自动/Bandix/rtbwmon/wrtbwmon/关闭）并支持统计窗口（1h~7d）；③ 流量数值全部人类可读（自动 KB/MB/GB/TB），删除恒为 0 的包数列，占比升级为 SVG 环图 + 图例（详情页与仪表盘均生效）；④ 流量表限高滚动，设备名反查主机名并去掉 .lan 后缀。"
+    }
   }
 }
