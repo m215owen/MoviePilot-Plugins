@@ -6,7 +6,7 @@ from app.chain.media import MediaChain
 from app.core.event import eventmanager, Event
 from app.core.metainfo import MetaInfo
 from app.plugins import _PluginBase
-from app.plugins.doubanwatching.DoubanHelper import DoubanHelper
+from app.plugins.doubanwatchingfix.DoubanHelper import DoubanHelper
 from app.schemas import WebhookEventInfo, MediaInfo
 from app.schemas.types import EventType, MediaType, MediaSource
 import re
@@ -15,21 +15,21 @@ from app.log import logger
 lock = threading.Lock()
 
 
-class DouBanWatching(_PluginBase):
-    # 插件名称
-    plugin_name = "豆瓣书影音档案"
+class DouBanWatchingFix(_PluginBase):
+    # 插件名称（与原版区分，避免两个插件重名）
+    plugin_name = "豆瓣书影音档案-修复版"
     # 插件描述
-    plugin_desc = "将剧集电影的在看、看完状态同步到豆瓣书影音档案。"
+    plugin_desc = "将剧集电影的在看、看完状态同步到豆瓣书影音档案。（原版 honue/DouBanWatching 的 MoviePilot v3.1.x API 兼容修复版）"
     # 插件图标
-    plugin_icon = "douban.png"
+    plugin_icon = "DouBanWatchingFix.png"
     # 插件版本
     plugin_version = "1.9.7"
-    # 插件作者
+    # 插件作者（原作者）
     plugin_author = "honue"
     # 作者主页
     author_url = "https://github.com/honue"
     # 插件配置项ID前缀
-    plugin_config_prefix = "doubanwatching_"
+    plugin_config_prefix = "doubanwatchingfix_"
     # 加载顺序
     plugin_order = 15
     # 可使用的用户级别
@@ -49,8 +49,15 @@ class DouBanWatching(_PluginBase):
 
     _wait_process: Dict = None
 
+    # 原版插件ID（本插件是它的兼容修复版，改名后与原版可共存）
+    _LEGACY_PLUGIN_ID = "DouBanWatching"
+    _LEGACY_DATA_KEYS = ("data", "wait")
+
     def init_plugin(self, config: dict = None):
         config = config or {}
+        # 首次运行时从原版继承配置与已同步记录，避免用户重新填写
+        self._inherit_legacy(config)
+
         self._enable = config.get("enable", False)
         self._private = config.get("private", True)
         self._first = config.get("first", True)
@@ -63,10 +70,47 @@ class DouBanWatching(_PluginBase):
         self._mobile_month = int(config.get("mobile_month")) if config.get("mobile_month", None) else 2
         self._mobile_num = int(config.get("mobile_num")) if config.get("mobile_num", None) else 15
 
-        if self.get_data("processed"):
+    def _inherit_legacy(self, config: Dict) -> None:
+        """
+        从原版 DouBanWatching 继承配置与已同步记录；只执行一次，失败不影响本插件使用。
+        """
+        if self.get_data("legacy_inherited"):
+            return
+        try:
+            legacy_config = self.get_config(self._LEGACY_PLUGIN_ID)
+            if isinstance(legacy_config, dict) and legacy_config and not config.get("user"):
+                for key, value in legacy_config.items():
+                    if str(key).startswith("_") or key in ("enable", "private"):
+                        continue
+                    config.setdefault(key, value)
+                self.update_config(config)
+                logger.info("已从原版 DouBanWatching 继承配置项，请核对后启用本插件并停用原版")
+        except Exception as err:
+            logger.warn(f"继承原版 DouBanWatching 配置失败（忽略）: {err}")
+
+        try:
+            operator = self._plugin_data_operator()
+            for key in self._LEGACY_DATA_KEYS:
+                if self.get_data(key):
+                    continue
+                value = operator.get_data(plugin_id=self._LEGACY_PLUGIN_ID, key=key)
+                if value:
+                    self.save_data(key, value)
+        except Exception as err:
+            logger.warn(f"继承原版 DouBanWatching 同步记录失败（忽略）: {err}")
+        finally:
+            self.save_data("legacy_inherited", True)
+
+    @staticmethod
+    def _plugin_data_operator():
+        """
+        兼容不同宿主的插件数据模块路径。
+        """
+        try:
+            from app.db.oper.plugindata import PluginDataOper
+        except ImportError:
             from app.db.plugindata_oper import PluginDataOper
-            PluginDataOper().del_data(plugin_id="DouBanWatching")
-            logger.warn("检测到本插件旧版本数据，删除旧版本数据，避免报错...")
+        return PluginDataOper()
 
     @eventmanager.register(EventType.WebhookMessage)
     def sync_log(self, event: Event, played: bool = False):
