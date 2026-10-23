@@ -1,0 +1,2616 @@
+
+.sdas-hover-area[data-v-027225f1] {
+  inline-size: 100%;
+}
+.sdas-person-card[data-v-027225f1] {
+  cursor: pointer;
+  overflow: hidden;
+}
+
+/* 卡面：2:3（padding-block-end 150%），整块交给图片 */
+.sdas-person-body[data-v-027225f1] {
+  position: relative;
+  padding-block-end: 150%;
+  overflow: hidden;
+  background-image: linear-gradient(
+    45deg,
+    rgba(var(--v-theme-background), 0.3),
+    rgba(var(--v-theme-surface), 0.3) 60%
+  );
+}
+.sdas-person-photo[data-v-027225f1] {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+}
+.sdas-person-photo--empty[data-v-027225f1] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/*
+ * 底部文字：**姓名常显**（2026-10-18 用户口径），身份行与粉丝/获赞**悬停才显**。
+ *
+ * 静止态只垫一层很淡的渐变 + 文字阴影 —— 名字在任何照片上都读得清，
+ * 又不会把整张卡压暗；悬停时渐变加深、更多信息淡入。
+ */
+.sdas-person-caption[data-v-027225f1] {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 22px 10px 9px;
+  color: #fff;
+  background: linear-gradient(
+    to top,
+    rgba(15, 20, 28, 0.62) 0%,
+    rgba(15, 20, 28, 0.18) 55%,
+    transparent 100%
+  );
+  transition: background-color 0.15s ease;
+}
+.sdas-person-body:hover .sdas-person-caption[data-v-027225f1] {
+  background: linear-gradient(
+    to top,
+    rgba(15, 20, 28, 0.88) 0%,
+    rgba(15, 20, 28, 0.55) 55%,
+    transparent 100%
+  );
+}
+
+/*
+ * 数据行（粉丝 / 获赞）：**悬停才显**（2026-10-18 用户口径「不常显」）。
+ *
+ * ⚠️ 透明度只由这一个类管 —— 之前 `.sdas-person-stats` 里又写了一次 `opacity: .82`，
+ * 它在本文件里排在后面、优先级相同，直接把这里的 `0` 覆盖掉，于是数据行永远可见。
+ * 以后要给右栏调淡，改这里（`.85` 就是悬停时的观感），别再往 stats 里写 opacity。
+ */
+.sdas-person-more[data-v-027225f1] {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.sdas-person-body:hover .sdas-person-more[data-v-027225f1] {
+  opacity: 0.85;
+}
+
+/* 触摸端没有 hover：常显，否则永远看不到这些信息 */
+@media (hover: none) {
+.sdas-person-more[data-v-027225f1] {
+    opacity: 0.85;
+}
+}
+
+/* 角色 / 职务（作品详情的演员阵容）：与作品数同字号、更淡，一行省略 */
+.sdas-person-role[data-v-027225f1] {
+  overflow: hidden;
+  margin-top: 1px;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  opacity: 0.82;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sdas-person-name[data-v-027225f1] {
+  overflow: hidden;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 左栏：姓名 + 「N 部作品」——可收缩，名字过长走省略，不挤走右栏 */
+.sdas-person-left[data-v-027225f1] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/*
+ * 右栏：粉丝 / 获赞**各占一行**、右对齐（2026-10-18 用户口径「换行显示」）。
+ *
+ * 宽度由内容决定（`flex: 0 0 auto` + 每行 nowrap）：两行永远完整，不会像
+ * 单行时那样被省略号截掉后半截；左栏不够就自己省略。
+ */
+.sdas-person-stats[data-v-027225f1] {
+  flex: 0 0 auto;
+  text-align: end;
+  font-size: 0.6875rem;
+  line-height: 1.0625rem;
+  white-space: nowrap;
+}
+.sdas-person-meta[data-v-027225f1] {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  opacity: 0.88;
+}
+
+/*
+ * 右上角爱心：压在图上，加一层暗色底衬 —— 浅色照片上白色空心心形也看得见。
+ *
+ * **悬停才显**（2026-10-18 用户口径）：静止态只留照片，卡片墙更干净。
+ * 隐藏时同时 `pointer-events: none`，否则会点到看不见的按钮。
+ */
+.sdas-person-like[data-v-027225f1] {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  background-color: rgba(0, 0, 0, 0.28) !important;
+  backdrop-filter: blur(2px);
+}
+.sdas-person-body:hover .sdas-person-like[data-v-027225f1],
+.sdas-person-like[data-v-027225f1]:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 触摸端没有 hover：常显，不然这个按钮永远点不到 */
+@media (hover: none) {
+.sdas-person-like[data-v-027225f1] {
+    opacity: 1;
+    pointer-events: auto;
+}
+}
+.sdas-person-like[data-v-027225f1]:hover {
+  background-color: rgba(0, 0, 0, 0.42) !important;
+}
+
+/*
+ * 左上角「订阅全部」：与爱心同一条显隐规则（悬停淡入 / 触摸端常显）。
+ * 深色半透明底衬 + 白字，浅色照片上也读得清；字号压到 0.75rem，
+ * 半栏窄卡里也放得下（爱心在右上，两者不打架）。
+ */
+.sdas-person-suball[data-v-027225f1] {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: 4px;
+  min-inline-size: 0;
+  block-size: 26px;
+  padding-inline: 8px;
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #fff !important;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  background-color: rgba(0, 0, 0, 0.34) !important;
+  backdrop-filter: blur(2px);
+}
+.sdas-person-body:hover .sdas-person-suball[data-v-027225f1],
+.sdas-person-suball[data-v-027225f1]:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 触摸端没有 hover：常显，不然这个按钮永远点不到 */
+@media (hover: none) {
+.sdas-person-suball[data-v-027225f1] {
+    opacity: 1;
+    pointer-events: auto;
+}
+}
+.sdas-person-suball[data-v-027225f1]:hover {
+  background-color: rgba(0, 0, 0, 0.48) !important;
+}
+.sdas-person-suball-text[data-v-027225f1] {
+  margin-inline-start: 2px;
+  white-space: nowrap;
+}
+
+.sdas-hover-area[data-v-fcdda18f] {
+  inline-size: 100%;
+}
+.sdas-card[data-v-fcdda18f] {
+  cursor: pointer;
+}
+
+/*
+ * 「NEW」标记：不是角标，是**日期位置的替身**。
+ * 小字号 + 常规字重 + 宽字距 + 半透明白，无底无边，只借一层极轻的暗色投影
+ * 保证它落在浅色海报上不消失。目的是与日期 chip 同级或更轻 —— 一眼看得到，
+ * 但不会比片名、海报更抢镜（此前红字/主色底两版都太像告示牌）。
+ */
+.sdas-new[data-v-fcdda18f] {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  color: rgba(248, 250, 252, 0.9);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  padding-inline: 2px;
+  user-select: none;
+}
+
+/* 海报骨架（宿主 `#placeholder` 里那层 VSkeletonLoader 的铺法） */
+.sdas-poster-skeleton-wrap[data-v-fcdda18f] {
+  position: relative;
+  block-size: 100%;
+  inline-size: 100%;
+}
+.sdas-poster-skeleton[data-v-fcdda18f] {
+  position: absolute;
+  inset: 0;
+  block-size: 100%;
+  inline-size: 100%;
+}
+
+/* 海报占位：与宿主 .media-card-placeholder 同一口径 */
+.sdas-poster-empty[data-v-fcdda18f] {
+  aspect-ratio: 2 / 3;
+  inline-size: 100%;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+/*
+  悬停浮层里的文字（对应宿主 .media-card-title / .media-card-overview）。
+  宿主那两个类在它自己的 scoped 样式里，联邦元素匹配不上 ⇒ 数值在这里复刻。
+*/
+.sdas-card-title[data-v-fcdda18f] {
+  font-size: 1.125rem;
+  line-height: 1.25rem;
+}
+.sdas-card-overview[data-v-fcdda18f] {
+  font-size: 0.875rem;
+  line-height: 1.125rem;
+  opacity: 0.92;
+}
+
+/* 层级取 1500：高于面板内容，低于 Vuetify 弹窗（~2400）——
+   取消订阅确认框开着时不该能隔着弹窗点到它。
+   尺寸 48px / 图标 26：2026-10-18 用户口径「按钮太小」→ 放大一号。 */
+.sdas-sticky-back[data-v-06aa9a76] {
+  position: fixed;
+  width: 48px !important;
+  height: 48px !important;
+  z-index: 1500;
+}
+
+.sdas-glass-backdrop.is-active[data-v-6ac2ac91] {
+  position: relative;
+}
+
+/*
+  采样层（z-index 0）垫在内容下面；内容整体抬到 z-index 1。
+  ⚠️ 必须排除采样层自己 —— 它也是本容器的直接子元素，一并抬到 z-index 1 就跑到内容
+  上面去了（宿主那边只针对 `.progressive-card-grid` 所以没这个坑）。
+*/
+.sdas-glass-backdrop.is-active[data-v-6ac2ac91] >  :not(.sdas-glass-sampling) {
+  position: relative;
+  z-index: 1;
+}
+.sdas-glass-sampling[data-v-6ac2ac91] {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  inset-inline-start: 0;
+  inline-size: 100%;
+  backdrop-filter: var(--glass-native-surface-backdrop-filter);
+  -webkit-backdrop-filter: var(--glass-native-surface-backdrop-filter);
+}
+
+/* 只移交原生采样；卡片自身的颜色、轮廓和增强档光学资格保持不变。 */
+[data-v-6ac2ac91] .media-card[data-glass-shared-backdrop='true'] {
+  --glass-native-surface-backdrop-filter: none;
+  --glass-surface-backdrop-filter: none;
+}
+
+.sdas-loading[data-v-fe5657b5] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  inline-size: 100%;
+  margin-block: 1.25rem;
+  color: rgb(var(--v-theme-on-surface-variant, 158 158 158));
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-align: center;
+}
+.sdas-loading-box[data-v-fe5657b5] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 20vh;
+}
+.sdas-loading-inner[data-v-fe5657b5] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+.sdas-wave[data-v-fe5657b5] {
+  display: flex;
+  align-items: center;
+  block-size: 40px;
+  gap: 6px;
+}
+.sdas-wave-dot[data-v-fe5657b5] {
+  border-radius: 50%;
+  animation: sdas-wave-fe5657b5 1.5s ease-in-out infinite;
+  background-color: rgb(var(--v-theme-primary));
+  block-size: 8px;
+  inline-size: 8px;
+}
+.sdas-wave-dot[data-v-fe5657b5]:nth-child(1) {
+  animation-delay: 0s;
+}
+.sdas-wave-dot[data-v-fe5657b5]:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.sdas-wave-dot[data-v-fe5657b5]:nth-child(3) {
+  animation-delay: 0.4s;
+}
+.sdas-wave-dot[data-v-fe5657b5]:nth-child(4) {
+  animation-delay: 0.6s;
+}
+@keyframes sdas-wave-fe5657b5 {
+0%,
+  100% {
+    transform: translateY(0);
+}
+50% {
+    transform: translateY(-15px);
+}
+}
+.sdas-loading-text[data-v-fe5657b5] {
+  color: rgb(var(--v-theme-primary));
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: 1px;
+}
+
+.sdas-nodata[data-v-b5ef75fa] {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  inline-size: 100%;
+  min-block-size: 300px;
+  padding-block-start: 3rem;
+  text-align: center;
+  animation: sdas-rise-in-b5ef75fa 0.6s ease both;
+}
+
+/* ---------- 错误码 ---------- */
+.sdas-code[data-v-b5ef75fa] {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.06em;
+  margin-block: 0 1.5rem;
+  font-size: clamp(5rem, 16vw, 9rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.sdas-code-digit[data-v-b5ef75fa] {
+  background: linear-gradient(175deg, rgba(var(--v-theme-primary), 1) 12%, rgba(var(--v-theme-primary), 0.45) 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  text-shadow: none;
+}
+
+/* 背景柔光 */
+.sdas-code-glow[data-v-b5ef75fa] {
+  position: absolute;
+  inset: -30% -10%;
+  z-index: -1;
+  background: radial-gradient(closest-side, rgba(var(--v-theme-primary), 0.16), transparent 70%);
+  animation: sdas-breathe-b5ef75fa 5s ease-in-out infinite;
+}
+
+/* ---------- 胶卷盘 ---------- */
+.sdas-reel-holder[data-v-b5ef75fa] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  block-size: 0.92em;
+  inline-size: 0.92em;
+  margin-inline: 0.06em;
+}
+.sdas-reel[data-v-b5ef75fa] {
+  block-size: 100%;
+  inline-size: 100%;
+  animation: sdas-reel-spin-b5ef75fa 24s linear infinite;
+}
+.sdas-reel-rim[data-v-b5ef75fa] {
+  fill: rgba(var(--v-theme-primary), 0.08);
+  stroke: rgba(var(--v-theme-primary), 0.9);
+  stroke-width: 9;
+}
+
+/* 盘面 6 个镂孔：仅用描边，孔内透出背景色 */
+.sdas-reel-holes circle[data-v-b5ef75fa] {
+  stroke: rgba(var(--v-theme-on-surface), 0.5);
+  stroke-width: 4;
+}
+.sdas-reel-hub[data-v-b5ef75fa] {
+  fill: rgba(var(--v-theme-primary), 0.95);
+}
+
+/* ---------- 漂浮胶片帧 ---------- */
+.sdas-film-chip[data-v-b5ef75fa] {
+  position: absolute;
+  border: 1.5px solid rgba(var(--v-theme-on-surface), 0.18);
+  border-radius: 4px;
+  /* 上下齿孔用重复渐变模拟 */
+  background-image: repeating-linear-gradient(90deg, transparent 0 6px, rgba(var(--v-theme-on-surface), 0.22) 6px 10px);
+  background-position: center top 3px;
+  background-repeat: repeat-x;
+  background-size: 100% 3px;
+  block-size: 14px;
+  inline-size: 34px;
+  opacity: 0.7;
+}
+.sdas-film-chip.is-a[data-v-b5ef75fa] {
+  inset-block-start: -8%;
+  inset-inline-start: 6%;
+  rotate: -18deg;
+  animation: sdas-drift-b5ef75fa 6s ease-in-out infinite;
+}
+.sdas-film-chip.is-b[data-v-b5ef75fa] {
+  inset-block-end: -6%;
+  inset-inline-end: 4%;
+  rotate: 14deg;
+  animation: sdas-drift-b5ef75fa 7s ease-in-out 1.2s infinite;
+}
+.sdas-film-chip.is-c[data-v-b5ef75fa] {
+  inset-block-start: 12%;
+  inset-inline-end: -6%;
+  rotate: 26deg;
+  animation: sdas-drift-b5ef75fa 8s ease-in-out 2.4s infinite;
+}
+
+/* ---------- 文字 ---------- */
+.sdas-nodata-title[data-v-b5ef75fa] {
+  position: relative;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+  font-size: 1.5rem;
+  font-weight: 500;
+  margin-block-end: 0.75rem;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 5%);
+}
+.sdas-nodata-title[data-v-b5ef75fa]::after {
+  display: block;
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(var(--v-theme-primary), 0.8), rgba(var(--v-theme-primary), 0.2));
+  block-size: 3px;
+  content: '';
+  inline-size: 60px;
+  margin-block-start: 0.5rem;
+  margin-inline: auto;
+}
+.sdas-nodata-desc[data-v-b5ef75fa] {
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  font-size: 1rem;
+  margin-block-end: 1rem;
+  margin-inline: auto;
+  max-inline-size: 80%;
+}
+.sdas-nodata-actions[data-v-b5ef75fa] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+/* ---------- 动画 ---------- */
+@keyframes sdas-rise-in-b5ef75fa {
+from {
+    opacity: 0;
+    transform: translateY(14px);
+}
+to {
+    opacity: 1;
+    transform: none;
+}
+}
+@keyframes sdas-breathe-b5ef75fa {
+0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+}
+50% {
+    opacity: 1;
+    transform: scale(1.08);
+}
+}
+@keyframes sdas-reel-spin-b5ef75fa {
+to {
+    rotate: 360deg;
+}
+}
+@keyframes sdas-drift-b5ef75fa {
+0%,
+  100% {
+    transform: translateY(0);
+}
+50% {
+    transform: translateY(-8px);
+}
+}
+@media (prefers-reduced-motion: reduce) {
+.sdas-nodata[data-v-b5ef75fa],
+  .sdas-code-glow[data-v-b5ef75fa],
+  .sdas-reel[data-v-b5ef75fa],
+  .sdas-film-chip[data-v-b5ef75fa] {
+    animation: none;
+}
+}
+
+/*
+  ⚠️ 联邦 CSS 门禁会把任何含 `.v-` 的选择器整条丢掉 ⇒ 样式一律自有 `sdas-*` 类名。
+  宿主全局类（slider-header / slider-title / ring-1 / ring-gray-700 / text-body-2 /
+  text-medium-emphasis / ms-1 / ml-1 / ml-3）只用 class 属性引用，不在这里定义。
+*/
+.sdas-actor[data-v-48e778cf] {
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 24px;
+  color: rgb(var(--v-theme-on-surface));
+}
+
+/* 返回条：压在页面顶部（作品详情页同一款） */
+/*
+ * 返回条：**吸顶**（sticky）。
+ *
+ * 插件面板没有宿主顶栏 / 浏览器返回，返回键是唯一的退路，不能随内容滚走。
+ * 之前作品详情页把它做成左上角绝对定位的浮层（不占排版），滑两屏就够不着了；
+ * 改成 sticky 后它占一行、滚到哪都停在顶部。背景给实色，否则下方内容会从它背后透出来。
+ */
+.sdas-actor-bar[data-v-48e778cf] {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding-inline: 12px;
+  margin-bottom: 4px;
+}
+
+/* 头部：窄屏竖排居中，≥768px 横排（宿主 flex-md-row 同款断点） */
+.sdas-actor-head[data-v-48e778cf] {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding-inline: 16px;
+  margin: 0.75rem 0 1.5rem;
+}
+@media (width >= 768px) {
+.sdas-actor-head[data-v-48e778cf] {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 1rem;
+}
+}
+.sdas-actor-avatar[data-v-48e778cf] {
+  flex: 0 0 auto;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.sdas-actor-meta[data-v-48e778cf] {
+  min-inline-size: 0;
+}
+
+/* h1：宿主 text-3xl → lg:text-4xl（1.875rem/2.25rem → 2.25rem/2.5rem），
+   窄屏居中、≥768px 靠左（宿主 text-center text-lg-left） */
+.sdas-actor-name[data-v-48e778cf] {
+  margin: 0;
+  font-size: 1.875rem;
+  font-weight: 400;
+  line-height: 2.25rem;
+  text-align: center;
+}
+@media (width >= 768px) {
+.sdas-actor-name[data-v-48e778cf] {
+    font-size: 2.25rem;
+    line-height: 2.5rem;
+    text-align: left;
+}
+}
+
+/* 副信息：宿主 mt-1 mb-2 space-y-1 text-xs sm:text-sm lg:text-base */
+.sdas-actor-sub[data-v-48e778cf] {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  text-align: center;
+}
+.sdas-actor-sub > div + div[data-v-48e778cf] {
+  margin-top: 0.25rem;
+}
+@media (width >= 640px) {
+.sdas-actor-sub[data-v-48e778cf] {
+    font-size: 0.875rem;
+}
+}
+@media (width >= 1024px) {
+.sdas-actor-sub[data-v-48e778cf] {
+    font-size: 1rem;
+}
+}
+@media (width >= 768px) {
+.sdas-actor-sub[data-v-48e778cf] {
+    text-align: left;
+}
+}
+
+/* 简介：宿主 pt-2 text-sm lg:text-base + overflow-wrap: break-word */
+.sdas-actor-bio[data-v-48e778cf] {
+  padding: 16px 16px 0;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
+  overflow-wrap: break-word;
+}
+@media (width >= 1024px) {
+.sdas-actor-bio[data-v-48e778cf] {
+    font-size: 1rem;
+}
+}
+
+/*
+ * 档案要点（生日 / 出生地 / 身高 / 体重 / 星座 / 院校 / 粉丝 / 获赞）
+ * 自适应网格：宽屏一排放三四个，窄屏自动降成一列；值可能很长（院校）所以允许换行。
+ */
+.sdas-actor-facts[data-v-48e778cf] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px 18px;
+  padding: 12px 16px 0;
+  margin-top: 10px;
+}
+.sdas-actor-fact[data-v-48e778cf] {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-inline-size: 0;
+}
+.sdas-actor-fact-label[data-v-48e778cf] {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.sdas-actor-fact-value[data-v-48e778cf] {
+  min-inline-size: 0;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+/* 爱好 / 代表作：整行文字（长度不定，不做成格子） */
+.sdas-actor-line[data-v-48e778cf] {
+  display: flex;
+  gap: 8px;
+  padding: 6px 16px 0;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
+  overflow-wrap: anywhere;
+}
+.sdas-actor-line-label[data-v-48e778cf] {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  line-height: 1.5rem;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+/* 代表作：可点条目一行排开（像链接，不是按钮块） */
+.sdas-actor-rep[data-v-48e778cf] {
+  align-items: baseline;
+}
+.sdas-rep-list[data-v-48e778cf] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  min-inline-size: 0;
+}
+
+/*
+ * 代表作条目：**不用主色**（2026-10-18 用户口径）—— 与正文同色，
+ * 靠悬停下划线 + 手型光标表达「可点」，不在一行文字里跳出一片蓝。
+ */
+.sdas-rep-item[data-v-48e778cf] {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
+  cursor: pointer;
+  text-align: start;
+}
+.sdas-rep-item[data-v-48e778cf]:hover {
+  text-decoration: underline;
+}
+.sdas-rep-item[data-v-48e778cf]:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/*
+ * 「未收录」那一串：不是作品链接，而是一个搜索入口。
+ * 用虚线底边 + 放大镜图标 + 略淡的字色，跟旁边实打实的作品条目区分开，
+ * 免得用户以为点了会进详情。
+ */
+.sdas-rep-search[data-v-48e778cf] {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-block-end: 1px dashed rgba(var(--v-theme-on-surface), 0.35);
+  color: rgba(var(--v-theme-on-surface), 0.72);
+}
+.sdas-rep-search-icon[data-v-48e778cf] {
+  opacity: 0.7;
+}
+
+/* 作品滚动加载哨兵：与作品墙同款，居中的细转圈 / 末尾提示 */
+.sdas-credits-sentinel[data-v-48e778cf] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-block-size: 44px;
+  padding: 8px 0;
+  font-size: 0.75rem;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+/* 本插件自己的动作排（宿主演员页没有这一块）：与作品详情页的操作按钮同一款 tonal */
+.sdas-actor-actions[data-v-48e778cf] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 1rem 16px 0;
+}
+.sdas-actor-action-btn[data-v-48e778cf] {
+  flex: 0 0 auto;
+}
+
+/* 参演作品区：宿主 .person-credits-section 的 margin-block-start: 2rem */
+.sdas-actor-credits[data-v-48e778cf] {
+  margin-block-start: 2rem;
+  padding-inline: 16px;
+}
+
+/* 标题行：slider-header 是 display:flex（全局），这里只补两端对齐与下边距 */
+.sdas-credits-head[data-v-48e778cf] {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+/*
+  作品卡网格：与作品墙同式（探索页 ProgressiveCardGrid 的 minItemWidth=144 /
+  gap=16）。这里用 CSS `auto-fill` 直接算列数 —— 它用的就是 minmax 的下限
+  `144px`，与 `floor((宽 + 16) / 160)` 的列数结果一致，省掉一次量宽。
+*/
+.sdas-credits-grid[data-v-48e778cf] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
+  gap: 16px;
+}
+
+/* 空态（与面板其它处的空态同一款） */
+/* 空态（探索页同款）见 NoDataFound.vue —— 旧的 sdas-actor-empty 三条样式已随替换删掉 */
+
+/*
+  ⚠️ 联邦 CSS 门禁会丢掉任何含 `.v-` 的选择器 ⇒ 样式一律自有 `sdas-*` 类名；
+  宿主全局类（slider-header / slider-title / text-body-2 / text-medium-emphasis）
+  只用 class 属性引用。
+*/
+.sdas-adapted-loading[data-v-2c6378b9],
+.sdas-adapted-empty-tip[data-v-2c6378b9] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  margin: 0;
+  font-size: 0.875rem;
+  opacity: 0.66;
+}
+.sdas-adapted[data-v-2c6378b9] {
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 24px;
+  color: rgb(var(--v-theme-on-surface));
+}
+
+/*
+ * 返回条：**吸顶**（sticky）。
+ *
+ * 插件面板没有宿主顶栏 / 浏览器返回，返回键是唯一的退路，不能随内容滚走。
+ * 之前作品详情页把它做成左上角绝对定位的浮层（不占排版），滑两屏就够不着了；
+ * 改成 sticky 后它占一行、滚到哪都停在顶部。背景给实色，否则下方内容会从它背后透出来。
+ */
+.sdas-adapted-bar[data-v-2c6378b9] {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding-inline: 12px;
+  margin-bottom: 4px;
+}
+
+/* 头部：封面 + 标题 / 作者 / 字数 / 题材（窄屏竖排，≥768px 横排） */
+.sdas-adapted-head[data-v-2c6378b9] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.875rem;
+  padding-inline: 16px;
+  margin: 0.5rem 0 1.25rem;
+}
+@media (width >= 768px) {
+.sdas-adapted-head[data-v-2c6378b9] {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 1.25rem;
+}
+}
+.sdas-adapted-cover[data-v-2c6378b9] {
+  flex: 0 0 auto;
+  inline-size: 9rem;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+.sdas-adapted-cover-img[data-v-2c6378b9],
+.sdas-adapted-cover-empty[data-v-2c6378b9] {
+  inline-size: 100%;
+  block-size: 100%;
+}
+.sdas-adapted-cover-empty[data-v-2c6378b9] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sdas-adapted-meta[data-v-2c6378b9] {
+  min-inline-size: 0;
+}
+.sdas-adapted-name[data-v-2c6378b9] {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 500;
+  line-height: 2.25rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+@media (width >= 768px) {
+.sdas-adapted-name[data-v-2c6378b9] {
+    text-align: left;
+}
+}
+.sdas-adapted-sub[data-v-2c6378b9] {
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
+  text-align: center;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+}
+@media (width >= 768px) {
+.sdas-adapted-sub[data-v-2c6378b9] {
+    text-align: left;
+}
+}
+.sdas-adapted-genres[data-v-2c6378b9] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+@media (width >= 768px) {
+.sdas-adapted-genres[data-v-2c6378b9] {
+    justify-content: flex-start;
+}
+}
+.sdas-adapted-genre[data-v-2c6378b9] {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+}
+.sdas-adapted-h2[data-v-2c6378b9] {
+  padding-inline: 16px;
+  margin: 0.5rem 0 0.25rem;
+  font-size: 1.125rem;
+  font-weight: 500;
+}
+.sdas-adapted-text[data-v-2c6378b9] {
+  padding-inline: 16px;
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.65rem;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+.sdas-adapted-credits[data-v-2c6378b9] {
+  margin-top: 1.5rem;
+}
+.sdas-adapted-credits-head[data-v-2c6378b9] {
+  padding-inline: 16px;
+}
+
+/* 改编作品网格：与演员页的作品网格同口径（150px 起，自动铺满） */
+.sdas-adapted-grid[data-v-2c6378b9] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 16px;
+  padding: 8px 16px 0;
+}
+.sdas-adapted-empty[data-v-2c6378b9] {
+  padding: 8px 16px 0;
+  margin: 0;
+  font-size: 0.875rem;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+/*
+  页面根 —— 宿主那一页是 `.max-w-8xl.mx-auto.px-4` 里的块：**限宽类在宿主 CSS 里
+  根本没生成**（`style.css` 里只有 `max-w-32 / 40 / 6xl`），所以两边都是满宽 + 1rem 内边距。
+  这里把 padding 交给内容块，大图 / 渐变层用绝对定位挂在根上、铺满整宽。
+*/
+.sdas-detail[data-v-1532979f] {
+  position: relative;
+}
+
+/* 加载态：宿主给 LoadingBanner 加了 `mt-12`（3rem） */
+.sdas-detail-loading[data-v-1532979f] {
+  margin-block-start: 3rem;
+}
+
+/* 「未识别到媒体信息」提示行：留在正文第一行（返回键已移到视口，见 StickyBack） */
+.sdas-detail-note[data-v-1532979f] {
+  padding: 4px 0;
+  font-size: 0.8125rem;
+  opacity: 0.75;
+}
+.sdas-detail-note[data-v-1532979f] {
+  overflow: hidden;
+  padding: 2px 8px;
+  border-radius: 6px;
+  backdrop-filter: blur(8px);
+  background: rgb(8 18 28 / 42%);
+  color: #fff;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/*
+  ── 顶栏大图（宿主 `.vue-media-back` 同款）──
+  两层绝对定位铺满整宽、`h-96`（24rem）：一层放图、一层放四向渐变把边缘收到页面底色。
+  内容块 `.sdas-detail-page` 叠在它们上面（z-index 1）。
+*/
+.sdas-detail-back[data-v-1532979f] {
+  position: absolute;
+  z-index: 0;
+  inset-block-start: 0;
+  inset-inline: 0;
+  block-size: 24rem;
+  pointer-events: none;
+}
+.sdas-detail-back-image[data-v-1532979f] {
+  overflow: hidden;
+}
+.sdas-detail-back-img[data-v-1532979f] {
+  block-size: 24rem;
+  inline-size: 100%;
+}
+.sdas-detail-back-overlay[data-v-1532979f] {
+  background-image:
+    linear-gradient(
+      180deg,
+      rgba(var(--v-theme-background), 0) 50%,
+      rgba(var(--v-theme-background), 1) 100%
+    ),
+    linear-gradient(
+      0deg,
+      rgba(var(--v-theme-background), 0) 80%,
+      rgba(var(--v-theme-background), 1) 100%
+    ),
+    linear-gradient(
+      90deg,
+      rgba(var(--v-theme-background), 0) 50%,
+      rgba(var(--v-theme-background), 1) 100%
+    ),
+    linear-gradient(
+      270deg,
+      rgba(var(--v-theme-background), 0) 50%,
+      rgba(var(--v-theme-background), 1) 100%
+    );
+}
+
+/*
+  玻璃 / 透明主题：宿主会**隐藏四向渐变层**、把大图换成四边遮罩渐隐并轻微下调不透明度
+  （`MediaDetailView.vue` 的 `.media-detail-glass .vue-media-back-*`，数值照搬）。
+*/
+.sdas-detail.is-glass .sdas-detail-back-overlay[data-v-1532979f],
+.sdas-detail.is-transparent .sdas-detail-back-overlay[data-v-1532979f] {
+  display: none;
+}
+.sdas-detail.is-glass .sdas-detail-back-img[data-v-1532979f],
+.sdas-detail.is-transparent .sdas-detail-back-img[data-v-1532979f] {
+  mask-image:
+    linear-gradient(to bottom, transparent 0%, #000 16%, #000 58%, transparent 100%),
+    linear-gradient(to right, transparent 0%, #000 10%, #000 90%, transparent 100%);
+  mask-composite: intersect;
+  -webkit-mask-image:
+    linear-gradient(to bottom, transparent 0%, #000 16%, #000 58%, transparent 100%),
+    linear-gradient(to right, transparent 0%, #000 10%, #000 90%, transparent 100%);
+  -webkit-mask-composite: source-in;
+}
+.sdas-detail.is-transparent .sdas-detail-back-img[data-v-1532979f] {
+  opacity: 0.78;
+}
+.sdas-detail.is-glass .sdas-detail-back-img[data-v-1532979f] {
+  opacity: 0.88;
+}
+
+/*
+  内容块（宿主 `.media-page`）：宿主那两条 `margin-block-start: -4rem` + `padding-block-start: 4rem`
+  是**用来穿过宿主顶栏的、净效果为 0** —— 内容从页面顶部开始，大图在它下面铺 24rem。
+  这里没有宿主顶栏，所以直接让内容从顶部起（`z-index: 1` 叠在大图上）。
+*/
+.sdas-detail-page[data-v-1532979f] {
+  position: relative;
+  z-index: 1;
+  padding-inline: 1rem;
+}
+
+/* ── 头部：海报 + 标题 + 操作按钮（宿主 .media-header 同构） ── */
+.sdas-detail-header[data-v-1532979f] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-block-start: 1rem;
+}
+@media (width >= 1280px) {
+.sdas-detail-header[data-v-1532979f] {
+    flex-direction: row;
+    align-items: flex-end;
+}
+}
+.sdas-detail-poster[data-v-1532979f] {
+  overflow: hidden;
+  border-radius: var(--app-surface-radius, 8px);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  inline-size: 8rem;
+}
+@media (width >= 768px) {
+.sdas-detail-poster[data-v-1532979f] {
+    inline-size: 11rem;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+}
+@media (width >= 1280px) {
+.sdas-detail-poster[data-v-1532979f] {
+    inline-size: 13rem;
+    margin-inline-end: 1rem;
+}
+}
+
+/* 海报骨架：用宿主同款 VSkeletonLoader（CSS 由宿主提供），铺满 2:3 海报位 */
+.sdas-detail-poster-skeleton[data-v-1532979f] {
+  position: absolute;
+  inset: 0;
+  block-size: 100%;
+  inline-size: 100%;
+}
+.sdas-detail-poster-empty[data-v-1532979f] {
+  aspect-ratio: 2 / 3;
+  inline-size: 100%;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.sdas-detail-title[data-v-1532979f] {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+  margin-block-start: 1rem;
+  min-inline-size: 0;
+  text-align: center;
+}
+@media (width >= 1280px) {
+.sdas-detail-title[data-v-1532979f] {
+    margin-block: 0;
+    margin-inline: 0 1rem;
+    text-align: start;
+}
+}
+
+/* 状态胶囊：宿主 .media-status（+ 它那枚 rounded-full 绿色胶囊） */
+.sdas-detail-status[data-v-1532979f] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+  margin-block-end: 0.5rem;
+}
+@media (width >= 1280px) {
+.sdas-detail-status[data-v-1532979f] {
+    justify-content: flex-start;
+}
+}
+.sdas-status-pill[data-v-1532979f] {
+  display: inline-flex;
+  align-items: center;
+  padding-inline: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  white-space: nowrap;
+}
+.sdas-status-pill.is-library[data-v-1532979f] {
+  border-color: #22c55e;
+  background-color: rgb(34 197 94 / 80%);
+  color: #dcfce7;
+}
+.sdas-status-pill.is-new[data-v-1532979f] {
+  border-color: #e53935;
+  background-color: rgb(229 57 53 / 80%);
+  color: #ffebee;
+}
+.sdas-status-pill.is-kind[data-v-1532979f] {
+  border-color: #7e57c2;
+  background-color: rgb(126 87 194 / 80%);
+  color: #ede7f6;
+}
+
+/*
+  标题行 —— 宿主 `<h1 class="d-flex flex-column flex-lg-row align-baseline
+  justify-center justify-lg-start">` + 子块 `align-self-center align-self-lg-end`：
+  **横排的断点是 lg（1024px）**，字号断点在 1280px（`.media-title > h1`）。两处照抄。
+*/
+.sdas-detail-h1[data-v-1532979f] {
+  display: flex;
+  flex-direction: column;
+  align-items: baseline;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 2rem;
+}
+.sdas-detail-h1-text[data-v-1532979f] {
+  align-self: center;
+  min-inline-size: 0;
+  word-break: break-word;
+}
+.sdas-detail-year[data-v-1532979f] {
+  align-self: center;
+  font-size: 1.125rem;
+}
+@media (width >= 1024px) {
+.sdas-detail-h1[data-v-1532979f] {
+    flex-direction: row;
+    justify-content: flex-start;
+}
+.sdas-detail-h1-text[data-v-1532979f],
+  .sdas-detail-year[data-v-1532979f] {
+    align-self: flex-end;
+}
+}
+@media (width >= 1280px) {
+.sdas-detail-h1[data-v-1532979f] {
+    font-size: 2.25rem;
+    line-height: 2.5rem;
+}
+}
+
+/* 属性行：宿主 .media-attributes */
+.sdas-detail-attributes[data-v-1532979f] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  margin-block-start: 0.25rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+@media (width >= 640px) {
+.sdas-detail-attributes[data-v-1532979f] {
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+}
+}
+@media (width >= 1280px) {
+.sdas-detail-attributes[data-v-1532979f] {
+    justify-content: flex-start;
+    margin-block-start: 0;
+    font-size: 1rem;
+    line-height: 1.5rem;
+}
+}
+
+/* 操作按钮排：宿主 .media-actions（窄屏两列网格，≥640px 起变一行右对齐） */
+/* 分类条目：与标题行同字号同色，悬停下划线（不抢标题的视觉） */
+.sdas-detail-genres[data-v-1532979f] {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.sdas-detail-genre[data-v-1532979f] {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 条目之间的分隔符（原来是一整串「A / B」，现在由 CSS 画，DOM 里只留剧名本身） */
+.sdas-detail-genre + .sdas-detail-genre[data-v-1532979f]::before {
+  content: ' / ';
+  opacity: 0.6;
+  white-space: pre;
+}
+.sdas-detail-genre[data-v-1532979f]:hover {
+  text-decoration: underline;
+}
+.sdas-detail-genre[data-v-1532979f]:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.sdas-detail-actions[data-v-1532979f] {
+  --sdas-action-gap: 0.75rem;
+
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sdas-action-gap);
+  inline-size: min(100%, 22rem);
+  justify-content: center;
+  margin-block-start: 1rem;
+}
+.sdas-detail-action-btn[data-v-1532979f] {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+.sdas-detail-actions > .sdas-detail-action-btn[data-v-1532979f]:only-child,
+.sdas-detail-actions
+  > .sdas-detail-action-btn[data-v-1532979f]:last-child:nth-child(odd):not(:first-child) {
+  grid-column: 1 / -1;
+  inline-size: calc((100% - var(--sdas-action-gap)) / 2);
+  justify-self: center;
+}
+@media (width >= 640px) {
+  /* 分类条目：与标题行同字号同色，悬停下划线（不抢标题的视觉） */
+.sdas-detail-genres[data-v-1532979f] {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.sdas-detail-genre[data-v-1532979f] {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 条目之间的分隔符（原来是一整串「A / B」，现在由 CSS 画，DOM 里只留剧名本身） */
+.sdas-detail-genre + .sdas-detail-genre[data-v-1532979f]::before {
+  content: ' / ';
+  opacity: 0.6;
+  white-space: pre;
+}
+.sdas-detail-genre[data-v-1532979f]:hover {
+  text-decoration: underline;
+}
+.sdas-detail-genre[data-v-1532979f]:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.sdas-detail-actions[data-v-1532979f] {
+    display: flex;
+    gap: 0.5rem;
+    inline-size: auto;
+    justify-content: flex-end;
+}
+.sdas-detail-action-btn[data-v-1532979f],
+  .sdas-detail-actions > .sdas-detail-action-btn[data-v-1532979f]:only-child,
+  .sdas-detail-actions
+    > .sdas-detail-action-btn[data-v-1532979f]:last-child:nth-child(odd):not(:first-child) {
+    inline-size: auto;
+}
+}
+@media (width >= 1280px) {
+  /* 分类条目：与标题行同字号同色，悬停下划线（不抢标题的视觉） */
+.sdas-detail-genres[data-v-1532979f] {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.sdas-detail-genre[data-v-1532979f] {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 条目之间的分隔符（原来是一整串「A / B」，现在由 CSS 画，DOM 里只留剧名本身） */
+.sdas-detail-genre + .sdas-detail-genre[data-v-1532979f]::before {
+  content: ' / ';
+  opacity: 0.6;
+  white-space: pre;
+}
+.sdas-detail-genre[data-v-1532979f]:hover {
+  text-decoration: underline;
+}
+.sdas-detail-genre[data-v-1532979f]:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.sdas-detail-actions[data-v-1532979f] {
+    margin-block-start: 0;
+}
+}
+
+/* ── 简介（左） + 信息面板（右）：宿主 .media-overview 同构 ── */
+.sdas-detail-overview[data-v-1532979f] {
+  display: flex;
+  flex-direction: column;
+  padding-block: 2rem 1rem;
+}
+@media (width >= 1024px) {
+.sdas-detail-overview[data-v-1532979f] {
+    flex-direction: row;
+}
+}
+.sdas-detail-overview-left[data-v-1532979f] {
+  flex: 1 1 0%;
+  min-inline-size: 0;
+}
+@media (width >= 1024px) {
+.sdas-detail-overview-left[data-v-1532979f] {
+    margin-inline-end: 2rem;
+}
+}
+.sdas-detail-overview-right[data-v-1532979f] {
+  inline-size: 100%;
+  margin-block-start: 2rem;
+}
+@media (width >= 1024px) {
+.sdas-detail-overview-right[data-v-1532979f] {
+    inline-size: 20rem;
+    margin-block-start: 0;
+}
+}
+
+/*
+  ── 左栏矮太多时改单列（脚本判定，见 `syncOverviewStack`）──
+  宿主那一页的左栏有长简介 + 导演列表，能填满信息面板的高度；短剧简介只有一两行，
+  并排就会在左栏下方露一大片空白（夹在来源链接与演员阵容中间）。够高时上面那套并排
+  规则照旧（与宿主那一页完全一致），不够高才走这里。
+*/
+@media (width >= 1024px) {
+.sdas-detail-overview.is-stacked[data-v-1532979f] {
+    flex-direction: column;
+}
+.sdas-detail-overview.is-stacked .sdas-detail-overview-left[data-v-1532979f] {
+    margin-inline-end: 0;
+}
+.sdas-detail-overview.is-stacked .sdas-detail-overview-right[data-v-1532979f] {
+    inline-size: 100%;
+    margin-block-start: 2rem;
+}
+
+  /*
+    信息面板整宽后一行会被拉到两端相去很远 ⇒ 拆成多列网格，每列 17rem 起（与宿主那
+    20rem 竖栏差不多宽，行内仍是「标签左 / 值右」）。网格线只画每格的**上边** + 容器的
+    **下边**：同行并排的格子线落在同一条水平线上、最后一行没填满也不会缺角，
+    也不会与容器边框叠成双线。
+  */
+.sdas-detail-overview.is-stacked .sdas-facts[data-v-1532979f] {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+    border-width: 0 0 1px;
+    border-radius: 0;
+}
+.sdas-detail-overview.is-stacked .sdas-facts[data-v-1532979f] > * {
+    border-block-start: 1px solid var(--sdas-facts-border);
+    border-block-end-width: 0;
+}
+
+  /* 评分行整行居中（它跨满所有列） */
+.sdas-detail-overview.is-stacked .sdas-ratings[data-v-1532979f] {
+    grid-column: 1 / -1;
+}
+}
+.sdas-detail-h2[data-v-1532979f] {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.75rem;
+}
+@media (width >= 640px) {
+.sdas-detail-h2[data-v-1532979f] {
+    font-size: 1.5rem;
+    line-height: 2rem;
+}
+}
+
+/* 简介正文：宿主 `.media-overview p` 没有专门规则（走宿主默认 1rem / 1.5），这里不另设字号 */
+.sdas-detail-text[data-v-1532979f] {
+  white-space: pre-wrap;
+}
+.sdas-detail-text.is-dim[data-v-1532979f] {
+  opacity: 0.7;
+}
+
+/* ── 信息面板：宿主 .media-facts / .media-ratings / .media-fact ── */
+.sdas-facts[data-v-1532979f] {
+  border: 1px solid var(--sdas-facts-border);
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.25rem;
+
+  /* 宿主的 .media-facts 用 Tailwind gray-700 做分隔线（主题无关，原样搬） */
+  --sdas-facts-border: #374151;
+}
+.sdas-ratings[data-v-1532979f] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-block-end: 1px solid var(--sdas-facts-border);
+  font-weight: 500;
+  padding-block: 0.5rem;
+  padding-inline: 1rem;
+}
+.sdas-fact[data-v-1532979f] {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-block-end: 1px solid var(--sdas-facts-border);
+  padding-block: 0.5rem;
+  padding-inline: 1rem;
+}
+.sdas-fact.is-last[data-v-1532979f] {
+  border-block-end-width: 0;
+}
+.sdas-fact-value[data-v-1532979f] {
+  display: flex;
+  justify-content: flex-end;
+  min-inline-size: 0;
+  text-align: end;
+}
+.sdas-fact-inner[data-v-1532979f] {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.sdas-fact-icon[data-v-1532979f] {
+  block-size: 1rem;
+  inline-size: 1rem;
+  flex: 0 0 auto;
+}
+
+/* 来源链接 chip（宿主 .media-source-link-chip 同款：gray-600 底 + gray-500 描边） */
+.sdas-detail-links[data-v-1532979f] {
+  margin-block-start: 1.5rem;
+}
+.sdas-link-chip[data-v-1532979f] {
+  display: inline-flex;
+  align-items: center;
+  margin-block-end: 0.5rem;
+  margin-inline-end: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #6b7280;
+  border-radius: 9999px;
+  background-color: #4b5563;
+  color: #e5e7eb;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-decoration: none;
+  transition: background-color 0.15s ease;
+}
+.sdas-link-chip[data-v-1532979f]:hover {
+  background-color: #374151;
+}
+
+/* 玻璃主题下宿主会把来源 chip 一起玻璃化（`.media-detail-glass .media-source-link-chip` 同款） */
+.sdas-detail.is-glass .sdas-link-chip[data-v-1532979f] {
+  border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: var(--glass-chip-backdrop-filter);
+  backdrop-filter: var(--glass-chip-backdrop-filter);
+  background-color: var(--glass-button-surface);
+  background-image: var(--glass-chip-sheen);
+  box-shadow: var(--glass-control-shadow);
+  color: rgb(var(--v-theme-on-surface));
+}
+.sdas-detail.is-glass .sdas-link-chip[data-v-1532979f]:hover {
+  border-color: var(--glass-border-hover);
+  background-color: var(--glass-button-surface-hover);
+  box-shadow: var(--glass-control-shadow-hover);
+}
+
+/* ── 演员阵容：横滑人物卡（宿主 .slider-* + PersonCard 同款） ── */
+.sdas-slider[data-v-1532979f] {
+  position: relative;
+  isolation: isolate;
+  margin-block-end: 8px;
+
+  --sdas-slider-bleed-start: 28px;
+  --sdas-slider-bleed-end: 56px;
+}
+.sdas-slider-header[data-v-1532979f] {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-block-end: 12px;
+  padding-inline: 8px;
+}
+.sdas-slider-title-section[data-v-1532979f] {
+  display: flex;
+  align-items: center;
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+/* 标题前的竖条（宿主 .title-badge） */
+.sdas-slider-badge[data-v-1532979f] {
+  flex: 0 0 auto;
+  margin-inline-end: 8px;
+  border-radius: 2px;
+  background-color: rgb(var(--v-theme-primary));
+  block-size: 16px;
+  inline-size: 3px;
+}
+.sdas-slider-title[data-v-1532979f] {
+  margin: 0;
+  color: rgba(var(--v-theme-on-background), 0.95);
+  font-size: 1.2rem;
+  font-weight: 600;
+  line-height: 1.5rem;
+}
+.sdas-slider-wrapper[data-v-1532979f] {
+  position: relative;
+  z-index: 1;
+  inline-size: 100%;
+}
+.sdas-slider-content[data-v-1532979f] {
+  display: flex;
+  gap: 16px;
+  margin-block: calc(var(--sdas-slider-bleed-start) * -1) calc(var(--sdas-slider-bleed-end) * -1);
+  padding-block: var(--sdas-slider-bleed-start) var(--sdas-slider-bleed-end);
+  padding-inline: 12px;
+  overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.sdas-slider-content[data-v-1532979f]::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * 滑轨里的一格 = **演员墙那张卡**（`ActorCard`，2:3 整图）。
+ * 宽度取 9.75rem（156px，演员墙卡宽 144 略宽一点）：导演 / 编剧卡上第二行要放得下
+ * 「导演」「编剧」，比宿主原来 9rem 的圆头像卡宽一档。
+ */
+.sdas-slide-item[data-v-1532979f] {
+  flex: 0 0 auto;
+  inline-size: 9.75rem;
+  padding-block-end: 12px;
+}
+
+/* 信息面板里可点的值（目前只有「改编自」）：与正文同色，悬停下划线 */
+.sdas-fact-link[data-v-1532979f] {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  text-align: start;
+}
+.sdas-fact-link[data-v-1532979f]:hover {
+  text-decoration: underline;
+}
+.sdas-fact-link[data-v-1532979f]:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ── 豆瓣短评 / 影评（照系统 MediaCommentView：标签页 + 紧凑列表） ── */
+.sdas-douban[data-v-1532979f] {
+  margin-top: 1.5rem;
+  padding-inline: 16px;
+}
+.sdas-douban-tabs[data-v-1532979f] {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  /* 抵消下面标签的左右内边距，视觉位置与文案对齐不变 */
+  margin-inline: -8px;
+  border-block-end: 1px solid rgba(var(--v-border-color), 0.24);
+}
+
+/* 标签：整块可点（热区 = 内边距 + 文字 + 条数），不再只有文字那一小段 */
+.sdas-douban-tab[data-v-1532979f] {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-block-size: 36px;
+  margin-block-end: -1px;
+  padding: 6px 8px 8px;
+  border: 0;
+  border-block-end: 2px solid transparent;
+  background: none;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.sdas-douban-tab[data-v-1532979f]:hover {
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+.sdas-douban-tab.is-active[data-v-1532979f] {
+  border-block-end-color: rgb(var(--v-theme-primary));
+  color: rgb(var(--v-theme-primary));
+}
+.sdas-douban-count[data-v-1532979f] {
+  margin-inline-start: 4px;
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+.sdas-douban-list[data-v-1532979f] {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 0;
+  margin: 0;
+  list-style: none;
+}
+.sdas-douban-item[data-v-1532979f] {
+  display: flex;
+  gap: 10px;
+  padding: 9px 0;
+}
+.sdas-douban-item + .sdas-douban-item[data-v-1532979f] {
+  border-block-start: 1px solid rgba(var(--v-border-color), 0.14);
+}
+.sdas-douban-avatar[data-v-1532979f] {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  inline-size: 32px;
+  block-size: 32px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.sdas-douban-avatar > img[data-v-1532979f] {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+}
+.sdas-douban-body[data-v-1532979f] {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+.sdas-douban-author[data-v-1532979f] {
+  display: flex;
+  align-items: center;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  opacity: 0.9;
+}
+.sdas-douban-text[data-v-1532979f] {
+  margin-top: 2px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.sdas-douban-meta[data-v-1532979f] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  opacity: 0.6;
+}
+
+/* 影评标题：可点（去豆瓣原文），与系统那行标题同位置同字号 */
+.sdas-douban-review-title[data-v-1532979f] {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.35rem;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.sdas-douban-review-title[data-v-1532979f]:hover {
+  text-decoration: underline;
+}
+.sdas-douban-foot[data-v-1532979f] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 40px;
+  padding-block: 6px;
+}
+.sdas-douban-empty[data-v-1532979f] {
+  font-size: 0.875rem;
+  opacity: 0.6;
+}
+
+/* 翻页圆钮（宿主 .nav-button 同款：悬停或滚动中淡入，触摸端不显示） */
+.sdas-slider-nav[data-v-1532979f] {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  inset-block-start: 50%;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 50%;
+  backdrop-filter: blur(8px);
+  background: rgb(8 18 28 / 52%) !important;
+  block-size: 40px;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 22%);
+  color: #fff;
+  inline-size: 40px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1),
+    background-color 0.3s ease,
+    box-shadow 0.3s ease,
+    border-color 0.3s ease;
+}
+
+/* 图标走自有类名（门禁会丢含 `.v-` 的选择器，所以不用 :deep(.v-icon)） */
+.sdas-nav-icon[data-v-1532979f] {
+  color: #fff;
+  font-size: 28px;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 55%));
+  transition: transform 0.3s ease;
+}
+.sdas-slider-nav.is-left[data-v-1532979f] {
+  inset-inline-start: 8px;
+}
+.sdas-slider-nav.is-right[data-v-1532979f] {
+  inset-inline-end: 8px;
+}
+.sdas-slider-nav[data-v-1532979f]:hover {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(8 18 28 / 68%) !important;
+  box-shadow: 0 10px 26px rgb(0 0 0 / 28%);
+  transform: translateY(-50%) scale(1.05);
+}
+.sdas-slider-nav:hover .sdas-nav-icon[data-v-1532979f] {
+  transform: scale(1.08);
+}
+.sdas-slider-content.is-scrolling ~ .sdas-slider-nav[data-v-1532979f] {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: hover) {
+.sdas-slider-wrapper:hover .sdas-slider-nav[data-v-1532979f] {
+    opacity: 1;
+    pointer-events: auto;
+}
+}
+
+/* 搬运端（宿主用 `display.mobile`，600px 阈值）不显示翻页钮 —— 手指直接滑 */
+@media (width < 600px) {
+.sdas-slider-nav[data-v-1532979f] {
+    display: none !important;
+}
+}
+
+/* ── 订阅设置弹窗（操作按钮排「订阅设置」点开） ── */
+.sdas-subset-body[data-v-1532979f] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-block: 14px;
+  /* 行数变多（暂停 / 站点 / 下载器 / 目录 / 种子 / 立即搜索），小屏必须能滚，
+     否则后半截设置会被卡片高度切掉，看着像「没有这一项」 */
+  max-block-size: 68vh;
+  overflow-y: auto;
+}
+.sdas-subset-row[data-v-1532979f] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sdas-subset-cell[data-v-1532979f] {
+  min-inline-size: 0;
+}
+.sdas-subset-label[data-v-1532979f] {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+.sdas-subset-hint[data-v-1532979f] {
+  margin-block-start: 2px;
+  font-size: 0.75rem;
+  line-height: 1.1rem;
+  opacity: 0.7;
+}
+
+/* 订阅设置里的下拉 / 输入框：宽度收到右侧一列，长名字自己省略 */
+.sdas-subset-input[data-v-1532979f] {
+  max-inline-size: 190px;
+  min-inline-size: 130px;
+  flex: 0 0 auto;
+}
+
+/* 种子标题：一行省略，完整标题挂在 title 提示上 */
+.sdas-subset-torrent[data-v-1532979f] {
+  max-inline-size: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sdas-subset-note[data-v-1532979f] {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  font-size: 0.75rem;
+  line-height: 1.2rem;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+
+.sdas-pcg[data-v-430b3e33] {
+  inline-size: 100%;
+}
+.sdas-pcg-track[data-v-430b3e33] {
+  inline-size: 100%;
+  min-block-size: 1px;
+  /* 占位符高度变化时不许浏览器做滚动锚定 —— 高度是我们自己管的 */
+  overflow-anchor: none;
+}
+.sdas-pcg-grid[data-v-430b3e33] {
+  display: grid;
+}
+.sdas-pcg-item[data-v-430b3e33] {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+
+/* 卡片撑满格子（与宿主同款）：海报 2:3 决定行高，卡片内容不会矮于它 */
+.sdas-pcg-item[data-v-430b3e33] >  * {
+  block-size: 100%;
+  inline-size: 100%;
+}
+
+/*
+ * 定位容器：40px 宽、钉在视口最右侧（宿主原生滚动条原来的位置）。
+ * **自己不接指针**（`pointer-events: none`）—— 指针只认里面那条 8px 窄条，
+ * 这样折叠状态下只有 8px 会从卡片上"抢"事件，不会把右侧 40px 全占掉。
+ */
+.sdas-scroll[data-v-332d033d] {
+  position: fixed;
+  z-index: 1400;
+  width: 40px;
+  border-radius: 999px;
+  pointer-events: none;
+  user-select: none;
+}
+
+/*
+ * 字母列：**折叠 = 8px 窄条、字母全透明**；悬停 / 拖动 = 展开成 40px、字母淡入。
+ *
+ * 展开靠 `:hover` 自己触发（而不是靠外层 40px 容器），所以：
+ *   · 鼠标没来时不会因为"路过右边 40px"就展开；
+ *   · 一旦展开，指针仍落在展开后的 40px 里，hover 不会中断 —— 不会来回抖。
+ *
+ * 每格 `flex: 1` + `space-evenly`：字母按轨道高度自动摊开，字母多、条矮时也塞得下。
+ */
+.sdas-scroll-letters[data-v-332d033d] {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  padding-block: 4px;
+  border-radius: 999px;
+  background: rgba(var(--v-theme-surface), 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.08),
+    inset 0 0 0 1px rgba(var(--v-theme-on-surface), 0.06);
+  overflow: hidden;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    width 0.18s ease,
+    background-color 0.16s ease;
+}
+
+/*
+ * 展开只看 `--active`（由「右侧热区」判定，见脚本里的 applyPointer），
+ * 不再用 `:hover` —— 纯 CSS hover 依赖命中测试，右边缘上方只要压着任何一层
+ * 别的元素就永远收不到指针，"鼠标移到最右边"会毫无反应。
+ */
+.sdas-scroll--active .sdas-scroll-letters[data-v-332d033d] {
+  width: 40px;
+  background: rgba(var(--v-theme-surface), 0.86);
+}
+
+/* 单个字母：折叠时全透明（只有条，没有字） */
+.sdas-scroll-letter[data-v-332d033d] {
+  flex: 1 1 0;
+  min-block-size: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  opacity: 0;
+  transition:
+    opacity 0.14s ease,
+    color 0.12s ease,
+    background-color 0.12s ease,
+    transform 0.12s ease;
+}
+.sdas-scroll--active .sdas-scroll-letter[data-v-332d033d] {
+  opacity: 1;
+}
+
+/* 当前滚动位置落在这个字母上 */
+.sdas-scroll-letter.is-current[data-v-332d033d] {
+  color: rgb(var(--v-theme-primary));
+  font-weight: 800;
+}
+
+/* 鼠标/手指正压在这个字母上 */
+.sdas-scroll-letter.is-active[data-v-332d033d] {
+  color: rgb(var(--v-theme-on-primary));
+  background: rgb(var(--v-theme-primary));
+  font-weight: 800;
+  transform: scale(1.06);
+}
+
+/*
+ * 悬停 / 拖动时浮出的首字母 —— **iOS 通讯录那种圆形气泡**（2026-10-20 用户口径：
+ * 「突出显示有个线性包裹」，不要方框）：正圆、无描边、主色实底，右侧一枚小尖角
+ * 指向字母列，柔和投影托住。摆在字母列左侧 4px，别踩在指针下面。
+ */
+.sdas-scroll-hint[data-v-332d033d] {
+  position: absolute;
+  right: 46px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 46px;
+  block-size: 46px;
+  border-radius: 50%;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: rgb(var(--v-theme-on-primary));
+  background: rgb(var(--v-theme-primary));
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.14);
+  pointer-events: none;
+}
+
+/* 指向细轨的小尖角（气泡右侧，垂直居中） */
+.sdas-scroll-hint[data-v-332d033d]::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 100%;
+  inset-block-start: 50%;
+  margin-block-start: -5px;
+  inline-size: 0;
+  block-size: 0;
+  border-block: 5px solid transparent;
+  border-inline-start: 7px solid rgb(var(--v-theme-primary));
+}
+.sdas-alpha-fade-enter-active[data-v-332d033d],
+.sdas-alpha-fade-leave-active[data-v-332d033d] {
+  transition: opacity 0.14s ease;
+}
+.sdas-alpha-fade-enter-from[data-v-332d033d],
+.sdas-alpha-fade-leave-to[data-v-332d033d] {
+  opacity: 0;
+}
+
+.sdas[data-v-9ec46fe0] {
+  --sdas-fg: rgb(var(--v-theme-on-surface));
+  --sdas-fg-dim: rgba(var(--v-theme-on-surface), 0.62);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 12px;
+  color: var(--sdas-fg);
+}
+.sdas--full[data-v-9ec46fe0] {
+  padding: 12px 16px 24px;
+}
+
+/* 标题行：标题 + 统计小字，竖排 */
+.sdas-head[data-v-9ec46fe0] {
+  /* 日志窗绝对定位到右上，**不参与行高** —— 否则 100px 高的小窗会把标题行撑高，
+     标题与「搜索」行之间就空出一大块（2026-10-24 用户反馈） */
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 46px;
+  padding: 0 12px;
+}
+.sdas-head-main[data-v-9ec46fe0] {
+  min-width: 0;
+}
+.sdas-title[data-v-9ec46fe0] {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.sdas-sub[data-v-9ec46fe0] {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--sdas-fg-dim);
+}
+.sdas-new-dot[data-v-9ec46fe0] {
+  color: #e53935;
+}
+
+/*
+  悬浮「最近日志」：默认钉在右下角（Teleport 到 body，不随页面滚动），可拖动。
+  默认只露胶囊；悬浮展开日志区（在胶囊**上方**，胶囊位置不动 ⇒ 不闪）。
+  只有胶囊吃鼠标（拖动 / hover），日志区 `pointer-events: none` 点击穿透。
+  自有类名（不含 `.v-`），联邦 CSS 门禁放行；配色只吃主题变量。
+*/
+.sdas-logfloat[data-v-9ec46fe0] {
+  /* 位置**只由内联样式**给（四个方向都给值）：若这里再写 right/bottom，
+     向下展开时内联的 top 会和它一起生效，把容器拉成整屏高、胶囊被顶走
+     —— 这就是之前「拖到屏幕上方拖不过去」的根因（2026-10-24）。 */
+  position: fixed;
+  z-index: 2100;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+/* 向右展开（胶囊在左半屏）：换成贴容器左边缘，日志才有地方往右长 */
+.sdas-logfloat.is-right[data-v-9ec46fe0] {
+  align-items: flex-start;
+}
+
+/* 量尺寸专用：强制收起态再量，避免 hover 展开时量到被 stretch 的尺寸 */
+.sdas-logfloat.sdas-measuring .sdas-logfloat-body[data-v-9ec46fe0] {
+  display: none !important;
+}
+.sdas-logfloat.sdas-measuring .sdas-logfloat-bar[data-v-9ec46fe0] {
+  align-self: flex-end;
+}
+.sdas-logfloat.is-right.sdas-measuring .sdas-logfloat-bar[data-v-9ec46fe0] {
+  align-self: flex-start;
+}
+.sdas-logfloat-bar[data-v-9ec46fe0] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 999px;
+  background: rgba(var(--v-theme-surface), 0.9);
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.sdas-logfloat.is-dragging .sdas-logfloat-bar[data-v-9ec46fe0] {
+  cursor: grabbing;
+}
+
+/* 展开态：日志区与胶囊拼成一张卡（胶囊圆角改成下圆角，日志区上圆角） */
+.sdas-logfloat:hover .sdas-logfloat-bar[data-v-9ec46fe0] {
+  border-top-color: transparent;
+  border-radius: 0 0 8px 8px;
+  align-self: stretch;
+  justify-content: flex-start;
+}
+.sdas-logfloat-body[data-v-9ec46fe0] {
+  display: none;
+  width: min(46vw, 380px);
+  max-height: 96px;
+  /* 竖向 + **横向**都能滚：日志行往往比面板宽，以前只能看到被截断的半句
+     （2026-10-24 用户口径）。细滚动条，不喧宾夺主。 */
+  overflow: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  padding: 6px 10px 4px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: rgba(var(--v-theme-surface), 0.92);
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+  /* 展开后可悬停 / 滚动 / 选文字：鼠标进到日志上也保持在 hover 里，不会收起 */
+  pointer-events: auto;
+  cursor: auto;
+}
+.sdas-logfloat:hover .sdas-logfloat-body[data-v-9ec46fe0] {
+  display: block;
+}
+
+/* 向下展开：胶囊在上、日志在下（拖到页面上半屏时） */
+.sdas-logfloat.is-down[data-v-9ec46fe0] {
+  flex-direction: column-reverse;
+}
+.sdas-logfloat.is-down .sdas-logfloat-body[data-v-9ec46fe0] {
+  border-top: none;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 0 0 8px 8px;
+}
+.sdas-logfloat.is-down:hover .sdas-logfloat-bar[data-v-9ec46fe0] {
+  border-top-color: rgba(var(--v-theme-on-surface), 0.12);
+  border-bottom-color: transparent;
+  border-radius: 8px 8px 0 0;
+}
+
+/* 拖动期间不展开，避免边拖边弹 */
+.sdas-logfloat.is-dragging .sdas-logfloat-body[data-v-9ec46fe0] {
+  display: none;
+}
+.sdas-logfloat-line[data-v-9ec46fe0] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  /* `pre` 保留原始空格缩进、不换行；行宽由内容决定 ⇒ 超出面板就横向滚，
+     不再用 ellipsis 把后半句吃掉（选文字复制也能拿到整行）。 */
+  white-space: pre;
+  width: max-content;
+  min-width: 100%;
+  color: rgba(var(--v-theme-on-surface), 0.82);
+}
+.sdas-logfloat-dim[data-v-9ec46fe0] {
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+/*
+  视图标签条：「已订阅 / 作品 / 已关注演员 / 发现演员」。**自绘**（不用宿主的 VTabs —— 联邦只保证 vue 共享，
+  Vuetify 组件是否全局注册不可控），类名全自有前缀，不触发联邦 CSS 门禁。
+  标签条 / 视图槽位 / 卡片区各自独立成块 ⇒ 切页只换槽位内容与卡片区，版面不重排。
+
+  版式**照宿主探索页顶栏那排来源标签（TheMovieDb / 豆瓣 / Bangumi…）逐条复刻** ——
+  宿主那份是 `src/layouts/default/components/HeaderTab.vue`（scoped，联邦匹配不上 ⇒
+  数值照搬、类名自有）。它**没有**整条下边框（选中态自带 3px 指示条），所以这里
+  原先那条 `border-bottom` 一并去掉。颜色变量宿主用的是 `on-background`，这里换
+  `on-surface`（标签条画在插件面板的 surface 底上，另两个状态值 0.7 / 1 照抄）。
+*/
+.sdas-tabs[data-v-9ec46fe0] {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: all 0.3s ease;
+}
+
+/*
+  标签轨道：横向可滑、滚动条隐藏、右侧 95% 处起渐隐（与宿主同款的 mask），
+  再叠一个 40px 的渐隐指示块（只在「还能往右滑」时淡入）。
+*/
+.sdas-tabs-track[data-v-9ec46fe0] {
+  position: relative;
+  display: flex;
+  flex-grow: 1;
+  gap: 12px;
+  min-inline-size: 0;
+  overflow-x: auto;
+  padding-block: 4px;
+  padding-inline-end: 20px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, black 95%, transparent 100%);
+  mask-image: linear-gradient(to right, black 95%, transparent 100%);
+}
+.sdas-tabs-track[data-v-9ec46fe0]::-webkit-scrollbar {
+  display: none;
+}
+.sdas-tabs-track[data-v-9ec46fe0]::after {
+  position: absolute;
+  z-index: 1;
+  background: linear-gradient(to left, rgba(var(--v-theme-surface), 1) 30%, transparent);
+  content: '';
+  inline-size: 40px;
+  inset-block: 0;
+  inset-inline-end: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease-in-out;
+}
+.sdas-tabs-track.show-indicator[data-v-9ec46fe0]::after {
+  opacity: 1;
+}
+
+/* 左右滚动钮：28px 圆形，一次滑 200px（触摸端交给手势，见下方媒体查询） */
+.sdas-tabs-scroll[data-v-9ec46fe0] {
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 50%;
+  block-size: 28px;
+  inline-size: 28px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.2s ease;
+}
+.sdas-tabs-scroll[data-v-9ec46fe0]:hover {
+  background-color: rgba(var(--v-theme-on-surface), 0.06);
+}
+.sdas-tabs-scroll-left[data-v-9ec46fe0] {
+  margin-inline-end: 6px;
+}
+.sdas-tabs-scroll-right[data-v-9ec46fe0] {
+  margin-inline-start: 6px;
+}
+.sdas-tab[data-v-9ec46fe0] {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: 20px;
+  background-color: transparent;
+  padding-block: 6px;
+  padding-inline: 14px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 10%);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+/* 选中指示条：3px 主色、宽 70%、居中展开（宿主 scaleX(0) → scaleX(1)） */
+.sdas-tab[data-v-9ec46fe0]::after {
+  position: absolute;
+  border-radius: 3px;
+  background-color: rgb(var(--v-theme-primary));
+  block-size: 3px;
+  content: '';
+  inline-size: 70%;
+  inset-block-end: -4px;
+  inset-inline-start: 50%;
+  transform: translateX(-50%) scaleX(0);
+  transition: transform 0.2s ease;
+}
+.sdas-tab.is-active[data-v-9ec46fe0] {
+  color: rgb(var(--v-theme-primary));
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 15%);
+}
+.sdas-tab.is-active[data-v-9ec46fe0]::after {
+  transform: translateX(-50%) scaleX(1);
+}
+
+/* 未选中 hover：5% 主色底 + 文字提到全不透明（宿主同款） */
+.sdas-tab[data-v-9ec46fe0]:hover:not(.is-active) {
+  background-color: rgba(var(--v-theme-primary), 0.05);
+  color: rgba(var(--v-theme-on-surface), 1);
+}
+
+/* 触摸端支持手势横滑，滚动钮与渐隐指示块都不需要 —— 与宿主同一条媒体查询 */
+@media (hover: none) and (pointer: coarse) {
+.sdas-tabs-scroll[data-v-9ec46fe0] {
+    display: none !important;
+}
+.sdas-tabs-track[data-v-9ec46fe0]::after {
+    display: none !important;
+}
+}
+
+/*
+  视图槽位：作品标签页装作品维度筛选行，演员标签页装演员页工具栏。
+  高度**随内容自适应**（用户要求：不留白）—— 演员页只有一行工具栏，槽位就只有一行高，
+  卡片区紧跟着往上收；早先那条按作品页筛选区实测高度补的 min-height 已撤掉。
+  行结构（flex / justify-start / align-center / mr-5）与标签（VLabel）的类名沿用探索页。
+*/
+.sdas-slot[data-v-9ec46fe0] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 演员页工具栏：贴齐筛选行的行高，垂直方向与作品页第一行对齐 */
+.sdas-actor-bar[data-v-9ec46fe0] {
+  min-height: 40px;
+}
+
+/* 搜索行：常驻在标签条**上方**，两个标签页共用同一条搜索 */
+.sdas-search-row[data-v-9ec46fe0] {
+  display: flex;
+  align-items: center;
+}
+
+/*
+  ⚠️ 凡是选择器里带 `.v-*`（宿主 Vuetify 组件类）的规则**一律不要写**：
+  `vite.config.ts` 的 postcss 门禁会把整条规则丢掉（联邦插件不得发布组件库基础样式，
+  主指南 §8.3 第 5 条）。早先这里针对 `.v-chip-group` / `.v-chip__content` 的几条排版规则
+  从未生效过，2026-10-20 已删除；要调 chip 的排版只能靠自有类名（如 `.sdas-grid-cells`）
+  挂在组件外层元素上，或者用 `:deep()` 之外的其他手段。
+*/
+
+/* 标签列定宽：「版权方」3 个字、其余 2 个字 —— 定宽后各行 chips 的起点才竖向对齐 */
+/* 媒体库两张卡（未入库 / 未订阅）：点一下即筛，再点取消 */
+.sdas-library-cards[data-v-9ec46fe0] {
+  display: flex;
+  gap: 8px;
+}
+.sdas-library-card[data-v-9ec46fe0] {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px solid rgb(var(--v-theme-on-surface), 0.18);
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  line-height: 1.2rem;
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.sdas-library-card[data-v-9ec46fe0]:hover:not(:disabled) {
+  background: rgb(var(--v-theme-on-surface), 0.06);
+}
+.sdas-library-card[data-v-9ec46fe0]:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.sdas-library-card.is-active[data-v-9ec46fe0] {
+  border-color: rgb(var(--v-theme-primary));
+  background: rgb(var(--v-theme-primary), 0.14);
+  color: rgb(var(--v-theme-primary));
+  font-weight: 600;
+}
+.sdas-library-count[data-v-9ec46fe0] {
+  margin-inline-start: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgb(var(--v-theme-primary), 0.18);
+  font-size: 0.6875rem;
+}
+.sdas-row-label[data-v-9ec46fe0] {
+  flex: 0 0 3.5em;
+}
+
+/* 「只看未入库」开关：贴齐 chip 行高，别把筛选区撑高 */
+.sdas-slot .sdas-checkbox[data-v-9ec46fe0] {
+  flex: none;
+  margin-top: -2px;
+}
+
+/* 折叠态：整排渲染但高度裁到一行（第二排正好从 40px 起，被裁掉）；展开后摘掉裁切 */
+.sdas-slot .sdas-clip[data-v-9ec46fe0] {
+  max-height: 40px;
+  overflow: hidden;
+}
+.sdas-chip-count[data-v-9ec46fe0] {
+  margin-left: 5px;
+  font-size: 11px;
+  opacity: 0.6;
+  letter-spacing: 0;
+}
+
+/* 标签条里的计数（「已关注演员 N」）：宿主那排标签没有计数，间距取它图标那 6px；
+   选中态跟着提亮一点，免得主色文字后面挂一个灰数字 */
+.sdas-tab .sdas-chip-count[data-v-9ec46fe0] {
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.sdas-tab.is-active .sdas-chip-count[data-v-9ec46fe0] {
+  opacity: 0.9;
+}
+.sdas-search[data-v-9ec46fe0] {
+  width: 14rem;
+  flex: 0 0 auto;
+}
+
+/* 行尾的「展开 / 收起」按钮：必须留在 chip 组外面，且不被挤压 */
+.sdas-row-toggle[data-v-9ec46fe0] {
+  flex: 0 0 auto;
+  margin-left: 4px;
+}
+.sdas-search-hint[data-v-9ec46fe0] {
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+/* 卡片网格：列数 / 间距由 gridStyle 现算（与 ProgressiveCardGrid 同式） */
+.sdas-grid[data-v-9ec46fe0] {
+  display: grid;
+}
+
+/* 演员页的卡片区是**一个网格集合**（用户要求：不再按性别分块），没有组标题与组间距；
+   顺序按拼音 A-Z（见 `shownActors` / `actorLetterStops`），网格样式见 `.sdas-actor-grid`。 */
+.sdas-item[data-v-9ec46fe0] {
+  min-width: 0;
+}
+
+/* 演员卡的样式（.sdas-card / .sdas-poster-* / .sdas-card-title 等）随卡片一起搬到了
+   ActorCard.vue —— 搜索结果与「已关注」两处共用同一个组件，这里不再保留副本。 */
+
+/* 回到顶部（Teleport 到 body 后钉在视口右下）。
+   2026-10-18 用户口径：**放大**（52px、图标 26）且**不贴边**（离边 40px），
+   别缩成一颗小点。层级取 1500：高于面板内容（< 10），低于 Vuetify 弹窗（~2400）——
+   弹窗打开时不该还能点它。 */
+.sdas-back-top[data-v-9ec46fe0] {
+  position: fixed;
+  inset-inline-end: 40px;
+  inset-block-end: 40px;
+  width: 52px !important;
+  height: 52px !important;
+  z-index: 1500;
+}
+.sdas-sentinel[data-v-9ec46fe0] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  font-size: 12px;
+  color: var(--sdas-fg-dim);
+}
+
+
+/* 空态（探索页同款）见 NoDataFound.vue —— 旧的 sdas-empty 三条样式已随替换删掉 */
+
+/* 自绘提示条 */
+/* 搜索页的量宽哨兵：零高占满一行，两个结果网格的列宽都从它量 */
+.sdas-measure[data-v-9ec46fe0] {
+  inline-size: 100%;
+  block-size: 0;
+}
+
+/* 搜索页里某一类结果为空的小提示（另一类有结果时才单独露出来） */
+.sdas-search-miss[data-v-9ec46fe0] {
+  opacity: 0.8;
+}
+
+/*
+ * ── 已关注演员：A-Z 平铺网格（非虚拟渲染，不分组） ──
+ *
+ * 列宽口径与虚拟网格一致（144px 起、16px 间距），换成实体网格后视觉不变。
+ * 2026-10-20 用户口径：卡片直接按 A-Z 铺，不插组标题；右侧只留一条「滚动条」式索引。
+ *
+ * **不给滚动条留专用带**（2026-10-20 用户口径）：卡片铺满整行，滚动条整体挪到
+ * 视口最右侧、也就是宿主原生滚动条原来待的那个位置（见 AlphaIndex 的 `right: 2px`）。
+ */
+.sdas-actor-grid[data-v-9ec46fe0] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
+  gap: 16px;
+}
+
+/* 每个格子先按 2:3 占位（与演员卡等高），懒挂载前后位置不跳。
+   **不能加 `overflow: hidden`**：卡片悬停会 `translateY(-4px)` 抬起来（宿主的
+   `app-hover-lift-card`），裁掉就看不见了 —— 圆角只用来修饰占位块。 */
+.sdas-actor-cell[data-v-9ec46fe0] {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  /* 点字母跳过来时给宿主顶栏（搜索栏）让出高度，目标卡不被盖住 */
+  scroll-margin-block-start: 84px;
+}
+.sdas-actor-cell[data-v-9ec46fe0] >  * {
+  block-size: 100%;
+  inline-size: 100%;
+}
+
+/*
+ * ── 演员页：把宿主原生滚动条**彻底隐藏** ──
+ *
+ * 上一版只把轨道和拇指涂成全透明，结果右侧留下一条「看不见但能拖」的区域
+ * （2026-10-20 用户口径：「右侧为什么还有一个可以拉动的区域」）。现在直接收掉。
+ *
+ * ⚠️ 单纯 `scrollbar-width: none` 会把滚动条**占的宽度一起收掉**（Windows 上约 15px），
+ * 滚动容器内容区随之变宽，作品墙卡片重新换行、列数变化（用户口径：作品墙恢复成以前
+ * 的布局，只动滚动条）。所以宽度不能白丢 —— `muteNativeScrollBar()` 在加这个类**之前**
+ * 量出滚动条宽度，等量补进容器的 padding-right，内容可用宽度分毫不差。
+ *
+ * 类名由 `muteNativeScrollBar()` 动态加到真正在滚的祖先上（宿主把页面内容第一层
+ * 钉成固定高 + overflow-y:auto），所以只能用 `:global()` —— scoped 会给选择器补
+ * `[data-v-xxx]`，而那是宿主节点、没有这个属性。类名是自有前缀，CSS 门禁不删。
+ */
+.sdas-native-scroll-muted {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sdas-native-scroll-muted::-webkit-scrollbar {
+  inline-size: 0;
+  block-size: 0;
+  display: none;
+}
+
+/* 随机订阅数量输入框：窄一格，别把工具栏撑开 */
+.sdas-random-count[data-v-9ec46fe0] {
+  inline-size: 96px;
+  flex: 0 0 96px;
+}
+
+/* 窄屏：工具栏允许换行，按钮不挤成一团 */
+@media (width < 900px) {
+.sdas-actor-bar[data-v-9ec46fe0] {
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+}

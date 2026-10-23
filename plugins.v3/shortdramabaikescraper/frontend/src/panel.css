@@ -1,0 +1,595 @@
+/*
+ * 面板公共排版（四个分区共用）。
+ *
+ * 为什么集中成一份**非 scoped** 的 css：四个面板若把「工具行 / 列表行 / 标签 /
+ * 空态 / 原始数据」各写一遍 `<style scoped>`，改一处就要改四处，风格必然漂移。
+ * 由 `PanelTabs.vue` 统一 import，只加载一次。
+ *
+ * 安全性：所有选择器都带 `.sdbs-` 前缀（宿主类名里不存在这个前缀），全局注入
+ * 不会命中宿主元素；且**不含 `.v-` / `.mdi-` 选择器** —— 构建期 postcss 会把
+ * 这类选择器整条剔除（联邦样式的硬门禁），所以要覆盖 Vuetify 组件只能靠
+ * 「多挂一个自有类」提高优先级。
+ */
+
+/* ---------- 页面壳 ---------- */
+.sdbs-page {
+  padding: 0;
+}
+
+/* 标题栏里的启用开关：Vuetify 的 switch 自带外边距，压紧才与按钮同高 */
+.sdbs-switch {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+/* ---------- 状态条 ---------- */
+/* 变淡走**颜色**而不是 `opacity`：opacity 会连同子元素一起乘算，
+   里面要突出的警示色就永远提不亮。 */
+.sdbs-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  font-size: 0.75rem;
+}
+
+.sdbs-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sdbs-meta-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.sdbs-warn {
+  color: rgb(var(--v-theme-warning));
+}
+
+/* ---------- 搜索 / 过滤行：输入框 + 按钮同一行 ---------- */
+.sdbs-searchbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.sdbs-searchbox > .sdbs-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 按钮与输入框等高：Vuetify 给按钮写死 height，只能 stretch 撑开 */
+.sdbs-searchbox > .sdbs-search-btn {
+  flex: 0 0 auto;
+  align-self: stretch;
+  height: auto;
+}
+
+.sdbs-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sdbs-filter {
+  min-width: 160px;
+  flex: 1 1 auto;
+}
+
+/* ---------- 工具行（刷新 / 清空 / 分页） ---------- */
+.sdbs-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.sdbs-actions > .sdbs-toggle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* ---------- 分区 chips（单行横滑，不换行） ---------- */
+.sdbs-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.sdbs-chips > * {
+  flex: 0 0 auto;
+}
+
+/* ---------- 列表 ---------- */
+.sdbs-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.sdbs-row {
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background-color 0.15s ease;
+}
+
+/* 分隔线用 inset 阴影而非 border：不占高度，行距更匀 */
+.sdbs-row + .sdbs-row {
+  box-shadow: inset 0 1px 0 rgba(var(--v-border-color), 0.12);
+}
+
+.sdbs-row:hover {
+  background-color: rgba(var(--v-theme-primary), 0.07);
+}
+
+/* 行首：可点的标题行 + 行尾删除按钮。
+   删除按钮不能放进 `.sdbs-row-head`（那是 <button>，嵌套按钮非法），
+   所以外面套这一层 flex。 */
+.sdbs-row-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sdbs-row-top > .sdbs-row-head {
+  width: auto;
+  flex: 1 1 auto;
+}
+
+.sdbs-row-del {
+  flex: 0 0 auto;
+}
+
+.sdbs-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+/* 标题 + 标签打包在左半边：标签紧贴标题，而不是被 flex 推到行尾 */
+.sdbs-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sdbs-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+/* 身份行：复合 ID / 豆瓣 / TMDB 依次排；整行单行省略，悬停看全 */
+.sdbs-row-sub {
+  min-width: 0;
+  padding-inline-start: 18px;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.75;
+}
+
+.sdbs-row-sub > span {
+  white-space: nowrap;
+}
+
+/* ---------- 小标签 ---------- */
+.sdbs-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: rgb(var(--v-theme-surface-variant));
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+/* 站内指标（图标 + 中文名 + 站点原串）；图标与文字靠 inline-flex 对齐 */
+.sdbs-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: rgb(var(--v-theme-surface-variant));
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.sdbs-tag-warn {
+  color: rgb(var(--v-theme-warning));
+  opacity: 1;
+}
+
+/* ---------- 等宽 / 通用 ---------- */
+.sdbs-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.sdbs-dim {
+  opacity: 0.7;
+}
+
+.sdbs-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 展开区 ---------- */
+.sdbs-expand {
+  padding: 4px 0 8px 20px;
+}
+
+/* ---------- 原始数据（JSON 原文） ---------- */
+.sdbs-raw {
+  margin: 6px 0 2px;
+  padding: 8px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 6px;
+  background-color: rgb(var(--v-theme-surface-variant));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  /* pre-wrap + anywhere：保留 JSON 缩进，同时让超长字段值折行而不是横向溢出 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 空态 ---------- */
+.sdbs-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px 8px;
+  font-size: 0.8125rem;
+  text-align: center;
+  opacity: 0.55;
+}
+
+/* ---------- 结果网格（查询结果 / 榜单） ---------- */
+.sdbs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 12px;
+}
+
+/* 网格项默认 min-width: auto，长 ID 会把整列撑开 ⇒ 显式压回 0 */
+.sdbs-item {
+  min-width: 0;
+}
+
+.sdbs-poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: 10px;
+  background-color: rgb(var(--v-theme-surface-light));
+  background-size: cover;
+  background-position: center;
+  overflow: hidden;
+}
+
+.sdbs-mark {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-start: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sdbs-card-title {
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sdbs-card-sub {
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.7;
+}
+
+.sdbs-card-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.6;
+}
+
+/* ---------- 概览卡片里的计量块 ---------- */
+.sdbs-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.sdbs-stat {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background-color: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.sdbs-stat-label {
+  font-size: 11px;
+  line-height: 1.3;
+  opacity: 0.65;
+}
+
+.sdbs-stat-value {
+  margin-top: 2px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.sdbs-stat-hint {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  opacity: 0.6;
+}
+
+.sdbs-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.sdbs-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background-color: rgb(var(--v-theme-surface-variant));
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 18px;
+  text-align: center;
+  opacity: 0.9;
+}
+
+/* 简介 / 长文本最多三行，避免一条长简介把整张卡撑开 */
+.sdbs-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sdbs-pre {
+  white-space: pre-wrap;
+}
+
+/* ---------- 实体分布环图（概览页） ---------- */
+/*
+ * 环图与图例并排：图用 SVG 画（不引图表库），图例是普通 flex 行。
+ * 窄屏（侧栏 / 手机）自动堆成上下，图保持正圆不塌。
+ */
+.sdbs-donut-wrap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-block: 4px 14px;
+}
+
+.sdbs-donut {
+  flex: 0 0 auto;
+  inline-size: 160px;
+  block-size: 160px;
+}
+
+/* SVG 里的文字用 fill，不是 color —— 不跟主题走就会在深色下糊成黑块 */
+.sdbs-donut-total {
+  fill: rgb(var(--v-theme-on-surface));
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sdbs-donut-caption {
+  fill: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 11px;
+}
+
+.sdbs-legend {
+  flex: 1 1 208px;
+  min-inline-size: 168px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 0 14px;
+}
+
+.sdbs-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-inline-size: 0;
+  font-size: 0.75rem;
+  line-height: 1.85;
+}
+
+.sdbs-swatch {
+  flex: 0 0 auto;
+  inline-size: 10px;
+  block-size: 10px;
+  border-radius: 3px;
+}
+
+.sdbs-legend-name {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sdbs-legend-value {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.sdbs-legend-ratio {
+  flex: 0 0 auto;
+  inline-size: 34px;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+
+/* ---------- 人物档案（查询页） ---------- */
+.sdbs-avatar-box {
+  flex: 0 0 auto;
+  inline-size: 96px;
+  block-size: 96px;
+  border-radius: 10px;
+  background-color: rgb(var(--v-theme-surface-light));
+  background-position: center;
+  background-size: cover;
+}
+
+/* 作品行：整行可点（跳去查这部片的详情） */
+.sdbs-work-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.sdbs-work-poster {
+  flex: 0 0 auto;
+  inline-size: 42px;
+  block-size: 56px;
+  border-radius: 6px;
+  background-color: rgb(var(--v-theme-surface-light));
+  background-position: center;
+  background-size: cover;
+}
+
+/* ---------- 封面卡交互（点击反馈） ---------- */
+/*
+ * 海报网格此前没有任何交互反馈：鼠标移上去光标不变、也不动，看起来像静态图。
+ * 这里给「整卡可点」的视觉语言：手型光标 + 轻微上浮 + 描边高亮。
+ */
+.sdbs-card,
+.sdbs-item {
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.sdbs-card:hover,
+.sdbs-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+
+.sdbs-card:hover .sdbs-poster,
+.sdbs-item:hover .sdbs-poster {
+  border-color: rgb(var(--v-theme-primary));
+}
+
+.sdbs-card:active,
+.sdbs-item:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+/* ---------- 详情里的演职人员（可点进人物档案） ---------- */
+.sdbs-credit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sdbs-credit-label {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+
+.sdbs-credit {
+  font-size: 0.75rem;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background-color: rgba(var(--v-theme-on-surface), 0.07);
+  white-space: nowrap;
+}
+
+/* 有人物 media_id 的才可点，给手型与 hover 高亮；纯文本保持中性 */
+.sdbs-credit-click {
+  cursor: pointer;
+  color: rgb(var(--v-theme-primary));
+  background-color: rgba(var(--v-theme-primary), 0.12);
+}
+
+.sdbs-credit-click:hover {
+  background-color: rgba(var(--v-theme-primary), 0.22);
+  text-decoration: underline;
+}
+
+/* 豆瓣来源的作品角标（人物档案作品网格里 origin=douban 的卡） */
+.sdbs-badge-douban {
+  display: inline-block;
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 2px 6px;
+  margin-inline-end: 4px;
+  border-radius: 4px;
+  color: rgb(var(--v-theme-primary));
+  background-color: rgba(var(--v-theme-primary), 0.14);
+  vertical-align: 1px;
+}

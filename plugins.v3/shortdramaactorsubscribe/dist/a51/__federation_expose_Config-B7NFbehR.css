@@ -1,0 +1,27 @@
+
+.sdas-dim[data-v-75b62f1c] {
+  opacity: 0.7;
+}
+
+/*
+ * 分区标题（订阅那一大块）：比小节标题重一档 —— 左侧一条主色竖线 + 稍大字号，
+ * 让人一眼看出「从这里开始是订阅」，而不是又一个小节。
+ * 类名一律自有 `sdas-*`：联邦 CSS 门禁会丢掉含 `.v-` 的选择器。
+ */
+.sdas-block-head[data-v-75b62f1c] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 12px;
+  padding-inline-start: 10px;
+  border-inline-start: 3px solid rgb(var(--v-theme-primary));
+  line-height: 1.4;
+}
+.sdas-block-title[data-v-75b62f1c] {
+  font-size: 1rem;
+  font-weight: 700;
+}
+.sdas-mono[data-v-75b62f1c] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+}

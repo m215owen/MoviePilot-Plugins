@@ -1,0 +1,7 @@
+# 前端依赖与临时产物（dist 必须提交：联邦产物要随插件发布）
+node_modules/
+.vite/
+*.local
+
+# 构建日志
+npm-debug.log*

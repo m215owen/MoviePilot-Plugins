@@ -1,0 +1,16 @@
+
+.sdbo-dir-line[data-v-6ca6c23a] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.sdbo-grow[data-v-6ca6c23a] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sdbo-browse-list[data-v-6ca6c23a] {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+}

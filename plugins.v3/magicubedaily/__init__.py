@@ -465,8 +465,9 @@ class MagicubeDaily(_ApiMixin, _PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "enabled",
-                                            "title": "启用插件",
-                                            "subtitle": "关闭后不再定时领取",
+                                            "label": "启用插件",
+                                            "hint": "关闭后不再定时领取",
+                                            "persistent-hint": True,
                                         },
                                     }
                                 ],
@@ -479,8 +480,9 @@ class MagicubeDaily(_ApiMixin, _PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "notify",
-                                            "title": "发送通知",
-                                            "subtitle": "每次执行结果推送到已配置的通知渠道",
+                                            "label": "发送通知",
+                                            "hint": "每次执行结果推送到已配置的通知渠道",
+                                            "persistent-hint": True,
                                         },
                                     }
                                 ],
