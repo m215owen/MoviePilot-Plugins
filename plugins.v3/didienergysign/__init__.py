@@ -623,29 +623,10 @@ class DidiEnergySign(_PluginBase):
 
         record = normalize_record(self.get_data(RECORD_KEY))
 
-        # 「立即执行」按钮：经 window.MoviePilotAPI 调 bear 版 /run，
-        # 返回的签到结果用弹窗展示（详情页是服务端渲染 JSON，无前端状态可回写）。
-        run_js = (
-            "function(e) { "
-            "window.MoviePilotAPI.post('plugin/DidiEnergySign/run', {}) "
-            ".then(function(r) { "
-            "var d = (r && r.data) ? r.data : {}; "
-            "var label = d.skipped ? '已跳过（今日已签）' : "
-            "(d.is_new_sign ? '签到成功' : (d.is_duplicate ? '今日已签到' : "
-            "(d.is_ambiguous ? '未确认（可能已签）' : (d.is_error ? '异常' : '失败')))); "
-            "var lines = ['结果：' + label]; "
-            "if (d.period_days) lines.push('签到进度：连续 ' + (d.continuous_days || 0) + "
-            "' / ' + d.period_days + ' 天'); "
-            "if (d.period_start) lines.push('本轮周期：' + d.period_start + ' ~ ' + d.period_end); "
-            "if (d.signed_dates && d.signed_dates.length) "
-            "lines.push('本轮已签：' + d.signed_dates.map(function(s) { return s.slice(5); }).join(' · ')); "
-            "if (d.has_coupon) lines.push('🎉 已满 5 天，优惠券已发放！'); "
-            "if (d.message) lines.push('站点消息：' + d.message); "
-            "if (d.is_ambiguous) lines.push('本次未写入签到记录，可在小程序里核对'); "
-            "lines.push(''); lines.push('详情页数据刷新页面后可见'); "
-            "alert(lines.join('\\n')); }) "
-            ".catch(function(err) { alert('执行失败，请查看插件日志'); }) }"
-        )
+        # 「立即执行」按钮：用宿主的 events 声明式事件（get_page 的 onclick 字符串
+        # 在当前宿主前端不被解析，点击无反应——v3.1.8 实测）。宿主 PageRender 会把
+        # {"click": {api, method, params}} 绑到组件点击事件上，经带登录态的 API
+        # 客户端请求，执行期间显示原生进度弹窗，完成后自动重载详情页。
         content.append(
             {
                 "component": "VRow",
@@ -661,9 +642,15 @@ class DidiEnergySign(_PluginBase):
                                     "color": "primary",
                                     "variant": "flat",
                                     "prepend-icon": "mdi-check-circle-outline",
-                                    "onclick": run_js,
                                 },
                                 "text": "立即执行",
+                                "events": {
+                                    "click": {
+                                        "api": "plugin/DidiEnergySign/run",
+                                        "method": "POST",
+                                        "params": {},
+                                    }
+                                },
                             }
                         ],
                     },
@@ -673,7 +660,7 @@ class DidiEnergySign(_PluginBase):
                         "content": [
                             {
                                 "component": "span",
-                                "text": "执行结果会在弹窗中展示；详情数据刷新页面后更新。",
+                                "text": "执行中显示进度，完成后详情自动刷新（见下方「上次执行」）。",
                             }
                         ],
                     },
