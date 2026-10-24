@@ -1,4 +1,6 @@
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -21,11 +23,11 @@ class VuePTMonitor(_PluginBase):
     # 插件名称
     plugin_name = "Vue-PT 监护台"
     # 插件描述
-    plugin_desc = "展示 PT 站点运行状态、病危通知与站庆预告；支持把可添加站点写入 MP 站点管理，并按站点状态联动启停。"
+    plugin_desc = "展示 PT 站点运行状态、病危通知与站庆预告；探测各站点是否开放注册，支持把可添加站点写入 MP 站点管理并按状态联动启停。"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/VuePTMonitor.png"
     # 插件版本
-    plugin_version = "1.2.0"
+    plugin_version = "1.3.0"
     # 插件作者
     plugin_author = "KoWming / m215owen"
     # 作者主页
@@ -57,6 +59,114 @@ class VuePTMonitor(_PluginBase):
     _sync_mp_active: bool = False
     # 新增：站点恢复健康时自动重新启用 MP 中对应站点
     _sync_mp_restore: bool = False
+    # 新增：开放注册探测
+    _signup_check: bool = True
+    _signup_auto: bool = True
+    _signup_cron: str = ""
+    _signup_concurrency: int = 6
+    # 自动探测的最小间隔（小时），避免频繁重复扫描站点
+    _SIGNUP_AUTO_INTERVAL_HOURS: int = 6
+
+    # ------------------------------------------------------------------
+    # 开放注册探测常量
+    # ------------------------------------------------------------------
+    # 依次尝试的注册页路径（NexusPHP / Unit3D 等常见约定）
+    _SIGNUP_PATHS: Tuple[str, ...] = ("/signup.php", "/register.php", "/register", "/signup")
+    # 注册页请求头
+    _SIGNUP_HEADERS: Dict[str, str] = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    # 站点盾 / 无法确认（Cloudflare、备案阻断等）
+    _SIGNUP_SHIELD_KW: Tuple[str, ...] = (
+        "just a moment",
+        "challenge-platform",
+        "cf_chl_opt",
+        "cf-browser-verification",
+        "attention required",
+        "enable javascript and cookies",
+        "备案阻断",
+        "access is prohibited",
+        "access is forbidden",
+    )
+    # 明确不开放注册
+    _SIGNUP_CLOSED_KW: Tuple[str, ...] = (
+        "自由注册当前关闭",
+        "自由註冊當前關閉",
+        "关闭了自由注册",
+        "关闭自由注册",
+        "关闭注册",
+        "關閉註冊",
+        "注册已关闭",
+        "註冊已關閉",
+        "注册关闭",
+        "停止注册",
+        "暂停注册",
+        "暫停註冊",
+        "暂停售票",
+        "不开放注册",
+        "暂不支持公开注册",
+        "封闭运行",
+        "不对外开放",
+        "站点关闭维护",
+        "registration closed",
+        "registration is closed",
+        "signups are closed",
+        "not open for registration",
+        "closed for signup",
+        "free registration not engaged",
+        "current open registration limit",
+    )
+    # 需要邀请才能注册
+    _SIGNUP_INVITE_KW: Tuple[str, ...] = (
+        "只允许邀请注册",
+        "只允許邀請註冊",
+        "仅限邀请",
+        "僅限邀請",
+        "只接受邀请",
+        "邀请注册",
+        "邀請註冊",
+        "邀请码",
+        "邀請碼",
+        "需要邀请",
+        "邀请加入",
+        "邀请机制",
+        "通过邀请",
+        "自助邀请",
+        "邀请方式",
+        "invite only",
+        "invitation only",
+        "by invitation",
+        "invite code",
+        "signup with invite",
+    )
+    # 探测状态展示文案
+    _SIGNUP_STATUS_TEXT: Dict[str, str] = {
+        "open": "开放注册",
+        "invite": "仅限邀请",
+        "closed": "未开放",
+        "blocked": "访问受限",
+        "unknown": "无法确认",
+        "error": "探测失败",
+    }
+
+    # 当次探测的并发状态（进程内共享）；用可重入锁，避免同线程重入时自锁
+    _signup_lock = threading.RLock()
+    _signup_state: Dict[str, Any] = {
+        "running": False,
+        "done": 0,
+        "total": 0,
+        "started_at": "",
+        "finished_at": "",
+        "message": "",
+    }
+    # 探测结果缓存：domain -> 结果
+    _signup_cache: Optional[Dict[str, Any]] = None
+
     # 缓存上一次抓取结果
     _last_snapshot: Dict[str, Any] = {}
     # 浏览器仿真实例缓存
@@ -149,6 +259,10 @@ class VuePTMonitor(_PluginBase):
         self._auto_add_available = self._to_bool(config.get("auto_add_available", False))
         self._sync_mp_active = self._to_bool(config.get("sync_mp_active", False))
         self._sync_mp_restore = self._to_bool(config.get("sync_mp_restore", False))
+        self._signup_check = self._to_bool(config.get("signup_check", True))
+        self._signup_auto = self._to_bool(config.get("signup_auto", True))
+        self._signup_cron = (config.get("signup_cron") or "").strip()
+        self._signup_concurrency = min(max(int(config.get("signup_concurrency") or 6), 1), 10)
 
     @staticmethod
     def _to_bool(value: Any) -> bool:
@@ -169,7 +283,8 @@ class VuePTMonitor(_PluginBase):
 
     def get_render_mode(self) -> Tuple[str, Optional[str]]:
         """返回渲染模式和前端资源目录。"""
-        return "vue", "dist/assets"
+        # 目录名同时充当缓存键：前端有实质改动就换新目录，避免浏览器复用旧的 remoteEntry
+        return "vue", "dist/a1"
 
     def get_sidebar_nav(self) -> List[Dict[str, Any]]:
         """返回侧边栏导航配置。"""
@@ -235,6 +350,20 @@ class VuePTMonitor(_PluginBase):
                 "auth": "bear",
                 "summary": "启用或禁用 MP 站点",
             },
+            {
+                "path": "/signup/scan",
+                "endpoint": self._start_signup_scan,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "探测站点是否开放注册",
+            },
+            {
+                "path": "/signup/status",
+                "endpoint": self._get_signup_status,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取注册探测进度与结果",
+            },
         ]
 
     def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
@@ -256,6 +385,19 @@ class VuePTMonitor(_PluginBase):
                         "name": f"{self.plugin_name} - 公告定时推送",
                         "trigger": CronTrigger.from_crontab(self._cron),
                         "func": self._cron_push_notice,
+                        "kwargs": {},
+                    }
+                )
+            except Exception:
+                pass
+        if self._enabled and self._signup_check and self._signup_cron:
+            try:
+                services.append(
+                    {
+                        "id": f"{self.__class__.__name__.lower()}_signup",
+                        "name": f"{self.plugin_name} - 注册状态定时探测",
+                        "trigger": CronTrigger.from_crontab(self._signup_cron),
+                        "func": self._cron_scan_signup,
                         "kwargs": {},
                     }
                 )
@@ -288,6 +430,10 @@ class VuePTMonitor(_PluginBase):
             "auto_add_available": self._auto_add_available,
             "sync_mp_active": self._sync_mp_active,
             "sync_mp_restore": self._sync_mp_restore,
+            "signup_check": self._signup_check,
+            "signup_auto": self._signup_auto,
+            "signup_cron": self._signup_cron,
+            "signup_concurrency": self._signup_concurrency,
         }
 
     def _save_config(self, config_payload: dict) -> Dict[str, Any]:
@@ -305,6 +451,12 @@ class VuePTMonitor(_PluginBase):
             "auto_add_available": self._to_bool(config_payload.get("auto_add_available", self._auto_add_available)),
             "sync_mp_active": self._to_bool(config_payload.get("sync_mp_active", self._sync_mp_active)),
             "sync_mp_restore": self._to_bool(config_payload.get("sync_mp_restore", self._sync_mp_restore)),
+            "signup_check": self._to_bool(config_payload.get("signup_check", self._signup_check)),
+            "signup_auto": self._to_bool(config_payload.get("signup_auto", self._signup_auto)),
+            "signup_cron": (config_payload.get("signup_cron") or self._signup_cron or "").strip(),
+            "signup_concurrency": min(
+                max(int(config_payload.get("signup_concurrency") or self._signup_concurrency or 6), 1), 10
+            ),
         }
         self.stop_service()
         self.init_plugin(config_to_save)
@@ -313,17 +465,18 @@ class VuePTMonitor(_PluginBase):
 
     def _get_summary(self) -> Dict[str, Any]:
         """获取当前统计汇总数据。"""
-        snapshot = self._load_snapshot(force_refresh=False)
+        snapshot = self._with_signup(self._load_snapshot(force_refresh=False))
         return {"success": True, "data": snapshot.get("summary", {})}
 
     def _get_sites(self) -> Dict[str, Any]:
         """获取完整站点快照和公告数据。"""
-        snapshot = self._load_snapshot(force_refresh=False)
+        snapshot = self._with_signup(self._load_snapshot(force_refresh=False))
         return {"success": True, "data": snapshot}
 
     def _refresh_snapshot(self, payload: dict = None) -> Dict[str, Any]:
         """强制刷新一次实时快照。"""
         snapshot = self._load_snapshot(force_refresh=True)
+        snapshot = self._with_signup(snapshot)
         return {"success": True, "message": "刷新成功", "data": snapshot}
 
     # ------------------------------------------------------------------
@@ -440,6 +593,349 @@ class VuePTMonitor(_PluginBase):
         return {"disabled": disabled, "enabled": enabled, "errors": errors}
 
     # ------------------------------------------------------------------
+    # 开放注册探测
+    # ------------------------------------------------------------------
+    def _signup_results(self) -> Dict[str, Any]:
+        """读取注册探测结果缓存（内存优先，回落到插件存储）。"""
+        if self._signup_cache is None:
+            try:
+                cached = self.get_data("signup_results") or {}
+                self._signup_cache = cached if isinstance(cached, dict) else {}
+            except Exception:
+                self._signup_cache = {}
+        return self._signup_cache
+
+    def _signup_targets(self, snapshot: Dict[str, Any]) -> List[Dict[str, str]]:
+        """从快照中挑出需要探测的站点（已关站的不再发起请求）。"""
+        targets: List[Dict[str, str]] = []
+        seen = set()
+        for site in snapshot.get("sites") or []:
+            domain = str(site.get("domain") or "").strip().lower()
+            if not domain or domain in seen:
+                continue
+            seen.add(domain)
+            if site.get("status") == "closed":
+                continue
+            targets.append({"domain": domain, "url": str(site.get("url") or "").strip()})
+        return targets
+
+    def _signup_proxies(self) -> Optional[Dict[str, str]]:
+        """构造 requests 可用的代理设置。"""
+        if not self._use_proxy:
+            return None
+        try:
+            proxy = getattr(settings, "PROXY", None)
+        except Exception:
+            return None
+        if not proxy:
+            return None
+        if isinstance(proxy, str):
+            return {"http": proxy, "https": proxy}
+        if isinstance(proxy, dict) and proxy:
+            return proxy
+        return None
+
+    def _signup_get(self, url: str) -> Tuple[int, str, str]:
+        """请求注册页，返回 (状态码, 最终地址, 页面源码)。"""
+        try:
+            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        response = requests.get(
+            url,
+            headers=self._SIGNUP_HEADERS,
+            timeout=(5, self._request_timeout),
+            allow_redirects=True,
+            verify=False,
+            proxies=self._signup_proxies(),
+        )
+        if not response.encoding or response.encoding.lower() in {"iso-8859-1", "ascii"}:
+            response.encoding = response.apparent_encoding or "utf-8"
+        html = response.text or ""
+        if len(html) > self._MAX_HTML_CHARS:
+            html = html[: self._MAX_HTML_CHARS]
+        return response.status_code, response.url or url, html
+
+    @staticmethod
+    def _has_signup_form(low: str) -> bool:
+        """判断页面是否为可填写的注册表单（需同时有密码框与注册提交地址）。"""
+        if not any(token in low for token in ('type="password"', "type='password'", "type=password")):
+            return False
+        for match in re.finditer(r"<form[^>]{0,240}", low):
+            segment = match.group(0)
+            if "signup" in segment or "takesignup" in segment or "register" in segment:
+                return True
+        # NexusPHP 注册表单的字段名
+        return "wantusername" in low or "wantpassword" in low
+
+    def _classify_signup(self, html: str, code: int) -> Dict[str, Any]:
+        """根据注册页内容判定注册状态。"""
+        low = html.lower()
+        text = html
+
+        for keyword in self._SIGNUP_SHIELD_KW:
+            if keyword in low:
+                return {"status": "blocked", "reason": f"盾/访问限制（{keyword}）"}
+
+        # 邀请类提示优先于「注册关闭」：「自由注册当前关闭，只允许邀请注册」对用户更有用的是「仅限邀请」
+        for keyword in self._SIGNUP_INVITE_KW:
+            if keyword in text or keyword in low:
+                return {"status": "invite", "reason": f"页面提示「{keyword}」"}
+
+        for keyword in self._SIGNUP_CLOSED_KW:
+            if keyword in text or keyword in low:
+                return {"status": "closed", "reason": f"页面提示「{keyword}」"}
+
+        if self._has_signup_form(low):
+            return {"status": "open", "reason": "存在可填写的注册表单"}
+
+        if any(token in low for token in ('type="password"', "type='password'", "type=password")):
+            return {"status": "unknown", "reason": "呈现登录页，无法确认注册状态"}
+
+        if code in (401, 403):
+            return {"status": "blocked", "reason": f"HTTP {code}"}
+        if code >= 500:
+            return {"status": "unknown", "reason": f"HTTP {code}"}
+        return {"status": "unknown", "reason": "页面无可判定特征"}
+
+    def _probe_signup(self, target: Dict[str, str]) -> Dict[str, Any]:
+        """探测单个站点的开放注册状态。"""
+        domain = target.get("domain") or ""
+        checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        base = target.get("url") or ""
+        if not base.startswith(("http://", "https://")):
+            base = f"https://{domain}"
+        base = base.rstrip("/")
+        last_error = ""
+        for path in self._SIGNUP_PATHS:
+            url = f"{base}{path}"
+            try:
+                code, final_url, html = self._signup_get(url)
+            except Exception as err:
+                last_error = type(err).__name__
+                continue
+            if code == 404:
+                last_error = "404"
+                continue
+            if len(html.strip()) < 40:
+                last_error = "空页面"
+                continue
+            result = self._classify_signup(html, code)
+            result.update(
+                {
+                    "domain": domain,
+                    "url": url,
+                    "final_url": final_url,
+                    "checked_at": checked_at,
+                }
+            )
+            return result
+        if last_error == "404":
+            return {
+                "domain": domain,
+                "status": "unknown",
+                "reason": "未找到注册页（HTTP 404）",
+                "url": f"{base}{self._SIGNUP_PATHS[0]}",
+                "final_url": "",
+                "checked_at": checked_at,
+            }
+        return {
+            "domain": domain,
+            "status": "error" if last_error else "unknown",
+            "reason": f"请求失败（{last_error}）" if last_error else "未找到注册页",
+            "url": f"{base}{self._SIGNUP_PATHS[0]}",
+            "final_url": "",
+            "checked_at": checked_at,
+        }
+
+    def _start_signup_scan(self, payload: dict = None) -> Dict[str, Any]:
+        """启动一次后台注册探测（立即返回，不阻塞请求）。"""
+        if not self._signup_check:
+            return {"success": False, "message": "注册探测已在配置中关闭"}
+        payload = payload or {}
+        with self._signup_lock:
+            if self._signup_state.get("running"):
+                return {"success": True, "message": "探测已在进行中", "data": dict(self._signup_state)}
+        # 注意：快照加载必须在锁外完成，否则会与「刷新后自动探测」的回调形成同线程重入死锁
+        snapshot = self._load_snapshot(force_refresh=False)
+        targets = self._signup_targets(snapshot)
+        wanted = {str(item).strip().lower() for item in (payload.get("domains") or []) if str(item).strip()}
+        if wanted:
+            targets = [item for item in targets if item["domain"] in wanted]
+        if not targets:
+            return {"success": False, "message": "站点快照为空，请先刷新站点数据"}
+        with self._signup_lock:
+            if self._signup_state.get("running"):
+                return {"success": True, "message": "探测已在进行中", "data": dict(self._signup_state)}
+            self._signup_state.update(
+                {
+                    "running": True,
+                    "done": 0,
+                    "total": len(targets),
+                    "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "finished_at": "",
+                    "message": "探测中",
+                }
+            )
+            thread = threading.Thread(
+                target=self._run_signup_scan,
+                args=(targets,),
+                name="VuePTSignupScan",
+                daemon=True,
+            )
+            thread.start()
+        logger.info(f"[{self.plugin_name}] 开始探测 {len(targets)} 个站点的注册状态")
+        return {"success": True, "message": f"已开始探测 {len(targets)} 个站点", "data": dict(self._signup_state)}
+
+    def _run_signup_scan(self, targets: List[Dict[str, str]]) -> None:
+        """后台探测主流程（线程池并发，分批落盘）。"""
+        results: Dict[str, Any] = {}
+        done = 0
+        concurrency = min(max(self._signup_concurrency, 1), 10)
+        try:
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = {executor.submit(self._probe_signup, target): target for target in targets}
+                for future in as_completed(futures):
+                    target = futures[future]
+                    domain = target.get("domain") or ""
+                    try:
+                        results[domain] = future.result()
+                    except Exception as err:
+                        results[domain] = {
+                            "domain": domain,
+                            "status": "error",
+                            "reason": f"{type(err).__name__}: {err}",
+                            "url": "",
+                            "final_url": "",
+                            "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                    done += 1
+                    with self._signup_lock:
+                        self._signup_state["done"] = done
+                    if done % 20 == 0:
+                        partial = {**self._signup_results(), **results}
+                        self._signup_cache = partial
+                        self._persist_signup(partial)
+        except Exception as err:
+            logger.error(f"[{self.plugin_name}] 注册探测异常: {err}")
+        finally:
+            merged = {**self._signup_results(), **results}
+            self._signup_cache = merged
+            self._persist_signup(merged)
+            self._mark_signup_scanned()
+            with self._signup_lock:
+                opened = [domain for domain, item in results.items() if item.get("status") == "open"]
+                self._signup_state.update(
+                    {
+                        "running": False,
+                        "done": len(results),
+                        "total": len(targets),
+                        "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "message": f"完成，开放注册 {len(opened)} 个",
+                    }
+                )
+            logger.info(f"[{self.plugin_name}] 注册探测完成：{len(results)} 个站点，开放注册 {len(opened)} 个")
+
+    def _persist_signup(self, results: Dict[str, Any]) -> None:
+        """把探测结果写入插件存储（失败不影响主流程）。"""
+        try:
+            self.save_data("signup_results", results)
+        except Exception as err:
+            logger.warning(f"[{self.plugin_name}] 注册探测结果保存失败: {err}")
+
+    def _signup_scan_stale(self) -> bool:
+        """判断上次探测是否已超过自动探测间隔。"""
+        try:
+            last = self.get_data("signup_scan_at") or ""
+        except Exception:
+            return True
+        if not last:
+            return True
+        try:
+            last_dt = datetime.strptime(str(last), "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return True
+        return (datetime.now() - last_dt).total_seconds() >= self._SIGNUP_AUTO_INTERVAL_HOURS * 3600
+
+    def _mark_signup_scanned(self) -> None:
+        """记录本次探测完成时间。"""
+        try:
+            self.save_data("signup_scan_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            pass
+
+    def _get_signup_status(self) -> Dict[str, Any]:
+        """返回探测进度与统计。"""
+        results = self._signup_results()
+        with self._signup_lock:
+            state = dict(self._signup_state)
+        stats = self._signup_stats(results)
+        return {
+            "success": True,
+            "data": {
+                "state": state,
+                "stats": stats,
+                "results": results,
+                "status_text": self._SIGNUP_STATUS_TEXT,
+            },
+        }
+
+    @staticmethod
+    def _signup_stats(results: Dict[str, Any]) -> Dict[str, int]:
+        """按状态汇总探测结果。"""
+        stats = {key: 0 for key in ("open", "invite", "closed", "blocked", "unknown", "error")}
+        for item in results.values():
+            status = (item or {}).get("status")
+            if status in stats:
+                stats[status] += 1
+        stats["total"] = len(results)
+        return stats
+
+    def _with_signup(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """把注册探测结果合并进快照（不污染已缓存的原始快照）。"""
+        results = self._signup_results()
+        merged_sites: List[Dict[str, Any]] = []
+        open_count = 0
+        for site in snapshot.get("sites") or []:
+            item = dict(site)
+            domain = str(item.get("domain") or "").strip().lower()
+            signup = results.get(domain)
+            if not signup and item.get("status") == "closed":
+                signup = {
+                    "status": "closed",
+                    "reason": "站点已关站",
+                    "checked_at": "",
+                }
+            if signup:
+                signup_info = dict(signup)
+                signup_info["text"] = self._SIGNUP_STATUS_TEXT.get(signup_info.get("status"), "未知")
+                item["signup"] = signup_info
+                if signup_info.get("status") == "open":
+                    open_count += 1
+            else:
+                item["signup"] = None
+            merged_sites.append(item)
+
+        data = dict(snapshot)
+        data["sites"] = merged_sites
+        stats = self._signup_stats(results)
+        summary = dict(snapshot.get("summary") or {})
+        summary["signup_open"] = open_count
+        summary["signup_scanned"] = stats["total"]
+        data["summary"] = summary
+        with self._signup_lock:
+            data["signup_scan"] = dict(self._signup_state)
+        data["signup_stats"] = stats
+        return data
+
+    def _cron_scan_signup(self) -> None:
+        """定时触发注册探测。"""
+        try:
+            self._start_signup_scan({})
+        except Exception as err:
+            logger.error(f"[{self.plugin_name}] 定时注册探测失败: {err}")
+
+    # ------------------------------------------------------------------
     # 通知
     # ------------------------------------------------------------------
     def _cron_push_notice(self) -> None:
@@ -549,6 +1045,12 @@ class VuePTMonitor(_PluginBase):
                 self.save_data("last_snapshot", snapshot)
                 if self._auto_add_available or self._sync_mp_active or self._sync_mp_restore:
                     self._apply_mp_sync(snapshot)
+                if self._signup_check and self._signup_auto and not self._signup_state.get("running"):
+                    if self._signup_scan_stale():
+                        try:
+                            self._start_signup_scan({})
+                        except Exception as err:
+                            logger.warning(f"[{self.plugin_name}] 自动注册探测启动失败: {err}")
                 return snapshot
         except Exception as err:
             cached = self.get_data("last_snapshot") or {}

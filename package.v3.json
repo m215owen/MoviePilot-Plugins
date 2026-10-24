@@ -159,14 +159,15 @@
   },
   "VuePTMonitor": {
     "name": "Vue-PT 监护台",
-    "description": "展示 PT 站点运行状态、病危通知与站庆预告；可把 MP 可添加的站点一键写入站点管理，并按站点状态联动启停。（基于 Savept v1.1.1 修复：改用 BeautifulSoup 解析，消除正则灾难性回溯导致的进程假死）",
-    "labels": "站点,PT,监控",
-    "version": "1.2.0",
+    "description": "展示 PT 站点运行状态、病危通知与站庆预告；探测各站点是否开放注册并在面板标出开放站点；可把 MP 可添加的站点一键写入站点管理，并按站点状态联动启停。（基于 Savept v1.1.1 修复：改用 BeautifulSoup 解析，消除正则灾难性回溯导致的进程假死）",
+    "labels": "站点,PT,监控,注册",
+    "version": "1.3.0",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/VuePTMonitor.png",
     "author": "KoWming / m215owen",
     "level": 1,
     "system_version": ">=3.1.5",
     "history": {
+      "v1.3.0": "新增开放注册探测：后台线程池并发访问各站点注册页（signup.php / register.php / register），按注册表单、关闭提示、邀请提示、站点盾等特征判定「开放注册 / 仅限邀请 / 未开放 / 访问受限 / 无法确认」，结果缓存进插件存储并合并进站点快照；面板新增「可注册」统计、站点卡片「开放注册」徽标、「开放注册」筛选与「探测注册」按钮（带进度轮询）；刷新站点时按 6 小时间隔自动复检。",
       "v1.2.0": "换 ID 重发并修复致命缺陷：站点卡片解析由超长正则改为 BeautifulSoup 结构化提取（原正则遇页面结构变化会灾难性回溯、长占 GIL 导致整个 MoviePilot 假死），年份分组与名称拆分改为有界匹配，新增 2MB 页面体积护栏与慢解析告警；新增站点联动：可添加站点一键写入 MP 站点管理、按域名启停、站点死亡/恢复时自动同步启用状态；首次加载自动继承旧 Savept 配置与快照缓存。"
     }
   }

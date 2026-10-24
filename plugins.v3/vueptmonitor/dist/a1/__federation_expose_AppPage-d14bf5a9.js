@@ -1,6 +1,6 @@
 import { _ as __vitePreload } from './preload-helper-06b33f0f.js';
 import { importShared } from './__federation_fn_import-054b33c3.js';
-import { _ as _export_sfc, b as buildNoticeSections, a as buildSiteKeywords, g as getStatusMeta, t as tokenizeNoticeText, p as pluginRequest, c as getMpStatusMeta } from './_plugin-vue_export-helper-d1e0ed3a.js';
+import { _ as _export_sfc, b as buildNoticeSections, a as buildSiteKeywords, g as getStatusMeta, t as tokenizeNoticeText, p as pluginRequest, c as getMpStatusMeta, s as getSignupMeta } from './_plugin-vue_export-helper-d1e0ed3a.js';
 
 const AppPage_vue_vue_type_style_index_0_scoped_c7dff6f4_lang = '';
 
@@ -127,12 +127,15 @@ const props = __props;
 
 const loading = ref(false);
 const message = reactive({ show: false, type: 'info', text: '' });
-const summary = reactive({ total: 0, healthy: 0, critical: 0, closed: 0, internal: 0, external: 0, today_anniv: 0, years: 0, mp_owned: 0, mp_available: 0, mp_unsupported: 0 });
+const summary = reactive({ total: 0, healthy: 0, critical: 0, closed: 0, internal: 0, external: 0, today_anniv: 0, years: 0, mp_owned: 0, mp_available: 0, mp_unsupported: 0, signup_open: 0, signup_scanned: 0 });
 const alerts = ref([]);
 const sites = ref([]);
 const yearGroups = ref([]);
 const fetchedAt = ref('');
 const warning = ref('');
+const signupStats = ref({});
+const signupScanState = reactive({ running: false, done: 0, total: 0, message: '', started_at: '', finished_at: '' });
+let signupPollTimer = null;
 const showBackToTop = ref(false);
 const backTopStyle = ref({});
 const prefersReducedMotion = ref(false);
@@ -169,6 +172,7 @@ const filters = reactive({
   status: '全部',
   type: '全部',
   anniversaryOnly: false,
+  signupOnly: false,
 });
 
 let messageTimer = null;
@@ -196,6 +200,66 @@ function pushMessage(text, type = 'info') {
   scheduleMessageClose(type);
 }
 
+function applySignupState(state) {
+  if (!state) {
+    return
+  }
+  Object.assign(signupScanState, {
+    running: !!state.running,
+    done: state.done || 0,
+    total: state.total || 0,
+    message: state.message || '',
+    started_at: state.started_at || '',
+    finished_at: state.finished_at || '',
+  });
+}
+
+function stopSignupPoll() {
+  if (signupPollTimer) {
+    clearTimeout(signupPollTimer);
+    signupPollTimer = null;
+  }
+}
+
+async function pollSignupStatus() {
+  stopSignupPoll();
+  try {
+    const result = await pluginRequest(props.api, '/signup/status', { method: 'GET' });
+    if (!result?.success) {
+      return
+    }
+    const data = result.data || {};
+    applySignupState(data.state);
+    signupStats.value = data.stats || {};
+    if (signupScanState.running) {
+      signupPollTimer = setTimeout(pollSignupStatus, 3000);
+      return
+    }
+    pushMessage(signupScanState.message || '注册探测已完成', 'success');
+    await loadData();
+  } catch (error) {
+    pushMessage(error.message || '获取探测进度失败', 'error');
+  }
+}
+
+async function startSignupScan() {
+  if (signupScanState.running) {
+    pushMessage('探测进行中，请稍候', 'info');
+    return
+  }
+  try {
+    const result = await pluginRequest(props.api, '/signup/scan', { method: 'POST', body: {} });
+    if (!result?.success) {
+      throw new Error(result?.message || '启动探测失败')
+    }
+    applySignupState(result.data);
+    pushMessage(result.message || '已开始探测', 'success');
+    signupPollTimer = setTimeout(pollSignupStatus, 2500);
+  } catch (error) {
+    pushMessage(error.message || '启动探测失败', 'error');
+  }
+}
+
 async function loadData(showSuccess = false) {
   loading.value = true;
   try {
@@ -210,6 +274,8 @@ async function loadData(showSuccess = false) {
     yearGroups.value = data.year_groups || [];
     fetchedAt.value = data.fetched_at || '';
     warning.value = data.warning || '';
+    signupStats.value = data.signup_stats || {};
+    applySignupState(data.signup_scan);
     if (data.default_internal_only) {
       filters.type = '内站';
     }
@@ -237,6 +303,8 @@ async function refreshData() {
     yearGroups.value = data.year_groups || [];
     fetchedAt.value = data.fetched_at || '';
     warning.value = data.warning || '';
+    signupStats.value = data.signup_stats || {};
+    applySignupState(data.signup_scan);
     pushMessage(result.message || '刷新成功', 'success');
   } catch (error) {
     pushMessage(error.message || '刷新失败', 'error');
@@ -295,6 +363,9 @@ const filteredSites = computed(() => {
       return false
     }
     if (filters.anniversaryOnly && !(site.anniversary_flag === 'yes' && site.status !== 'closed')) {
+      return false
+    }
+    if (filters.signupOnly && site.signup?.status !== 'open') {
       return false
     }
     return true
@@ -436,6 +507,10 @@ function statusMeta(site) {
 
 function mpStatusMeta(site) {
   return getMpStatusMeta(site.mp_status)
+}
+
+function signupMeta(site) {
+  return getSignupMeta(site.signup)
 }
 
 function siteCelebrationKey(year, site) {
@@ -661,6 +736,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearMessageTimer();
+  stopSignupPoll();
   document.removeEventListener('click', handleDocumentClick);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   if (reducedMotionMediaQuery) {
@@ -741,6 +817,11 @@ return (_ctx, _cache) => {
           _createElementVNode("div", _hoisted_16, [
             _createElementVNode("span", _hoisted_17, _toDisplayString(summary.today_anniv), 1),
             _cache[11] || (_cache[11] = _createElementVNode("span", { class: "spt-vital__label" }, "站庆", -1))
+          ]),
+          _createElementVNode("div", { class: "spt-vital__divider" }),
+          _createElementVNode("div", { class: "spt-vital spt-vital--signup" }, [
+            _createElementVNode("span", { class: "spt-vital__value" }, _toDisplayString(summary.signup_open || 0), 1),
+            _createElementVNode("span", { class: "spt-vital__label" }, "可注册")
           ])
         ]),
         _createElementVNode("div", _hoisted_18, [
@@ -770,6 +851,26 @@ return (_ctx, _cache) => {
                   size: "18"
                 })),
             _cache[17] || (_cache[17] = _createElementVNode("span", null, "刷新数据", -1))
+          ], 8, _hoisted_20),
+          _createElementVNode("button", {
+            class: "spt-refresh-btn spt-refresh-btn--signup",
+            onClick: startSignupScan,
+            disabled: loading.value || signupScanState.running
+          }, [
+            (signupScanState.running)
+              ? (_openBlock(), _createBlock(_component_v_progress_circular, {
+                  key: 0,
+                  size: "16",
+                  width: "2",
+                  indeterminate: "",
+                  color: "inherit"
+                }))
+              : (_openBlock(), _createBlock(_component_v_icon, {
+                  key: 1,
+                  icon: "mdi-account-plus-outline",
+                  size: "18"
+                })),
+            _createElementVNode("span", null, _toDisplayString(signupScanState.running ? `探测中 ${signupScanState.done}/${signupScanState.total}` : '探测注册'), 1)
           ], 8, _hoisted_20)
         ])
       ]),
@@ -902,6 +1003,16 @@ return (_ctx, _cache) => {
               size: "14"
             }),
             _cache[18] || (_cache[18] = _createTextVNode(" 近期站庆 ", -1))
+          ], 2),
+          _createElementVNode("button", {
+            class: _normalizeClass(["spt-pill spt-pill--signup-toggle", { 'spt-pill--signup-active': filters.signupOnly }]),
+            onClick: $event => (filters.signupOnly = !filters.signupOnly)
+          }, [
+            _createVNode(_component_v_icon, {
+              icon: "mdi-account-plus",
+              size: "14"
+            }),
+            _createTextVNode(" 开放注册 ")
           ], 2)
         ]),
         _cache[24] || (_cache[24] = _createElementVNode("div", { class: "spt-filters__spacer" }, null, -1)),
@@ -1068,6 +1179,18 @@ return (_ctx, _cache) => {
                             : _createCommentVNode("", true),
                           _createElementVNode("span", _hoisted_57, _toDisplayString(getAnniversaryDisplayText(site.anniversary_text)), 1)
                         ], 2))
+                      : _createCommentVNode("", true),
+                    (site.signup && site.signup.status === 'open')
+                      ? (_openBlock(), _createElementBlock("span", {
+                          key: 2,
+                          class: "spt-tag spt-tag--signup-open"
+                        }, [
+                          _createVNode(_component_v_icon, {
+                            icon: "mdi-account-plus",
+                            size: "12"
+                          }),
+                          _createElementVNode("span", _hoisted_57, "开放注册", -1)
+                        ]))
                       : _createCommentVNode("", true)
                   ])
                 ]),
@@ -1152,7 +1275,7 @@ return (_ctx, _cache) => {
           _cache[29] || (_cache[29] = _createElementVNode("p", null, "没有匹配的站点", -1)),
           _createElementVNode("button", {
             class: "spt-pill",
-            onClick: _cache[4] || (_cache[4] = $event => (Object.assign(filters, { keyword: '', year: '全部', mpStatus: '全部', status: '全部', type: '全部', anniversaryOnly: false })))
+            onClick: _cache[4] || (_cache[4] = $event => (Object.assign(filters, { keyword: '', year: '全部', mpStatus: '全部', status: '全部', type: '全部', anniversaryOnly: false, signupOnly: false })))
           }, " 清除筛选 ")
         ]))
       : _createCommentVNode("", true),

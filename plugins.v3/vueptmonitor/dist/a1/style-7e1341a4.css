@@ -20227,3 +20227,31 @@ html.overflow-y-hidden {
   opacity: 0;
   transform: translateY(8px) scale(0.92);
 }
+
+/* ---- 开放注册探测（m215owen 2026-10-24 追加） ---- */
+.spt-vital--signup .spt-vital__value[data-v-c7dff6f4] {
+  color: #0ea5e9;
+}
+.spt-tag--signup-open[data-v-c7dff6f4] {
+  background: rgba(14, 165, 233, 0.14);
+  color: #0284c7;
+  font-weight: 600;
+}
+.spt-pill--signup-toggle[data-v-c7dff6f4] {
+  border-style: dashed;
+}
+.spt-pill--signup-active[data-v-c7dff6f4] {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+  border-color: rgba(14, 165, 233, 0.35);
+  border-style: solid;
+}
+.spt-refresh-btn--signup[data-v-c7dff6f4] {
+  border-color: rgba(14, 165, 233, 0.35);
+  background: rgba(14, 165, 233, 0.08);
+  color: #0284c7;
+}
+.spt-refresh-btn--signup[data-v-c7dff6f4]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

@@ -53,8 +53,26 @@ function getMpStatusMeta(status) {
   }
 }
 
+function getSignupMeta(signup) {
+  const status = signup?.status || '';
+  switch (status) {
+    case 'open':
+      return { label: '开放注册', color: '#22c55e', icon: 'mdi-account-plus', chipClass: 'open', open: true }
+    case 'invite':
+      return { label: '仅限邀请', color: '#f59e0b', icon: 'mdi-ticket-outline', chipClass: 'invite', open: false }
+    case 'closed':
+      return { label: '未开放', color: '#94a3b8', icon: 'mdi-lock-outline', chipClass: 'closed', open: false }
+    case 'blocked':
+      return { label: '访问受限', color: '#f97316', icon: 'mdi-shield-alert-outline', chipClass: 'blocked', open: false }
+    case 'error':
+      return { label: '探测失败', color: '#ef4444', icon: 'mdi-alert-circle-outline', chipClass: 'error', open: false }
+    default:
+      return { label: '无法确认', color: '#94a3b8', icon: 'mdi-help-circle-outline', chipClass: 'unknown', open: false }
+  }
+}
+
 function buildSiteKeywords(site) {
-  return [site.name, site.search, site.year, site.status_text, site.site_type].filter(Boolean).join(' ').toLowerCase()
+  return [site.name, site.search, site.year, site.status_text, site.site_type, site.signup?.text].filter(Boolean).join(' ').toLowerCase()
 }
 
 function buildNoticeSections(alerts = []) {
@@ -206,4 +224,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { _export_sfc as _, buildSiteKeywords as a, buildNoticeSections as b, getMpStatusMeta as c, getStatusMeta as g, pluginRequest as p, tokenizeNoticeText as t };
+export { _export_sfc as _, buildSiteKeywords as a, buildNoticeSections as b, getMpStatusMeta as c, getStatusMeta as g, pluginRequest as p, getSignupMeta as s, tokenizeNoticeText as t };
