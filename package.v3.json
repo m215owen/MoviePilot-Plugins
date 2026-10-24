@@ -155,5 +155,18 @@
     "history": {
       "v1.9.7": "修改版首发：① recognize_media 改用 media_source + media_id 成对身份（v3.1.x 已移除 tmdbid 关键字）；② 事件侧改读 WebhookEventInfo.media_source / media_id，不再依赖已删除的 tmdb_id；③ 媒体服务器未上报季/集编号、或标题缺少 SxxExx 时打印告警并跳过，不再 int(None) / index 崩溃；④ 插件ID 改为 DouBanWatchingFix、名称改为「豆瓣书影音档案-修复版」，首次运行自动继承原版配置与 data/wait 记录。"
     }
+  },
+  "VuePTMonitor": {
+    "name": "Vue-PT 监护台",
+    "description": "展示 PT 站点运行状态、病危通知与站庆预告；可把 MP 可添加的站点一键写入站点管理，并按站点状态联动启停。（基于 Savept v1.1.1 修复：改用 BeautifulSoup 解析，消除正则灾难性回溯导致的进程假死）",
+    "labels": "站点,PT,监控",
+    "version": "1.2.0",
+    "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/VuePTMonitor.png",
+    "author": "KoWming / m215owen",
+    "level": 1,
+    "system_version": ">=3.1.5",
+    "history": {
+      "v1.2.0": "换 ID 重发并修复致命缺陷：站点卡片解析由超长正则改为 BeautifulSoup 结构化提取（原正则遇页面结构变化会灾难性回溯、长占 GIL 导致整个 MoviePilot 假死），年份分组与名称拆分改为有界匹配，新增 2MB 页面体积护栏与慢解析告警；新增站点联动：可添加站点一键写入 MP 站点管理、按域名启停、站点死亡/恢复时自动同步启用状态；首次加载自动继承旧 Savept 配置与快照缓存。"
+    }
   }
 }
