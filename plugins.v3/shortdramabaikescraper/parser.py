@@ -134,13 +134,13 @@ def parse_detail(media_id: str, html: str) -> Optional[dict]:
     # 只解析百科八类实体页；豆瓣前缀（douban/doubanp）走豆瓣通道，不归本解析器
     if entity_of(media_id) not in constants.ENTITY_ALL:
         return None
-    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S)
+    h1 = re.search(r"<h1[^>]*>(.{0,500}?)</h1>", html, re.S)
     name = _text(h1.group(1)) if h1 else ""
     if not name:
         return None
 
-    title_tag = _text((re.search(r"<title>(.*?)</title>", html, re.S) or [None, ""])[1])
-    desc = _text((re.search(r'<meta name="description" content="(.*?)"', html, re.S) or [None, ""])[1])
+    title_tag = _text((re.search(r"<title>(.{0,500}?)</title>", html, re.S) or [None, ""])[1])
+    desc = _text((re.search(r'<meta name="description" content="(.{0,1000}?)"', html, re.S) or [None, ""])[1])
     entity = entity_of(media_id)
 
     # 类型标签：``短剧类型为爱情、都市爱情、…``
@@ -325,7 +325,7 @@ _PERSON_ROLE_HINT = {"yanyuan": "演员", "daoyan": "导演", "bianju": "编剧"
 # 左栏 H1 下面那一行身份文案：``导演`` / ``编剧`` / ``女演员`` / ``男演员``
 _PERSON_ROLE_RE = re.compile(r"<p[^>]*>\s*(男演员|女演员|导演|编剧|演员)\s*</p>")
 # 作品卡底部两行（第一行演员表、第二行分类标签），都不含角色名
-_LINE_CLAMP_RE = re.compile(r'line-clamp-1[^"]*"[^>]*>(.*?)</div>', re.S)
+_LINE_CLAMP_RE = re.compile(r'line-clamp-1[^"]*"[^>]*>(.{0,1000}?)</div>', re.S)
 _WORK_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _WORK_EPS_RE = re.compile(r"全\s*(\d+)\s*集")
 
@@ -361,11 +361,11 @@ def parse_person_works(html: str) -> list[dict]:
 
         name = ""
         title_attr = attr_value(chunk, "title")
-        found = re.search(r"《(.+?)》", title_attr or "")
+        found = re.search(r"《(.{1,300}?)》", title_attr or "")
         if found:
             name = _text(found.group(1))
         if not name:
-            heading = re.search(r'class="[^"]*text-lg[^"]*"[^>]*>(.*?)</div>', chunk, re.S)
+            heading = re.search(r'class="[^"]*text-lg[^"]*"[^>]*>(.{0,1000}?)</div>', chunk, re.S)
             name = _text(heading.group(1)) if heading else ""
 
         # 集数在演员页上是 ``全\n&nbsp;&nbsp;73 集``，正则里的 \s 已够用
@@ -392,7 +392,7 @@ def parse_person(media_id: str, html: str) -> Optional[dict]:
     entity = entity_of(media_id)
     if entity not in constants.ENTITY_PERSON or not html:
         return None
-    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S)
+    h1 = re.search(r"<h1[^>]*>(.{0,500}?)</h1>", html, re.S)
     name = _text(h1.group(1)) if h1 else ""
     if not name:
         return None
@@ -409,8 +409,8 @@ def parse_person(media_id: str, html: str) -> Optional[dict]:
 
     intro = ""
     for pattern in (
-        r"<h3[^>]*>[^<]{0,80}介绍：</h3>\s*<div[^>]*>(.*?)</div>",
-        r"<h3[^>]*>[^<]{0,80}(?:介绍|简介)[^<]{0,20}</h3>\s*<div[^>]*>(.*?)</div>",
+        r"<h3[^>]*>[^<]{0,80}介绍：</h3>\s*<div[^>]*>(.{0,5000}?)</div>",
+        r"<h3[^>]*>[^<]{0,80}(?:介绍|简介)[^<]{0,20}</h3>\s*<div[^>]*>(.{0,5000}?)</div>",
     ):
         hit = re.search(pattern, html, re.S)
         if hit:
