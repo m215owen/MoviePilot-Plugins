@@ -79,14 +79,15 @@
     "name": "短剧百科刮削源",
     "description": "把短剧百科（duanjubaike.net）注册为独立媒体来源 djbaike（短剧 / 漫剧 / 原著与人物）：ID 注册表 + 缓存优先的六层按名识别（剧名清洗 → 本地精确 → 站内搜索 → 豆瓣兜底，季号按「第N季」独立词条精确命中），并提供 metadata_nfo / metadata_img 刮削出口（剧级 tvshow.nfo + poster.jpg）；人物与榜单经跨插件模块方法（search_actors / actor_profile / actor_works / list_ranks / rank_medias）供「短剧演员订阅」消费。自带 Vue 管理面板（概览 / ID 库 / 缓存 / 查询，不注册侧栏）。",
     "labels": "媒体数据源,短剧,刮削",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/Moviepilot_A.png",
     "author": "m216owen",
     "level": 1,
     "system_version": ">=3.1.5",
     "history": {
-      "v0.1.0": "P0 骨架：插件生命周期、来源声明、baike 注册表建表与仓储、缓存门面、media_id 解析/反推、/status、/explore 榜单端点、DiscoverSource 注入、配置页榜单多选。",
-      "v0.1.5": "P1 详情管线（media_id → 详情页 → MediaInfo，缓存优先、软 404 负缓存、抓页顺带登记）+ P2 六层识别（剧名清洗 / 本地精确 / 站内 /so.html 搜索 / 豆瓣 tv_search·tv_detail 兜底，recognize_media 收敛唯一一条）+ P2.5 Vue 管理面板（概览 / ID 库 / 缓存 / 查询四区，不注册侧栏）+ 刮削出口 metadata_nfo / metadata_img（剧级 tvshow.nfo + poster.jpg，复用宿主 MediaScraperHelper）+ 季号识别（站点一季一条独立词条，按「{基名}第N季」精确命中）+ 人物档案与豆瓣融合（演员作品去重合并、豆瓣独有作品登记自映射）+ 跨插件契约（search_actors / actor_profile / actor_works / list_people / list_ranks / rank_medias，供短剧演员订阅按插件 ID 精确取用）+ 缓存面板（region 检索 / 单条删除 / 统一 TTL 读宿主 META_CACHE_EXPIRE）+ /status 缓存分布统计（by_region）。前端产物目录名当缓存键（a<N> 递增），版本号冻结不升。"
+      "v0.1.6": "解析正则加固：页面标题/简介/作品卡等处的无界 .*? 全部改为有界量词（保留 re.S 语义），避免畸形页面触发正则回溯拖慢进程；行为与输出不变。",
+      "v0.1.5": "P1 详情管线（media_id → 详情页 → MediaInfo，缓存优先、软 404 负缓存、抓页顺带登记）+ P2 六层识别（剧名清洗 / 本地精确 / 站内 /so.html 搜索 / 豆瓣 tv_search·tv_detail 兜底，recognize_media 收敛唯一一条）+ P2.5 Vue 管理面板（概览 / ID 库 / 缓存 / 查询四区，不注册侧栏）+ 刮削出口 metadata_nfo / metadata_img（剧级 tvshow.nfo + poster.jpg，复用宿主 MediaScraperHelper）+ 季号识别（站点一季一条独立词条，按「{基名}第N季」精确命中）+ 人物档案与豆瓣融合（演员作品去重合并、豆瓣独有作品登记自映射）+ 跨插件契约（search_actors / actor_profile / actor_works / list_people / list_ranks / rank_medias，供短剧演员订阅按插件 ID 精确取用）+ 缓存面板（region 检索 / 单条删除 / 统一 TTL 读宿主 META_CACHE_EXPIRE）+ /status 缓存分布统计（by_region）。前端产物目录名当缓存键（a<N> 递增），版本号冻结不升。",
+      "v0.1.0": "P0 骨架：插件生命周期、来源声明、baike 注册表建表与仓储、缓存门面、media_id 解析/反推、/status、/explore 榜单端点、DiscoverSource 注入、配置页榜单多选。"
     }
   },
   "ShortDramaBaikeOrganizer": {
