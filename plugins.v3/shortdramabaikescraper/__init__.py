@@ -80,7 +80,7 @@ class ShortDramaBaikeScraper(_PluginBase):
     plugin_name = constants.SOURCE_NAME
     plugin_desc = constants.SOURCE_DESC
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "0.1.5"
+    plugin_version = "0.1.6"
     plugin_author = "m216owen"
     author_url = "https://github.com/m215owen"
     plugin_config_prefix = "shortdramabaikescraper_"
