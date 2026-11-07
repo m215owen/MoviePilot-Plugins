@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { A as ActorWall } from './ActorWall-CxrvnPBm.js';
+import { A as ActorWall } from './ActorWall-C2W_zuyp.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 

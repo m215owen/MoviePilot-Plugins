@@ -112,7 +112,7 @@
             <div v-if="inLibrary || view.is_new || view.kind" class="sdas-detail-status">
               <!-- 宿主那枚「已入库」胶囊（green-500/80 + green-500 描边 + green-100 字） -->
               <span v-if="inLibrary" class="sdas-status-pill is-library">已入库</span>
-              <span v-if="view.is_new" class="sdas-status-pill is-new">新作品</span>
+              <span v-if="view.is_new" class="sdas-status-pill is-new">新剧</span>
               <span v-if="view.kind" class="sdas-status-pill is-kind">{{ view.kind }}</span>
             </div>
             <h1 class="sdas-detail-h1">
@@ -374,29 +374,43 @@
         </div>
 
         <!--
-          豆瓣影评 / 短评（2026-10-18）：系统详情页那两块就是靠 `douban_id` 从宿主
-          `/api/v1/douban/*` 取的，这里用**同一批接口、同一份数据**。
-          没有豆瓣身份（大多数短剧没有）就整块不渲染；接口失败静默（豆瓣限流是常事）。
+          评论（2026-11-02 用户口径「热评和短评影评在同页」）。
+          站点热评与豆瓣短评 / 影评本来就是**这一页上的同一种东西** —— 一行
+          「头像 + 作者 + 星级 + 正文 + 有用数」。原来分两个区块上下排：标题重复，
+          也容易被读成两拨互不相干的评论。这里合成**一个评论区**，顶部标签切换：
+          热评（本站）→ 短评 → 影评。
+           · 热评：`.org` 作品页 `<section id="comments">` 那块，随详情一起回来
+             （数据源解析时顺手取、走详情缓存）⇒ 无加载态、无分页；站点最多 9 条，
+             没有时间 / 评论 ID / 「全部评论」入口。
+           · 短评 / 影评：宿主 `douban/interests|reviews` 同一批接口，
+             与系统 `MediaCommentView.vue` 同协议（`start/count` 分页 + 加载更多）。
+          没有豆瓣身份（大多数短剧没有）就只有热评一个标签，整块无内容则不渲染。
+          头像一律走宿主 `system/img` 代理：站点与豆瓣 CDN 都有防盗链。
         -->
-        <!--
-          豆瓣短评 / 影评（2026-10-18）：照系统那一页（`MediaCommentView.vue`）复刻 ——
-          顶部两个标签（短评 / 影评，带条数）→ 紧凑列表：32px 头像 + 作者 + 五星 +
-          正文 / 摘要 + 时间与「有用」数；滚到底「加载更多」。
-          数据来自宿主同一批接口（`douban/interests|reviews`），只在有 `douban_id` 时有内容。
-        -->
-        <div v-if="hasDouban" class="sdas-douban">
+        <div v-if="hasComments" class="sdas-douban">
           <!--
-            两个标签：点击用**容器委托**（`data-douban-tab` + closest）。
+            标签点击用**容器委托**（`data-comment-tab` + closest）。
             直接在 button 上绑 `@click` 时标签文字那一段常点不动（命中区只覆盖到
             文字所在的那一小块基线），用户反馈「只有数字能点」；改成整块热区后
             文字、条数、左右留白都算同一个靶子。
           -->
-          <div class="sdas-douban-tabs" @click="onDoubanTabsClick">
+          <div class="sdas-douban-tabs" @click="onCommentTabsClick">
             <button
+              v-if="siteComments.length"
               type="button"
               class="sdas-douban-tab"
-              :class="{ 'is-active': doubanTab === 'interests' }"
-              data-douban-tab="interests"
+              :class="{ 'is-active': commentTab === 'site' }"
+              data-comment-tab="site"
+            >
+              热评
+              <span class="sdas-douban-count">{{ siteComments.length }}</span>
+            </button>
+            <button
+              v-if="hasDouban"
+              type="button"
+              class="sdas-douban-tab"
+              :class="{ 'is-active': commentTab === 'interests' }"
+              data-comment-tab="interests"
             >
               短评
               <span v-if="doubanTotals.interests" class="sdas-douban-count">
@@ -404,23 +418,72 @@
               </span>
             </button>
             <button
+              v-if="hasDouban"
               type="button"
               class="sdas-douban-tab"
-              :class="{ 'is-active': doubanTab === 'reviews' }"
-              data-douban-tab="reviews"
+              :class="{ 'is-active': commentTab === 'reviews' }"
+              data-comment-tab="reviews"
             >
               影评
               <span v-if="doubanTotals.reviews" class="sdas-douban-count">
                 {{ doubanTotals.reviews }}
               </span>
             </button>
+            <a
+              v-if="commentTab === 'site' && view.url"
+              class="sdas-comments-source"
+              :href="view.url"
+              target="_blank"
+              rel="noopener"
+            >去站点看</a>
           </div>
 
-          <!-- 短评 -->
-          <ul v-if="doubanTab === 'interests' && doubanComments.length" class="sdas-douban-list">
+          <!-- 站点热评 -->
+          <ul v-if="commentTab === 'site' && siteComments.length" class="sdas-douban-list">
+            <li
+              v-for="(item, index) in siteComments"
+              :key="`sc:${index}`"
+              class="sdas-douban-item"
+            >
+              <div class="sdas-douban-avatar">
+                <img v-if="item.avatar" :src="proxyImage(item.avatar)" alt="" loading="lazy" />
+                <span v-else>{{ (item.author || '?').slice(0, 1) }}</span>
+              </div>
+              <div class="sdas-douban-body">
+                <div class="sdas-douban-author">
+                  <span>{{ item.author || '匿名用户' }}</span>
+                  <v-rating
+                    v-if="item.rating"
+                    :model-value="item.rating / 2"
+                    :length="5"
+                    density="compact"
+                    readonly
+                    half-increments
+                    size="x-small"
+                    class="ms-2"
+                  />
+                </div>
+                <p
+                  class="sdas-comment-text"
+                  :class="{ 'is-open': expandedComments.has(index) }"
+                  :title="item.content"
+                  @click="toggleComment(index)"
+                >{{ item.content }}</p>
+                <div class="sdas-douban-meta">
+                  <span v-if="item.votes">有用 {{ item.votes }}</span>
+                  <span v-if="item.content.length > COMMENT_CLAMP">
+                    {{ expandedComments.has(index) ? '收起' : '展开' }}
+                  </span>
+                </div>
+              </div>
+            </li>
+          </ul>
+
+          <!-- 豆瓣短评 -->
+          <ul v-else-if="commentTab === 'interests' && doubanComments.length" class="sdas-douban-list">
             <li v-for="comment in doubanComments" :key="`dc:${comment.id}`" class="sdas-douban-item">
               <div class="sdas-douban-avatar">
-                <img v-if="comment.avatar" :src="comment.avatar" alt="" loading="lazy" />
+                <img v-if="comment.avatar" :src="proxyImage(comment.avatar)" alt="" loading="lazy" />
                 <span v-else>{{ (comment.author || '?').slice(0, 1) }}</span>
               </div>
               <div class="sdas-douban-body">
@@ -445,11 +508,11 @@
             </li>
           </ul>
 
-          <!-- 影评 -->
-          <ul v-else-if="doubanTab === 'reviews' && doubanReviews.length" class="sdas-douban-list">
+          <!-- 豆瓣影评 -->
+          <ul v-else-if="commentTab === 'reviews' && doubanReviews.length" class="sdas-douban-list">
             <li v-for="review in doubanReviews" :key="`dr:${review.id}`" class="sdas-douban-item">
               <div class="sdas-douban-avatar">
-                <img v-if="review.avatar" :src="review.avatar" alt="" loading="lazy" />
+                <img v-if="review.avatar" :src="proxyImage(review.avatar)" alt="" loading="lazy" />
                 <span v-else>{{ (review.author || '?').slice(0, 1) }}</span>
               </div>
               <div class="sdas-douban-body">
@@ -471,7 +534,8 @@
             </li>
           </ul>
 
-          <div class="sdas-douban-foot">
+          <!-- 只有豆瓣两块有分页；热评是站点一次性给的 9 条，没有「加载更多」也没有空态 -->
+          <div v-if="commentTab !== 'site'" class="sdas-douban-foot">
             <v-progress-circular v-if="doubanLoading" indeterminate size="20" width="2" />
             <v-btn
               v-else-if="doubanHasMore"
@@ -692,6 +756,7 @@ import type {
   DownloadClientOption,
   DownloadPathOption,
   PluginApi,
+  SiteComment,
   WorkDetailActor,
   WorkDetailPayload,
   WorkItem,
@@ -870,10 +935,37 @@ interface CastRow extends ActorCandidate {
 const source = ref<WorkSourceRecord | null>(null)
 
 /**
+ * 站点「热评」（2026-11-02 用户口径：作品详情支持网站的评论）。
+ *
+ * 随 `GET /works/detail` 一起回来：数据源解析作品页时顺手取那块
+ * `<section id="comments">`，结果跟着详情缓存走 ⇒ 这里**没有加载态、没有分页**。
+ * 站点本身最多给 9 条热评、没有时间 / 评论 ID / 「全部评论」入口，前端也不假造。
+ * `.net` 老站没有评论区 ⇒ 空数组，整块不渲染。
+ */
+const siteComments = computed<SiteComment[]>(() => view.value.site_comments ?? [])
+/** 折叠阈值：超过这个字数的评论默认 4 行截断，点一下展开全文 */
+const COMMENT_CLAMP = 120
+const expandedComments = ref<Set<number>>(new Set())
+
+function toggleComment(index: number) {
+  const next = new Set(expandedComments.value)
+  if (next.has(index)) next.delete(index)
+  else next.add(index)
+  expandedComments.value = next
+}
+
+/**
+ * 评论区的三个标签（2026-11-02 合并成一个区块）：
+ * `site` = 站点热评，`interests` / `reviews` = 豆瓣短评 / 影评。
+ */
+type CommentTab = 'site' | 'interests' | 'reviews'
+
+/**
  * 豆瓣短评 / 影评 —— 与系统那一页（`MediaCommentView.vue`）同一套：
  * 两个标签（短评 / 影评，各带条数）+ `start/count` 分页 + 「加载更多」。
+ * 标签列表现与站点热评同排，`site` 那一档不参与豆瓣分页。
  */
-const doubanTab = ref<'interests' | 'reviews'>('interests')
+const commentTab = ref<CommentTab>('interests')
 const doubanComments = ref<DoubanComment[]>([])
 const doubanReviews = ref<DoubanReview[]>([])
 const doubanTotals = reactive({ interests: 0, reviews: 0 })
@@ -881,18 +973,27 @@ const doubanLoading = ref(false)
 const doubanLoaded = ref(false)
 const DOUBAN_PAGE = 10
 
-/** 这部作品有没有豆瓣身份（没有就整块不渲染） */
+/** 这部作品有没有豆瓣身份（没有就只出「热评」一个标签） */
 const hasDouban = computed(() => Boolean(view.value?.douban_id))
 
-/** 当前标签已加载的行（判断「还有没有下一页」「空不空」都用它） */
-const doubanRows = computed<{ id: string }[]>(() =>
-  doubanTab.value === 'interests' ? doubanComments.value : doubanReviews.value,
-)
+/** 整块评论区渲不渲染：有热评或有豆瓣身份之一 */
+const hasComments = computed(() => siteComments.value.length > 0 || hasDouban.value)
 
-/** 当前标签是否还有下一页 */
+/**
+ * 当前标签已加载的豆瓣行（判断「还有没有下一页」「空不空」都用它）。
+ * `site` 那一档走站点数据、不分页 ⇒ 恒空。
+ */
+const doubanRows = computed<{ id: string }[]>(() => {
+  if (commentTab.value === 'interests') return doubanComments.value
+  if (commentTab.value === 'reviews') return doubanReviews.value
+  return []
+})
+
+/** 当前标签是否还有下一页（热评恒无） */
 const doubanHasMore = computed(() => {
+  if (commentTab.value === 'site') return false
   const total =
-    doubanTab.value === 'interests' ? doubanTotals.interests : doubanTotals.reviews
+    commentTab.value === 'interests' ? doubanTotals.interests : doubanTotals.reviews
   return total > doubanRows.value.length
 })
 
@@ -1332,8 +1433,11 @@ async function load(): Promise<void> {
   doubanComments.value = []
   doubanTotals.interests = 0
   doubanTotals.reviews = 0
-  doubanTab.value = 'interests'
+  // 先落到豆瓣短评；详情回来再按「有没有热评」定最终标签（见 finally）
+  commentTab.value = 'interests'
   doubanLoaded.value = false
+  // 换了作品：上一条评论的「展开」状态不能带过来（下标会错位）
+  expandedComments.value = new Set()
   try {
     detail.value = await fetchWorkDetail(
       { api: props.api },
@@ -1367,6 +1471,9 @@ async function load(): Promise<void> {
     detail.value = null
     failed.value = true
   } finally {
+    // 详情回来才知道有没有热评：有就默认停在「热评」—— 本站数据随详情一起到，
+    // 不用等豆瓣那两轮请求；没有热评（或 .net 老站）就照旧落在短评。
+    commentTab.value = siteComments.value.length ? 'site' : 'interests'
     loaded.value = true
   }
 }
@@ -1429,9 +1536,10 @@ async function loadDouban(): Promise<void> {
   await loadDoubanPage('reviews', 0)
 }
 
-/** 切标签：没加载过就补第一页（两页其实都已拉过，这里只是兜底） */
-function switchDoubanTab(tab: 'interests' | 'reviews'): void {
-  doubanTab.value = tab
+/** 切标签：豆瓣两块没加载过就补第一页（首屏其实都已拉过，这里只是兜底） */
+function switchCommentTab(tab: CommentTab): void {
+  commentTab.value = tab
+  if (tab === 'site') return
   const loaded = tab === 'interests' ? doubanComments.value.length : doubanReviews.value.length
   if (!loaded) void loadDoubanPage(tab, 0)
 }
@@ -1439,20 +1547,21 @@ function switchDoubanTab(tab: 'interests' | 'reviews'): void {
 /**
  * 标签点击的容器委托。
  *
- * 两个标签是原生 `<button>`，原来只在文字那一小段落上有点击热区，用户反馈
- * 「只有后面的条数点得动」。这里统一在容器上监听，命中 `[data-douban-tab]`
+ * 三个标签都是原生 `<button>`，原来只在文字那一小段落上有点击热区，用户反馈
+ * 「只有后面的条数点得动」。这里统一在容器上监听，命中 `[data-comment-tab]`
  * 就切换 —— 文字 / 数字 / 内边距一律等效。
  */
-function onDoubanTabsClick(event: MouseEvent): void {
+function onCommentTabsClick(event: MouseEvent): void {
   const target = event.target as HTMLElement | null
-  const el = target?.closest?.('[data-douban-tab]') as HTMLElement | null
-  const tab = el?.getAttribute('data-douban-tab')
-  if (tab === 'interests' || tab === 'reviews') switchDoubanTab(tab)
+  const el = target?.closest?.('[data-comment-tab]') as HTMLElement | null
+  const tab = el?.getAttribute('data-comment-tab')
+  if (tab === 'site' || tab === 'interests' || tab === 'reviews') switchCommentTab(tab)
 }
 
-/** 「加载更多」：按当前标签已加载条数作为偏移 */
+/** 「加载更多」：按当前标签已加载条数作为偏移（热评不分页） */
 function loadMoreDouban(): void {
-  void loadDoubanPage(doubanTab.value, doubanRows.value.length)
+  if (commentTab.value === 'site') return
+  void loadDoubanPage(commentTab.value, doubanRows.value.length)
 }
 
 /**
@@ -2374,7 +2483,46 @@ watch(
   border-radius: 3px;
 }
 
-/* ── 豆瓣短评 / 影评（照系统 MediaCommentView：标签页 + 紧凑列表） ── */
+/* ── 评论区（站点热评 + 豆瓣短评 / 影评，同一块、标签切换） ──
+   留白、标签页与紧凑列表全部沿用 `.sdas-douban-*`（照系统 MediaCommentView）；
+   热评只在列表行上多一个可折叠正文（`.sdas-comment-text`）。 */
+/* 「去站点看」：只挂在热评标签上，靠 tabs 的 flex 推到最右 */
+.sdas-comments-source {
+  /* 竖向居中：tabs 是 `align-items: flex-end`，不校正的话链接会贴到分隔线上 */
+  align-self: center;
+  /* tabs 有 `margin-inline: -8px`，右侧补回来才对得齐内容区 */
+  margin-inline-start: auto;
+  padding-inline-end: 8px;
+  color: rgb(var(--v-theme-primary));
+  font-size: 0.75rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.sdas-comments-source:hover {
+  text-decoration: underline;
+}
+
+/* 正文：默认 4 行截断，点一下展开 —— 站点热评动辄两三百字，整段铺开会把页面拉长 */
+.sdas-comment-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  margin-top: 2px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+
+.sdas-comment-text.is-open {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+
 .sdas-douban {
   margin-top: 1.5rem;
   padding-inline: 16px;

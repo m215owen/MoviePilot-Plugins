@@ -194,7 +194,10 @@
               :key="work.key"
               :work="work"
               :loaded="loadedKeys.has(work.key)"
-              :subscribed="subscribedIds.has(work.media_id)"
+              :subscribed="
+                  !unsubscribedIds?.has(work.media_id) &&
+                  (work.subscribed === true || Boolean(subscribedIds?.has(work.media_id)))
+                "
               @poster="markPoster(work.key)"
               @open="emit('open-work', work)"
               @search="emit('search', work)"
@@ -255,6 +258,8 @@ const props = defineProps<{
   busyFollow?: boolean
   /** 已订阅（系统订阅）的作品 ID 集合，决定作品卡上的爱心状态 */
   subscribedIds?: Set<string>
+  /** 本次会话里**刚取消订阅**的身份（后端行标注还没重取，先按它压掉） */
+  unsubscribedIds?: Set<string>
   /** 「订阅全部作品」请求进行中（按钮转圈并禁用） */
   busySubscribeAll?: boolean
 }>()

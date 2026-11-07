@@ -1,5 +1,5 @@
 
-.sdas-dim[data-v-75b62f1c] {
+.sdas-dim[data-v-8621580b] {
   opacity: 0.7;
 }
 
@@ -8,7 +8,7 @@
  * 让人一眼看出「从这里开始是订阅」，而不是又一个小节。
  * 类名一律自有 `sdas-*`：联邦 CSS 门禁会丢掉含 `.v-` 的选择器。
  */
-.sdas-block-head[data-v-75b62f1c] {
+.sdas-block-head[data-v-8621580b] {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -17,11 +17,11 @@
   border-inline-start: 3px solid rgb(var(--v-theme-primary));
   line-height: 1.4;
 }
-.sdas-block-title[data-v-75b62f1c] {
+.sdas-block-title[data-v-8621580b] {
   font-size: 1rem;
   font-weight: 700;
 }
-.sdas-mono[data-v-75b62f1c] {
+.sdas-mono[data-v-8621580b] {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.75rem;
 }

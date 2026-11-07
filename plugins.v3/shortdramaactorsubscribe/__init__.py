@@ -16,48 +16,77 @@
 
 插件现在只负责**发现**：演员 → 百科作品 → 作品墙 → 交给系统。
 
-发现源 = 只有 ShortDramaBaikeScraper（duanjubaike.net）
+发现源 = 只有 ShortDramaBaikeScraper（短剧百科数据源，站点由它的配置决定）
 --------------------------------------------------
-作品 100% 来自 ``ShortDramaBaikeScraper``。走**跨插件模块方法**
-（``search_actors`` / ``actor_works`` / ``actor_profile``，见 ``get_module()`` 白名单；
-没登记的名字是**静默拿空**，不会报错）。
+作品 100% 来自 ``ShortDramaBaikeScraper``（2026-11-03 用户口径：ShortDramaNetSource
+**完全废弃**，数据源只认 ShortDramaBaikeScraper；它的 ``site`` 配置可选 .net 老站 /
+.org 新站，另一个对话正在把 .org 接上去）。走**跨插件模块方法**
+（``search_actors`` / ``actor_works`` / ``actor_profile`` / ``list_people`` /
+``list_ranks`` / ``rank_medias``，见数据源 ``get_module()`` 白名单；没登记的名字是
+**静默拿空**，不会报错）。
 
 ⚠️ **不走 ``self.chain.run_module``**（2026-10-17 改）：宿主分发器对**返回列表**的模块
 方法做**跨插件合并**（``dispatcher._execute_plugin_provider_sequence`` 逐个体插入结果，
 只有非列表结果才「首个非空即胜」）。宿主里同时装着别的短剧数据源时，``search_actors`` /
 ``actor_works`` 会把两边的候选混在一起 —— 各家站点各排各的号，混起来就是**认错人**。
-所以这里按插件 id 精确取那一份方法表（:meth:`_source`），只认 scraper。
+所以这里按插件 id 精确取那一份方法表（:meth:`_source`），只认数据源。
 
 ⚠️ V3 SDK 的 ``_PluginBase`` **不继承** ChainBase，``self.run_module`` 不存在；
 ``self.chain`` 只用于宿主链路，跨插件取数一律走 :meth:`_source`。
 
-数据源契约（ShortDramaBaikeScraper / duanjubaike.net）
+数据源契约（ShortDramaBaikeScraper，站点 net / org）
 --------------------------------------------------
-* **演员 ID 是复合形态** ``yanyuan:<数字>``；作品同理 ``duanju:<数字>``，
-  前缀 = 站点分类（``duanju`` / ``manju`` / ``hema`` / ``huolong`` … 开放集）。作品身份
-  **原样保留**复合 ID —— 剥成裸数字后分类就丢了，``manju`` / ``hema`` 的详情页会拼错地址。
-* **宿主媒体来源标识**是 ``djbaike``（数据源 ``get_media_source`` 声明）——
-  订阅 / 在库探针 / 详情投影里的 ``media_source`` 都用它；它与**站点分类前缀**是两码事，
-  不能拿 ``djbaike`` 当 ``media_id`` 的前缀。
+* **身份前缀由站点决定**：.org 新站是**作品 ``drama:<n>`` / 人物 ``actor:<n>``**；
+  .net 老站沿用作品 ``duanju:`` / ``manju:`` / ``hema:`` / ``huolong:``、
+  人物 ``yanyuan:`` / ``daoyan:`` / ``bianju:``。前缀与站点的绑定关系由数据源的
+  身份路由保证（drama/actor 恒指 .org，其余恒指 .net），本插件
+  **两套前缀都认**（人物判定用 ``_PERSON_KINDS`` 超集、作品判定用黑名单，见各常量）。
+* **宿主媒体来源标识**是 ``djbaike``（数据源 ``get_media_source`` 声明，即
+  ``MEDIA_SOURCE_ID``）—— 订阅 / 在库探针 / 详情投影里的 ``media_source`` 都用它；
+  它与**站点分类前缀**是两码事，不能拿 ``djbaike`` 当 ``media_id`` 的前缀。
 * **模块方法**：``search_actors`` / ``actor_works`` / ``actor_profile`` / ``list_people``
-  （见 :meth:`get_module` 白名单）；没登记的名字静默拿空。
+  / ``list_ranks`` / ``rank_medias`` / ``poster_url``
+  ＋宿主链路用的 ``recognize_media`` / ``search_medias``（见数据源 ``get_module()``）。
+  榜单方法名固定为 ``list_ranks`` / ``rank_medias``（2026-11-03 用户口径：
+  ShortDramaNetSource 完全废弃，它那套 ``discover_tabs`` / ``discover_medias``
+  已从代码里删除，不再做任何方法名兼容）；数据源没登记时目录为空 + 一句说明，优雅降级。
+* 数据源**没有** ``work_comments`` 模块方法（评论区自动空着，详情页不报错）。
 * 作品卡字段名：``badge``（短剧 / 漫剧…）才是「角标」位，``kind`` 是站点分类；
-  ``episodes`` = 集数，``genres_text`` = 题材（``爱情 / 都市爱情 / …``）。
+  ``episodes`` = 集数，``genres_text`` = 题材（``爱情 / 都市爱情 / …``）——
+  :func:`source_card` 对齐层原样可用。
+* 人物目录：.org 只有演员一个目录（``list_people`` 内部把 kind 映射到演员目录，
+  但 kind 仍要按 ``yanyuan`` 传 —— 传 ``actor`` 会被当非法分类回空页）；
+  .net 仍是演员 / 导演 / 编剧三个。
 
-**只有一个数据源**（2026-10-18 用户定；2026-10-22 起为 ShortDramaBaikeScraper，
-老 ShortDramaNetSource 已丢弃）：本插件只认当前数据源，不兼容任何
+**只有一个数据源**（2026-10-18 用户定；2026-11-03 起为 ShortDramaBaikeScraper，
+ShortDramaNetSource 已完全废弃）：本插件只认当前数据源，不兼容任何
 其它短剧数据源的历史身份 —— 别家站点的号段与这里完全无关，拿过来查只会是另一部剧。
+换源由快照记录的 ``source`` 字段判定（:meth:`_discover_actor`）：不是当前数据源的
+记录，旧 ID / 旧 ``first_seen`` 映射一律作废、按名字对新源重解析，那一轮只建基线。
 
 演员解析纪律：站外索引的候选**含模糊结果**（搜「王石」会带出「王碩」），因此只收**归一化
 名字精确相等**的候选；解析出的百科 ID 缓存进快照，后续轮次零引擎请求。
 
-「新作品」口径
+「新剧」口径
 -------------
-``release_date``（站点印的首播 / 上映日期）距今在 :data:`_NEW_WINDOW_DAYS` 天窗口内
-⇒ 标「新」（2026-10-19 用户口径）。看片的人要的是「这周上新的剧」，所以判据必须是
-**作品的日期**，而不是「我什么时候第一次看到它」：``first_seen`` 会因换源 / 刚关注 /
-一次导入十几位演员而整片同时「首次出现」，拿它当新就会一次刷出上千部。
-``first_seen`` 保留，只作「首次发现」展示。缺日期 / 未来日期一律不算新（宁少不错）。
+**新 = 作品带上站点「新剧」角标**（2026-11-02 用户口径：新作判定改为新剧标签判定）。
+
+判据：数据源的 .org 新站会在作品卡封面左上角印一枚绿色「新剧」chip（同位置还有
+红色的「爆火」），解析进作品的 ``badges`` 多值列表；:func:`is_added_work` 只认其中
+有没有「新剧」。这是**站方自己的口径**：他们把一部剧标成新剧，墙上就是新剧，
+角标撤掉后下一轮刷新自然不再是新 —— 不用再维护逐轮基线对比。
+
+旧口径（这一轮比上一轮多出来的作品，靠 ``first_seen`` == ``time`` + ``baseline``）
+整体下线，但 ``first_seen`` / ``baseline`` 字段照常维护（作品墙排序、历史追溯还在用）。
+
+配套的两处口径：
+
+* **通知去重**：角标会在站上挂好几天，所以 ``_collect_fresh`` 还跟刷新前的快照比一次，
+  上一轮就带着这枚角标的作品不再重复通知（旧口径靠时间戳天然只报一次，换角标后
+  这份去重得自己补）；
+* **只订新剧**（自动订阅 ``scope = new``）跟着同一份判定走：带「新剧」角标的才订。
+
+``release_date``（站点印的首播日期）照旧不参与判定，只作展示。
 
 V3 契约要点
 -----------
@@ -77,7 +106,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
 from apscheduler.triggers.interval import IntervalTrigger
@@ -132,10 +161,9 @@ _SUB_SEARCH_LIMIT = 800
 
 # 自建订阅清单（插件数据）：``media_id`` → 订阅记录。
 #
-# 2026-10-22 用户口径：引擎 = 自建时，「订阅」**不再提交宿主订阅系统** —— 插件
-# 自己就是订阅系统，订阅记在这里，由订阅搜索任务（:meth:`subscribe_search_task`）
-# 搜到即下、下完即终。引擎 = 宿主时照旧走宿主订阅链；历史宿主 ``djbaike`` 订阅
-# 也纳入自建搜索的候选（见 :meth:`_subscribed_works`），切换引擎不丢订阅。
+# 插件**就是**订阅系统（2026-11-02 用户口径「宿主订阅完全去除」）：订阅记在这里，
+# 由订阅搜索任务（:meth:`subscribe_search_task`）搜到即下、下完即终。
+# 「插件清单 ∪ 宿主订阅表」那套并集已废弃，宿主那边的订阅与本插件无关。
 _DATA_SUBS = "subscriptions"
 
 # 订阅站 RSS 增量（插件数据）：RSS 条目标题 → 处理记录。
@@ -146,10 +174,28 @@ _DATA_SUBS = "subscriptions"
 # 是从源头避开站点流控的正解；主动搜索降级为兜底（RSS 没有的再靠搜索补）。
 # 处理过的条目按标题记历史（与宿主内置 rsssubscribe 插件同口径），只判一次。
 _DATA_RSS_HISTORY = "subscribe_rss_history"
+#: 发现页「站点 RSS」的**识别缓存**（RSS 条目剧名 → 数据源识别结论）。
+#: 搜索接口比 RSS 拉取重得多，识别结论必须落盘：命中直接复用，未命中记
+#: miss（``_DISCOVER_RSS_MISS_TTL`` 秒后重试），别每开一次发现页都去打搜索。
+#: （键名带版本：识别方法 / 提取器变了就换名作废旧结论，不背 miss 锁。）
+#: v3（2026-11-03）：识别从 ``search_medias`` 换 ``recognize_media`` —— 旧 miss
+#: 是全量搜索 + normalize 前缀口径下的结论，对新识别方法不公平，只迁移命中行。
+_DATA_RSS_IDENT = "discover_rss_ident_v3"
+#: v2 遗留键（只读，一次性迁移命中行）
+_DATA_RSS_IDENT_LEGACY = "discover_rss_ident_v2"
+#: 发现页「站点 RSS」：RSS 拉取的进程内缓存 TTL（秒）—— 与订阅链共享站点，
+#: 拉太勤给站点添流量；条目总量上限（防个别站刷屏）与单次请求的**新识别**预算（条）。
+_DISCOVER_RSS_TTL_SECONDS = 600
+_DISCOVER_RSS_MAX_ITEMS = 120
+_DISCOVER_RSS_IDENT_BUDGET = 16
+#: 识别 miss 的重试间隔（秒）—— 站点新上架可能晚于 RSS 发布，过几天再试一次
+_DISCOVER_RSS_MISS_TTL = 7 * 86400
 #: RSS 检查任务固定间隔（分钟）与历史条数上限。
-#: RSS 源**不单独配置**（2026-10-23 用户口径）：直接取订阅站点的**站点配置** ——
-#: 站点自带 ``rss`` 地址就用它；没有则用站点 cookie 现场生成
-#: （``RssHelper.get_rss_link``，与宿主 CookieCloud 同步生成 RSS 同一套逻辑）。
+#: 订阅站 RSS 源取订阅站点的**站点配置** —— 站点自带 ``rss`` 地址就用它；
+#: 没有则用站点 cookie 现场生成（``RssHelper.get_rss_link``，与宿主
+#: CookieCloud 同步生成 RSS 同一套逻辑）。**发现页 RSS 另有站点配置项**
+#: ``rss_sites``（2026-11-03 用户口径：发现页要看什么站点自己勾，
+#: 勾了就只拉勾选站点；空 = 跟随订阅站点集合）。
 _RSS_CHECK_INTERVAL_MINUTES = 30
 _RSS_HISTORY_LIMIT = 2000
 
@@ -176,7 +222,7 @@ _SUB_SEARCH_PAGE_SLEEP = 3
 #: 目的一样：「为了避免连续访问站点」触发站点流控。手动单部补搜不等。
 _SUB_SEARCH_WORK_INTERVAL = (60, 300)
 
-# 自动订阅单轮上限（部）。默认给个小数字：一轮刷新可能涌进上百部「新作品」，
+# 自动订阅单轮上限（部）。默认给个小数字：一轮刷新可能涌进上百部「新剧」，
 # 一次全提交会把订阅列表和下载队列一起打爆；没轮到的不要紧 —— 不记台账，下一轮继续。
 _AUTO_SUB_DEFAULT_MAX = 5
 _AUTO_SUB_MAX_LIMIT = 50
@@ -222,40 +268,61 @@ def _clean_log_line(line: str) -> str:
             break
     return text
 
-# 「新作品」的时间窗（天）：**上映（首播）日期**在最近 N 天内的作品标「新」
-# （2026-10-19 用户口径：从「首次发现晚于基线 3 天」改成「最近 7 天内上映」——
-#  看片的人关心的是「这周上新的剧」，而不是「我什么时候第一次看到它」）。
-_NEW_WINDOW_DAYS = 7
-_NEW_WINDOW_SECONDS = _NEW_WINDOW_DAYS * 24 * 3600
-
 # 唯一发现源标识（短剧百科作为宿主媒体数据源的标识）。
 #
-# ⚠️ 必须用**规范标识** ``djbaike``（与 ShortDramaBaikeScraper 的 ``MEDIA_SOURCE_ID``
-# 一致）：官方插件开发文档要求「通用媒体身份必须同时包含 media_source + media_id，不要在
-# 通用链路中只保存裸 ID」，而宿主侧的来源目录（``GET /api/v1/media/source``）认的都是
-# 这个规范值 —— 用别的标识订阅出去的条目会被当成另一个来源，分类规则里的来源过滤就落空了。
-# 2026-10-22 起：老数据源 ShortDramaNetSource（``duanju``）已丢弃，全部换 scraper。
+# ⚠️ 必须用**规范标识** ``djbaike``（与 ShortDramaBaikeScraper 的
+# ``MEDIA_SOURCE_ID`` 一致）：官方插件开发文档要求「通用媒体身份必须同时包含
+# media_source + media_id，不要在通用链路中只保存裸 ID」，而宿主侧的来源目录
+# （``GET /api/v1/media/source``）认的都是这个规范值 —— 用别的标识订阅出去的条目
+# 会被当成另一个来源，分类规则里的来源过滤就落空了。
+# 2026-11-03 用户口径：**ShortDramaNetSource 是废弃方案**，数据源回到
+# ShortDramaBaikeScraper（``djbaike``，另一个对话正在把它接到 .org 新站）。
 _BAIKE_SOURCE = "djbaike"
 
 # 裸数字 media_id 的**兜底分类**（站点实体前缀）。注意它与上面的来源标识是两码事：
-# ``djbaike`` 只是宿主侧的来源声明，``djbaike:39980`` 不是合法身份 —— 前缀必须是
-# 站点分类（``duanju`` / ``manju`` / …）。
-_DEFAULT_ENTITY = "duanju"
+# ``duanju`` 只是宿主侧的来源声明，``duanju:39980`` 不是合法身份 —— 前缀必须是
+# 站点分类（``drama`` / ``duanju`` / ``manju`` / …）。当前实例在 .org（作品前缀
+# ``drama``），数据源给的都是复合 ID，这个兜底只在形态异常时垫一下。
+_DEFAULT_ENTITY = "drama"
+
+# 裸数字**人物** ID 的兜底分类（.org 的人物前缀）。作品与人物是两套号段，
+# 兜底绝不能共用：拿人物号去补作品前缀（或反之）会去抓完全无关的页面。
+_DEFAULT_PERSON_KIND = "actor"
+
+# 站点标识（与数据源 ``site`` 配置同值）。**唯一真源是数据源的站点画像**
+# （见 :meth:`_source_site_profile`），这两个常量只用于「身份属于哪一站」的反向判定。
+# ⚠️ 名字带 ``TAG``：本文件下面还有一对 ``_SITE_ORG`` / ``_SITE_NET`` 是**域名**
+# （拼页面地址用），同名会互相覆盖（踩过一次：画像判站全变成 "https://…"）。
+_SITE_TAG_ORG = "org"
+_SITE_TAG_NET = "net"
+
+#: .org 新站的两个身份前缀 —— 判「这个身份是不是新站的」**只看这两个**。
+#: 老站的作品分类是开放集（duanju / manju / hema / huolong …），不能反向枚举。
+_ORG_KINDS = frozenset({_DEFAULT_ENTITY, _DEFAULT_PERSON_KIND})
+
+#: 非短剧站点的身份（豆瓣 / TMDB 融合）：不属于任何一站，不参与换站判定。
+_FOREIGN_KINDS = frozenset(
+    {"douban", "doubanp", "tmdb", "tmdbtv", "tmdbmovie", "tmdbperson"}
+)
+
+#: 站点画像的缓存秒数（画像纯静态，但每次要过宿主插件管理器；切站后最多这么久生效）
+_SITE_PROFILE_TTL = 60.0
 
 # 唯一的发现源插件（**按插件 id 精确绑定**，不走 chain 聚合 —— 见模块头）。
 # 插件 id = 类名（宿主 ``_running_plugins`` 的键），不是插件目录名。
+# 2026-11-03 用户口径：ShortDramaNetSource 废弃，改绑 ShortDramaBaikeScraper。
 _SOURCE_PLUGIN_ID = "ShortDramaBaikeScraper"
 
 # 错误提示 / 日志里给用户看的名字，与插件面板上的显示名对齐
-_SOURCE_LABEL = "短剧数据源（ShortDramaBaikeScraper）"
+_SOURCE_LABEL = "短剧百科数据源（ShortDramaBaikeScraper）"
 
 # 百科作品的类型：短剧一律按电视剧走（宿主没有「短剧」媒体类型）
 _BAIKE_TYPE = "电视剧"
 
 # 豆瓣融合作品（``douban:<subject id>``）走**宿主豆瓣源**（2026-10-22 用户拍板）：
 # 订阅链 / 媒体库探针原生支持豆瓣身份 —— 识别走宿主豆瓣模块（media_source=douban
-# + 裸 subject id → tv_detail），不再收敛成 ``djbaike``（豆瓣 subject 号与站点
-# 各分类编号是两套独立空间，硬套 djbaike 会让订阅/探针认错剧）。
+# + 裸 subject id → tv_detail），不再收敛成站点来源标识（豆瓣 subject 号与站点
+# 各分类编号是两套独立空间，硬套站点来源会让订阅/探针认错剧）。
 _DOUBAN_SOURCE = "douban"
 
 # 作品墙分页：单页上限与默认页大小。
@@ -278,11 +345,17 @@ _DEFAULT_SORT = "date"
 # 不设上限会让一次搜索拖很久；超出的候选仍以「只有名字」的卡片给出。
 _ACTOR_LOOKUP_LIMIT = 12
 
-# 人物目录的三个分类（站点 `/yanyuan|daoyan|bianju/list.html`）—— **有序**，
-# 决定 `GET /people` 的默认分类。成员判定仍用 :data:`_PERSON_KINDS`（同一个集合，
-# 定义在人物身份那一节），这里只管顺序与面板文案。
+# 人物目录的分类（站点 ``/<kind>/list.html?page=N``）—— **有序**，决定 `GET /people`
+# 的默认分类。成员判定仍用 :data:`_PERSON_KINDS`（同一个集合，定义在人物身份那一节），
+# 这里只管顺序与面板文案。⚠️ .org 新站只有演员一个目录（数据源 ``list_people`` 会把
+# kind 收敛成 ``actor``），导演 / 编剧两档只有 .net 老站才有。
 _PEOPLE_KINDS = ("yanyuan", "daoyan", "bianju")
-_PERSON_KIND_LABELS = {"yanyuan": "演员", "daoyan": "导演", "bianju": "编剧"}
+_PERSON_KIND_LABELS = {
+    "yanyuan": "演员",
+    "daoyan": "导演",
+    "bianju": "编剧",
+    "actor": "演员",
+}
 
 # 演员档案（头像 / 简介 / 身份）的字段口径。
 #
@@ -327,6 +400,18 @@ _WORKS_CACHE_TTL = 300.0
 #: 进程内**档案**缓存的保鲜期（秒）。档案变化极慢，长一点没坏处。
 _PROFILE_CACHE_TTL = 3600.0
 
+#: 演员档案的**落盘**副本（2026-11-03）。
+#:
+#: 为什么改：`.org` 的头像是 CDN 上的 UUID 地址，**按身份拼不出来**（见
+#: :func:`actor_poster_url`），只能靠档案缓存。而档案以前**只在内存**：插件一
+#: reload、实例一重启，已关注页立刻变成一排人形占位，得等 `enrich=1` 现抓
+#: （128 位要几十秒）。落一份到 data 后，重启即用，`enrich` 只负责补新的。
+#:
+#: 保留期给足（30 天）：头像地址是站点的永久 UUID，粉丝数就算旧一点也不影响
+#: 「能不能显示」；过期后重新抓一次即可。
+_DATA_PROFILES = "actor_profiles"
+_PROFILE_STORE_TTL = 30 * 86400.0
+
 # 快照记录的字段版本：低于当前值的记录会在下一轮刷新时重抓一次。
 # 2026-10-15 = 2：作品开始带类型 / 年份 / 热度 / 播放 / 版权方等筛选排序字段，
 # 旧快照里没有这些字段，靠这个版本号自动触发一次重抓（不必用户手动刷新）。
@@ -339,6 +424,13 @@ _PROFILE_CACHE_TTL = 3600.0
 # 2026-10-19 = 5：**作品重新进快照**（用户口径）—— 每部只存身份 + 墙上要用的字段
 # （:data:`_SNAPSHOT_WORK_KEYS`），作品墙不再每次逐演员打数据源；v4 记录缺 ``works``，
 # 由版本门触发一次重抓补齐（补之前墙照样能读，走数据源兜底）。
+# 2026-11-02：数据源换回 ShortDramaNetSource（.org 新站）**不走版本号** —— 换源由
+# 快照记录的 ``source`` 字段判定（:meth:`_discover_actor` 的 ``same_source``）：
+# 不是当前数据源的记录，旧 ID / 旧 ``first_seen`` 映射作废、按名字重解析、只建基线，
+# schema 保持 5 不动（结构没变，换的是号段）。
+# 2026-11-03：数据源改回 ShortDramaBaikeScraper（同样 .org，号段仍是 drama:/actor:）——
+# ``source`` 字段一变，下一轮刷新会按名字重解析一遍（只建基线，不误报新剧）；
+# 身份本身不变，作品墙与订阅清单不受影响。
 _SNAPSHOT_SCHEMA = 5
 
 #: 快照里每部作品保留的字段：**身份 + 作品墙要用的字段**（筛选 / 排序 / 卡片 / 详情兜底）。
@@ -361,6 +453,9 @@ _SNAPSHOT_WORK_KEYS = (
     "platform",
     "kind",
     "release_date",
+    # 状态角标（爆火 / 新剧 / 完结 / 预约…，数据源给的多值原样文本）：作品卡直接
+    # 印成标签。会随时间变，所以跟快照走、每轮刷新自然更新（2026-11-02 用户要求）
+    "badges",
 )
 
 # 作品字段在数据源版本间会改名，一律按候选名依次取，取到第一个有值的为准。
@@ -553,6 +648,34 @@ def tags_of(item: Dict[str, Any]) -> List[str]:
     return result
 
 
+def state_badges(item: Dict[str, Any]) -> List[str]:
+    """作品卡的**状态角标**（``爆火`` / ``新剧`` / ``完结`` / ``预约``…，去重保序，可单测）。
+
+    与 :func:`tags_of`（题材）和 ``kind``（内容类型角标位）各是一维：
+    数据源 .org 新站把它放在封面左上角的彩色 chip 上（``badges``，多值、站点原样
+    文本，站点直接按它渲染红 / 绿色标签）；作品卡按它印标签（2026-11-02 用户
+    要求「作品卡显示爆火和新剧」）。
+
+    .net 老站页面上**没有**角标元素（2026-11-04 实测：演员页 / 列表 / 榜单 / 首页
+    的「新剧」命中全是侧栏菜单文字）⇒ 站点给不出就**自算**：首播日期在
+    :data:`_NEW_WINDOW_DAYS` 天内的作品补一枚「新剧」（2026-11-04 用户口径
+    「留在 net + 自算新剧」）。org 给了真角标就听站点的（不重复、不覆盖）；
+    自算的「新剧」与站点标记同一个词，前端配色 / 「只看新剧」筛选无需改动。
+    """
+    raw = item.get("badges")
+    if isinstance(raw, str):
+        raw = re.split(r"[,，/、|;；]+", raw)
+    result: List[str] = []
+    if isinstance(raw, (list, tuple)):
+        for entry in raw:
+            text = _clean_text(entry)
+            if text and text not in result:
+                result.append(text)
+    if "新剧" not in result and _is_recent_release(item.get("release_date")):
+        result.append("新剧")
+    return result
+
+
 def work_year(item: Dict[str, Any]) -> str:
     """作品的年份：优先 ``year``，否则从 ``release_date``（首播日期）里取前四位。"""
     year = _clean_text(item.get("year"))
@@ -626,11 +749,19 @@ def record_needs_refresh(
     retry_seconds: float,
     now: Optional[datetime] = None,
     schema: int = 0,
+    source: str = "",
+    site: str = "",
 ) -> bool:
     """一条演员快照是否到了该重新解析的时间点（可单测）。
 
     - 没有记录 / 时间戳不可解析 → 要（新加的演员立刻解析）
     - 记录字段版本低于 ``schema``（数据源补齐了新字段）→ 要，立刻重抓一次
+    - 记录的 ``source`` 不是当前绑定的数据源（**换源**）→ 要，立刻重解析：
+      旧源的 ID / ``first_seen`` 映射已作废（:meth:`_discover_actor` 的
+      ``same_site`` 分支），但旧快照 schema 与时间戳都是新鲜的 —— 不加这条门，
+      换源后的整墙旧身份要等满一个刷新间隔才会被逐个换掉
+    - 记录的 ``site`` 不是数据源当前站点（**换站**）→ 同上，立刻重解析
+      （老记录没存 ``site`` 的用 ``baike_id`` 前缀反推；都没有就不判）
     - ``waiting``（临时性失败）→ 按**失败重试间隔**判定
     - 其余 → 按**快照刷新间隔**判定
     """
@@ -638,6 +769,20 @@ def record_needs_refresh(
         return True
     if schema and _to_int(record.get("schema")) < schema:
         return True
+    if source and _clean_text(record.get("source")) != source:
+        return True
+    if site:
+        cached_id = _clean_text(record.get("baike_id"))
+        id_site = identity_site(cached_id) if cached_id else ""
+        stored = _clean_text(record.get("site")).lower()
+        # ID 前缀是硬事实：site 字段可能与 ID 不一致（换站重解析拿回旧号时），
+        # 这种情况也必须立刻重解析，否则就自锁在旧站号上了。
+        if id_site and id_site != site:
+            return True
+        if not id_site and stored and stored != site:
+            return True
+        if id_site and stored and stored != id_site:
+            return True
     age = snapshot_age_seconds(record, now)
     if age is None:
         return True
@@ -662,8 +807,8 @@ def is_retry_candidate(record: Dict[str, Any]) -> bool:
 def release_epoch(value: Any) -> float:
     """首播 / 上映日期（``YYYY-MM-DD``，也可能带时间）→ epoch 秒；取不到返回 0。
 
-    站点卡片印的是 ``2026-10-14`` 这种纯日期，用 :func:`parse_stamp` 会解析失败，
-    所以单列一个只认日期头的解析器；非法日期（``2026-02-31``）按「没有」处理。
+    排序 / 拼详情页文本用；也供 :func:`_is_recent_release` 做自算「新剧」的底数 ——
+    站点的上映日期经常缺、错或写成未来日期（缺的判不了就别硬标）。
     """
     matched = _RELEASE_DATE_RE.match(_clean_text(value))
     if not matched:
@@ -677,21 +822,46 @@ def release_epoch(value: Any) -> float:
     return moment.timestamp()
 
 
-def is_fresh_work(work: Dict[str, Any], now: float) -> bool:
-    """作品是否属于「**最近 N 天内上映**」的新作品（可单测）。
+#: 自算「新剧」的窗口（天）：首播日期在最近 N 天内的作品补一枚「新剧」角标。
+#: .net 老站的页面上没有角标元素（2026-11-04 实测），这是用户认可的自算口径；
+#: .org 的站点真角标优先（见 :func:`state_badges`，不重复、不覆盖）。
+_NEW_WINDOW_DAYS = 7
 
-    判据只有一个：``release_date``（站点印的首播 / 上映日期）距今在
-    :data:`_NEW_WINDOW_SECONDS` 之内。
 
-    * 缺日期 → 不算新（没日期就没法说它什么时候上的，宁少不错）；
-    * 未来日期（预约剧 / 站点写错）→ 不算新（还没上映）；
-    * 与「演员什么时候加入关注」**无关** —— 刚关注的演员，他这周上的剧照样算新。
+def _is_recent_release(value: Any, now: Optional[datetime] = None) -> bool:
+    """首播日期是否落在自算「新剧」窗口内（可单测）。
+
+    口径：``0 ≤ 距今 ≤ _NEW_WINDOW_DAYS`` 天 —— 当天上线算、满 7 天出窗；
+    未来日期（预告 / 预约）与缺日期都不算（那是站方「预约」的领域，不抢）。
     """
-    released = release_epoch(work.get("release_date"))
-    if not released:
+    epoch = release_epoch(value)
+    if epoch <= 0:
         return False
-    delta = now - released
-    return 0 <= delta <= _NEW_WINDOW_SECONDS
+    moment = now or datetime.now()
+    age_days = (moment.timestamp() - epoch) / 86400.0
+    return 0.0 <= age_days <= float(_NEW_WINDOW_DAYS)
+
+
+def is_added_work(row: Dict[str, Any], record: Dict[str, Any]) -> bool:
+    """这部作品算不算**新剧**（可单测）。
+
+    判据（2026-11-02 用户口径：**新作判定改为新剧标签判定**）：
+    数据源作品卡上带「新剧」状态角标（见 :func:`state_badges`）就算新 ——
+    站方自己标的「新剧」，比「本轮比上一轮多出来」更贴近用户看到的那个词，
+    也不再需要逐轮基线对比。
+
+    旧口径（这一轮比上一轮多出来的作品，靠 ``first_seen`` == ``time`` +
+    ``baseline``）的字段照常维护（历史追溯 / 作品墙排序还在用），只是不再参与
+    这个判定 —— 因此 ``record`` 参数只为兼容既有调用点保留。
+
+    角标来源两路：.org 站点卡片真角标；.net 站点给不出时按首播日期自算补
+    「新剧」（见 :func:`state_badges`，2026-11-04 用户口径）。两者同一个词，
+    这里不区分来源。
+    """
+    del record  # 新口径只看作品自己身上的角标
+    if not isinstance(row, dict):
+        return False
+    return "新剧" in state_badges(row)
 
 
 def normalize_title(title: str) -> str:
@@ -710,6 +880,73 @@ def normalize_title(title: str) -> str:
         text = pattern.sub(" ", text)
     text = _NAME_NOISE.sub("", text)
     return text.lower()
+
+
+_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+#: 命名段里的**发布组噪声**（字幕规格 / 组名），不能当剧名
+_RSS_NAME_NOISE = re.compile(r"国语|中字|双语|简繁|字幕|内封|中英|ARDTU|GodDramas")
+#: 站点促销前缀标签（``[免费]`` / ``[2X]`` / ``[50%]`` / ``[2X免费]``…），剥掉再提剧名
+_RSS_PROMO_PREFIX = re.compile(r"^(?:\[[^\[\]]*\]\s*)+")
+#: SKIT 站的集数锚（``剧名（86集）演员&演员等 - SKIT``）：锚前的整段是剧名
+_RSS_SKIT_ANCHOR = re.compile(r"(.+?)（\d{1,4}集）")
+
+
+def rss_drama_name(raw_title: str) -> str:
+    """从 RSS 种子标题提取**中文剧名**（订阅站点的实际命名格式）。
+
+    两种已知命名格式：
+
+    ① GodDramas / ADWeb / CSWEB 等：英文占位在前，真名塞在**尾部方括号**里、
+       用 ``|`` 分节——
+
+        ``Gui Tu 2026 S01 ...-GodDramas[归途 | 全7集 | 2026年 | …]``
+        ``...[嫁金钗 第26集 | 导演: … [国语中字] | ARDTU]``（**括号可嵌套**）
+
+    ② SKIT 站：促销标签打头，剧名带集数锚，尾部方括号把整串再复述一遍——
+
+        ``[免费]剧名（86集）主演&主演等 - SKIT[剧名（86集）主演&主演等 - SKIT]``
+
+    提取规则：先剥掉开头连续的促销标签（``[免费]`` 等）；然后——
+    a) 有尾部方括号且里面分得出含中文的非噪声节（格式①）：取第一节；
+    b) 否则按 SKIT 集数锚（``（N集）``）取锚前整段当剧名（格式②）——
+       括号里的集数、锚后的演员表都自然剥掉；
+    c) 都不匹配才退回 ``MetaInfo`` 解析整串——纯外语条目本来也识别不到
+       短剧百科，记一次 miss 即可。
+    """
+    text = _clean_text(raw_title)
+    if not text:
+        return ""
+    text = _RSS_PROMO_PREFIX.sub("", text).strip()
+    if not text:
+        return ""
+
+    def _from_chunk(chunk: str) -> str:
+        try:
+            name = _clean_text(MetaInfo(chunk).name) or chunk
+        except Exception:  # noqa: BLE001 - 剥不动就用原段
+            name = chunk
+        return name if not _RSS_NAME_NOISE.search(name) else chunk
+
+    start = text.find("[")
+    # SKIT：集数锚（``（N集）``）先在**首个方括号之前的前缀**上找 —— 尾部方括号
+    # 复述的整串带着演员表，先走方括号分支会把演员一起当剧名。GodDramas 格式的
+    # 前缀是拼音占位（无集数锚），自然落空转到方括号分支。
+    prefix = text[:start] if start > 0 else text
+    m = _RSS_SKIT_ANCHOR.search(prefix)
+    if m:
+        name = _clean_text(m.group(1))
+        if name and _CJK_CHAR.search(name):
+            return name
+    if 0 <= start < text.rfind("]"):
+        for chunk in re.split(r"[|/]", text[start + 1 : text.rfind("]")]):
+            chunk = _clean_text(chunk)
+            if not chunk or not _CJK_CHAR.search(chunk) or _RSS_NAME_NOISE.search(chunk):
+                continue
+            return _from_chunk(chunk)
+    try:
+        return _clean_text(MetaInfo(text).name) or text
+    except Exception:  # noqa: BLE001
+        return text
 
 
 def work_key(title: str, year: str = "") -> str:
@@ -820,7 +1057,9 @@ _COMPOSITE_ID_RE = re.compile(r"^(?P<kind>[a-z][a-z0-9]*):(?P<native>\d+)$", re.
 _NON_DRAMA_KINDS = frozenset({"xiaoshuo", "novel", "book"})
 
 #: 人物分类：搜索里万一带出人物卡，作品墙 / 作品详情都不该收（人物走演员那一路）。
-_PERSON_KINDS = frozenset({"yanyuan", "daoyan", "bianju"})
+#: ``actor`` 是 .org 新站的人物前缀；``yanyuan`` / ``daoyan`` / ``bianju`` 是
+#: .net 老站的。两套都认 —— 前缀与站点的绑定由数据源保证，本插件不做站点推断。
+_PERSON_KINDS = frozenset({"yanyuan", "daoyan", "bianju", "actor"})
 
 
 def split_media_id(value: Any) -> Tuple[str, str]:
@@ -910,7 +1149,7 @@ def wall_row_key(work: Dict[str, Any]) -> str:
     """
     kind, native = split_media_id(work.get("media_id"))
     if native:
-        # 去重键带来源前缀：站点身份仍是 djbaike|duanju:xxx（老快照键不变），
+        # 去重键带来源前缀：站点身份是 duanju|<分类>:<native>，
         # 豆瓣融合身份是独立键 douban|douban:xxx —— 融合层已保证一部剧只出一张卡
         source = _DOUBAN_SOURCE if kind == "douban" else _BAIKE_SOURCE
         return f"{source}|{kind or _DEFAULT_ENTITY}:{native}"
@@ -920,7 +1159,7 @@ def wall_row_key(work: Dict[str, Any]) -> str:
 def work_identity(work: Dict[str, Any]) -> str:
     """作品在 ``first_seen`` 映射里的键：规范复合 ID 优先，认不出退回 ``剧名|年份``。
 
-    与 :func:`wall_row_key` 的区别：这里不带来源前缀（映射只服务「新作品」判定，
+    与 :func:`wall_row_key` 的区别：这里不带来源前缀（映射只服务首次发现时间，
     不参与去重），所以同一部剧在 `duanju:` / `manju:` 下都按 ID 各自成键。
     """
     media_id = baike_media_id(work)
@@ -941,7 +1180,7 @@ def merge_first_seen(
 
     映射键 = :func:`work_identity`（规范复合 ID，认不出才退回 ``剧名|年份``）。
     老记录（v3 及以前）里 ``剧名|年份`` 形态的键按剧名兜一层匹配 ——
-    同一部剧「这次有 ID、上次没有」时不会被误判成新作品。
+    同一部剧「这次有 ID、上次没有」时不会被误判成新冒出来的。
     """
     previous: Dict[str, str] = {}
     if isinstance(old_map, dict):
@@ -1050,6 +1289,48 @@ def snapshot_works(record: Any) -> List[Dict[str, Any]]:
     return [item for item in works if isinstance(item, dict)]
 
 
+# 剧名归一（换站后的**同名桥**，见 :meth:`_title_key`）：
+#   ① 去掉「(66集)」「（2024）」「[国语]」这类**纯括注**（集数 / 年份 / 语种 / 画质）；
+#   ② 再去掉空白与标点。
+# 只剥这两类噪音：像「第 N 部」「第 N 季」这种是作品名的一部分，剥掉会把系列剧
+# 并成一部 —— 短剧重名率本来就不低，宁可漏配不可错配。
+_TITLE_NOISE_RE = re.compile(
+    r"[（(【\[]\s*(?:第?[0-9一二三四五六七八九十百]+\s*[集季部期]?|[0-9]{4}"
+    r"|全\s*[0-9]+\s*集|国语|粤语|普通话|高清|蓝光|完结|已完结|HD)\s*[)）】\]]",
+    re.IGNORECASE,
+)
+_TITLE_NOISE_CHARS_RE = re.compile(
+    r"[\s·・•\-—_~～/\\|,，.。、:：;；!！?？\"'“”‘’()（）\[\]【】]+"
+)
+
+
+def identity_site(media_id: Any) -> str:
+    """身份属于哪一站：``drama:`` / ``actor:`` = 新站，其余站点分类 = 老站。
+
+    老站的作品分类是**开放集**（duanju / manju / hema / huolong …），所以这里
+    用正向判据「是不是 .org 的那两个前缀」，其余带分类的身份一律算 .net。
+    豆瓣 / TMDB 融合身份不属于任何短剧站点 → 空串（不参与换站判定）。
+    """
+    kind = split_media_id(media_id)[0]
+    if not kind or kind in _FOREIGN_KINDS:
+        return ""
+    return _SITE_TAG_ORG if kind in _ORG_KINDS else _SITE_TAG_NET
+
+
+def title_key(title: Any) -> str:
+    """剧名的跨站点比较键（**同名桥**用，见 :meth:`_migrate_subscriptions`）。
+
+    换站后同一部剧的号段整批换掉，名字是唯一还能对上的东西。只做保守归一：
+    小写、去掉「(66集)」「（2024）」「[国语]」这类括注、去掉空白与标点。
+    **不**去「第 N 部 / 第 N 季」—— 那是作品本身的组成部分，去了会把系列剧
+    并成一部（短剧重名率不低，宁可漏配不可错配）。
+    """
+    text = _clean_text(title).lower()
+    if not text:
+        return ""
+    return _TITLE_NOISE_CHARS_RE.sub("", _TITLE_NOISE_RE.sub("", text))
+
+
 def _actor_name_key(name: Any) -> str:
     """演员名的宽松比较键：去空白后比对（百科候选可能带多余空格）。"""
     return re.sub(r"\s+", "", _clean_text(name))
@@ -1062,7 +1343,7 @@ def _actor_id_of(value: Any) -> str:
     关注名单、快照主键、增删与「已关注」判定都以它为准；名字只作展示，
     以及「还没解析到 ID」的过渡态（见 :meth:`_rekey_actors` 的归位说明）。
     """
-    actor_id = canonical_media_id(value, default_kind="yanyuan")
+    actor_id = canonical_media_id(value, default_kind=_DEFAULT_PERSON_KIND)
     kind, native = split_media_id(actor_id)
     if not native or kind not in _PERSON_KINDS:
         return ""
@@ -1133,17 +1414,53 @@ def person_job(kind: Any, gender: Any = "", job_title: Any = "") -> str:
     演员档案不展示职能），``actor_profile`` 的 ``job`` 因此在缓存命中时是空的。
     而站点的人物卡副行一直按「女演员 / 男演员 / 导演 / 编剧」写，这里按同一口径还原：
 
-    * ``yanyuan`` + 性别（男 / 女）→ ``女演员`` / ``男演员``；
+    * ``yanyuan`` / ``actor`` + 性别（男 / 女）→ ``女演员`` / ``男演员``；
     * 性别不明或其余分类 → 用分类名（``演员`` / ``导演`` / ``编剧``）。
     """
     text = _clean_text(job_title)
     if text:
         return text
-    kind_text = _clean_text(kind).lower() or "yanyuan"
+    kind_text = _clean_text(kind).lower() or _DEFAULT_PERSON_KIND
     sex = _clean_text(gender)
-    if kind_text == "yanyuan" and sex in ("男", "女"):
+    if kind_text in ("yanyuan", "actor") and sex in ("男", "女"):
         return f"{sex}演员"
     return _PERSON_KIND_LABELS.get(kind_text, "演员")
+
+
+def normalize_gender(value: Any) -> str:
+    """发现页的性别档位归一成站点认的「男 / 女」，其余（含全部）一律空串（可单测）。
+
+    站点（.org 人物目录）只有 ``?gender=男`` / ``?gender=女`` 两种取值，
+    「全部」就是**不带这个参数**，所以没有第三档。
+
+    面板与脚本可能传中文 / 英文 / 数字，这里统一收口：调用方拿到空串就按「全部」走。
+    """
+    text = _clean_text(value).lower()
+    if text in ("男", "男演员", "男性", "male", "m", "man", "1"):
+        return "男"
+    if text in ("女", "女演员", "女性", "female", "f", "woman", "2"):
+        return "女"
+    return ""
+
+
+def normalize_discover_tabs(value: Any) -> List[str]:
+    """发现页「列表 / 榜单」勾选集归一回小写 key 列表（空 = 全部显示，可单测）。
+
+    值域由**数据源**的 ``discover_tabs`` 决定（站点切换后整张表都换），所以配置里
+    不存默认清单：空列表就是「不做筛选、目录里有什么就显示什么」。
+    """
+    if isinstance(value, str):
+        raw: List[Any] = re.split(r"[,，\s]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw = list(value)
+    else:
+        raw = []
+    result: List[str] = []
+    for item in raw:
+        text = _clean_text(item).lower()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _text_list(value: Any) -> List[str]:
@@ -1292,7 +1609,7 @@ def baike_work_to_candidate(card: Any) -> Optional[Dict[str, Any]]:
         "title": title,
         "year": work_year(card),
         "type": _BAIKE_TYPE,
-        # 豆瓣融合身份（douban:）走宿主豆瓣源，站点身份仍是 djbaike（见常量注释）
+        # 豆瓣融合身份（douban:）走宿主豆瓣源，站点身份仍是站点来源标识（见常量注释）
         "source": _DOUBAN_SOURCE if kind == "douban" else _BAIKE_SOURCE,
         "media_id": canonical_id,
         # 图片出口口径（2026-10-17 用户）：**图床数据源给什么就用什么** ——
@@ -1312,6 +1629,10 @@ def baike_work_to_candidate(card: Any) -> Optional[Dict[str, Any]]:
         "platform": _pick_text(card, _PLATFORM_FIELDS),
         "kind": _clean_text(card.get("kind")),
         "release_date": _clean_text(card.get("release_date")),
+        # 状态角标（``爆火`` / ``新剧`` / ``完结`` / ``预约``…）：数据源给的多值原样
+        # 文本，作品卡按它印标签（2026-11-02 用户要求「作品卡显示爆火和新剧」）。
+        # 与 ``kind``（内容类型角标位）互不干扰 —— 数据源 .org 新站两者都有。
+        "badges": state_badges(card),
     }
 
 
@@ -1321,7 +1642,7 @@ def work_row(work: Dict[str, Any], actor: str, actor_key: str) -> Dict[str, Any]
     row["key"] = wall_row_key(work)
     row["actor"] = actor
     row["actor_key"] = actor_key
-    # 源标识按身份前缀分流（2026-10-22）：站点身份收敛到规范值 ``djbaike``，
+    # 源标识按身份前缀分流（2026-10-22）：站点身份收敛到规范值 ``duanju``，
     # 豆瓣融合身份（douban:）走宿主豆瓣源 ``douban`` —— 订阅 / 在库探针都按它匹配
     kind, _native = split_media_id(row.get("media_id"))
     row["media_source"] = _DOUBAN_SOURCE if kind == "douban" else _BAIKE_SOURCE
@@ -1334,7 +1655,36 @@ def work_row(work: Dict[str, Any], actor: str, actor_key: str) -> Dict[str, Any]
     # 作品 ID 统一收敛成复合形态：站点身份是 ``duanju`` + 裸数字；豆瓣身份保持
     # ``douban:<subject id>``（订阅链按 ``douban`` 源 + 裸号识别，见 _add_subscribe）
     row["media_id"] = baike_media_id(work)
+    # 状态角标重算一遍（2026-11-04）：快照行是**落盘的旧数据**，站点给不了角标的
+    # 时候（.net）要按首播日期自算补「新剧」——出墙现算，快照不用迁移
+    row["badges"] = state_badges(row)
     return row
+
+
+def _refresh_poster(row: Dict[str, Any], poster_url: Any) -> None:
+    """把一行的海报换成**数据源当前出图形态**（零请求；行就地改）。
+
+    为什么需要：作品**随快照落盘**，配置换过出图形态后存量行里仍留着旧地址 ——
+    宿主图片代理对「百度 gimg 中转」主机的放行**时有时无**（真机：同一批请求
+    1225 次响应 0 字节 / 527 次成功；自家图床直链 535 / 541 成功），
+    于是那些卡就是空白，而接口里看数据一切正常。出墙前按 ``media_id`` 现拼一遍，
+    形态永远跟着当前配置走。
+
+    拼不出来（豆瓣身份 / 空 ID / 数据源没给这个方法）就**保留原值** ——
+    宁可显示一个可能不通的地址，也不要把有图的行改成没图。
+    """
+    if not callable(poster_url):
+        return
+    kind, native = split_media_id(row.get("media_id"))
+    if not native or kind in ("douban", "doubanp"):
+        return
+    try:
+        url = _clean_text(poster_url(media_id=_clean_text(row.get("media_id"))))
+    except Exception as err:  # pragma: no cover - 现拼失败不该影响出墙
+        logger.debug(f"{PLUGIN_NAME} 现拼海报失败：{err}")
+        return
+    if url:
+        row["poster"] = url
 
 
 # ── 作品详情（面板自绘「媒体详情页」的数据面） ──────────────────────────
@@ -1347,48 +1697,68 @@ def work_row(work: Dict[str, Any], actor: str, actor_key: str) -> Dict[str, Any]
 # ⇒ 那些区块整块不渲染；播放量 / 热度 / 真人·AI 更是宿主模型里压根没有的字段。
 # 本插件把百科详情 + 卡上字段合起来自己渲染，风格照宿主那一页。
 
-#: 演员页路径（站点口径：``/{分类}/info-{id}.html``，演员分类一般是 ``yanyuan``）
-_ACTOR_PATH = "/{kind}/info-{id}.html"
+#: 人物页路径（站点口径，按站点分两套）：
+#: .net 老站 ``/{分类}/info-{id}.html``（``yanyuan`` / ``daoyan`` / ``bianju``）；
+#: .org 新站 ``/{语言}/{kind}/{id}``（人物 ``actor`` / 作品 ``drama``）。
+_NET_ACTOR_PATH = "/{kind}/info-{id}.html"
+_ORG_LANG = "zh-Hans"
 
-#: 本站域名。只在**数据源没给地址**时用来兜底拼链接（见 :func:`site_info_url`）：
-#: 本插件绑死这一个站点，域名是站点事实而非猜测。
-_SITE_DOMAIN = "https://www.duanjubaike.net"
-#: 站点图床（人物头像与作品海报同一台）
+#: 站点域名（与数据源 ``SITE_DOMAINS`` 同值）。只在**数据源没给地址**时用来兜底拼
+#: 链接（见 :func:`site_info_url` / :func:`actor_page_url`）：**域名由身份前缀决定**
+#: —— ``drama:`` / ``actor:`` 恒指 .org，其余分类恒指 .net，与数据源
+#: ``identity.page_url`` 同一条规则，不是瞎猜。
+_SITE_NET = "https://www.duanjubaike.net"
+_SITE_ORG = "https://duanjubaike.org"
+#: .net 站点图床（人物头像与作品海报同一台）。⚠️ 仅 .net 身份可用：
+#: .org 的图在 ``cdn.duanjubaike.org/cover/<日期>/<uuid>.jpg``，地址带 UUID，
+#: **不可按身份现拼**（数据源 ``poster_of`` 对 org 前缀恒返回空，同一口径）。
 _SITE_IMAGE_HOST = "https://img.duanjubaike.net"
+
+
+def _site_of_kind(kind: str) -> str:
+    """按身份前缀判站点（可单测）：``drama`` / ``actor`` → .org，其余 → .net。"""
+    return _SITE_ORG if kind in ("drama", "actor") else _SITE_NET
 
 
 def actor_poster_url(media_id: Any) -> str:
     """按人物身份**现拼**头像地址（零请求，可单测）。
 
-    站点人物头像固定是 ``<图床>/<分类>/<页面ID>.jpg`` —— 与数据源
-    ``identity.poster_url`` 同一口径。档案缓存冷的时候（插件刚重载、发现任务
+    只有 .net 人物头像能按身份现拼（``<图床>/<分类>/<页面ID>.jpg``，与数据源
+    ``identity.poster_of`` 同一口径）。档案缓存冷的时候（插件刚重载、发现任务
     还没轮到这位）靠它兜底，否则整面墙都是人形占位图。
 
-    只认「分类 + 数字」的复合 ID；裸数字按 ``yanyuan`` 补（关注列表里绝大多数
-    是演员）；认不出返回空串，让前端显示占位图（不编地址）。
+    ⚠️ .org 人物（``actor:``）的图地址带 UUID，**拼不出来** —— 返回空串让前端
+    出占位图（档案缓存热了就有真图；绝不编一个必然 404 的地址）。
+    裸数字按 ``_DEFAULT_PERSON_KIND`` 补；认不出也返回空串（不编地址）。
     """
     kind, native = split_media_id(media_id)
-    if not native:
+    if not native or kind not in ("yanyuan", "daoyan", "bianju"):
         return ""
-    return f"{_SITE_IMAGE_HOST}/{kind or 'yanyuan'}/{native}.jpg"
+    return f"{_SITE_IMAGE_HOST}/{kind}/{native}.jpg"
 
 
-def site_info_url(media_id: Any, domain: str = _SITE_DOMAIN) -> str:
+def site_info_url(media_id: Any, domain: str = "") -> str:
     """按站点规则由复合 ID 拼出**详情页地址**（可单测）。
 
-    为什么需要：.net 数据源的 ``build_media_info`` **不写 ``homepage``**（``url`` 因此
-    恒空），而详情页的「百科地址」与演员跳转都要它。ID 里已经带分类，路径就是
-    ``/{分类}/info-{id}.html`` —— 与站点真实路径一致，不是瞎猜。
+    为什么需要：数据源的 ``build_media_info`` **不写 ``homepage``**（``url`` 因此
+    恒空），而详情页的「百科地址」与演员跳转都要它。ID 里已经带分类，路径就
+    是确定的 —— 与站点真实路径一致，不是瞎猜：
 
-    认不出 ID（空 / 非数字）或没有域名 → 返回 ``""``（宁可不给链接）。
+    * ``drama:`` / ``actor:``（.org）→ ``{org}/{语言}/{分类}/{id}``；
+    * 其余分类（.net）→ ``{net}/{分类}/info-{id}.html``。
+
+    认不出 ID（空 / 非数字）→ 返回 ``""``（宁可不给链接）。``domain`` 参数保留
+    兼容旧调用：给了就按 .net 老路径拼（老签名只有 .net 一种站点）。
     """
     kind, native = split_media_id(media_id)
     if not native:
         return ""
     base = _clean_text(domain).rstrip("/")
-    if not base:
-        return ""
-    return f"{base}{_ACTOR_PATH.format(kind=kind or _DEFAULT_ENTITY, id=native)}"
+    if base:
+        return f"{base}{_NET_ACTOR_PATH.format(kind=kind or _DEFAULT_ENTITY, id=native)}"
+    if kind in ("drama", "actor"):
+        return f"{_SITE_ORG}/{_ORG_LANG}/{kind}/{native}"
+    return f"{_SITE_NET}{_NET_ACTOR_PATH.format(kind=kind or _DEFAULT_ENTITY, id=native)}"
 
 
 def _media_attr(info: Any, *names: str, default: Any = None) -> Any:
@@ -1479,8 +1849,16 @@ def douban_page_url(douban_id: Any) -> str:
 
 
 
-#: 数据源演员页地址里的身份：``…/yanyuan/info-<数字>.html``
-_ACTOR_URL_RE = re.compile(r"/([a-z]+)/info-(\d+)(?:\.html)?", re.IGNORECASE)
+#: 数据源演员页地址里的身份（可单测）。三种形态都认：
+#: .net ``…/yanyuan/info-<id>.html``（老 scraper 也用这个形态）、
+#: .net ``…/yanyuan/<id>.html``（数据源直拼形态）、
+#: .org ``…/[zh-Hans/]actor/<id>``（语言段可有可无）。
+_ACTOR_URL_RE = re.compile(
+    r"/(?:zh-[A-Za-z]+/)?"
+    r"(?P<kind>yanyuan|daoyan|bianju|actor)/"
+    r"(?:info-)?(?P<native>[A-Za-z0-9][A-Za-z0-9_-]*?)(?:\.html)?(?=$|[/?#])",
+    re.IGNORECASE,
+)
 
 
 def actor_id_from_url(url: Any) -> str:
@@ -1488,7 +1866,8 @@ def actor_id_from_url(url: Any) -> str:
 
     宿主的 ``MediaCredit`` 有 ``url`` 却**没有** ``media_id``（``model_config`` 是空的，
     不接收多余键），所以数据源（短剧百科）填进 ``url`` 的演员页地址就是唯一可用的
-    身份线索：``https://www.duanjubaike.net/yanyuan/info-7497….html`` → ``yanyuan:7497…``。
+    身份线索：``https://www.duanjubaike.net/yanyuan/info-7497….html`` → ``yanyuan:7497…``、
+    ``https://duanjubaike.org/zh-Hans/actor/371`` → ``actor:371``。
 
     反解出身份后，演员卡才能精确跳转（而不是退化成按名字匹配）与精确判重
     （同名演员是两个人）。地址形态不认识就返回空串，交给调用方按名字兜底。
@@ -1499,16 +1878,19 @@ def actor_id_from_url(url: Any) -> str:
     matched = _ACTOR_URL_RE.search(text)
     if not matched:
         return ""
-    return canonical_media_id(f"{matched.group(1)}:{matched.group(2)}")
+    return canonical_media_id(
+        f"{matched.group('kind')}:{matched.group('native')}",
+        default_kind=_DEFAULT_PERSON_KIND,
+    )
 
 
 def actor_page_url(work_url: Any, actor_id: Any) -> str:
     """由作品页地址推出演员页地址（可单测）。
 
-    只有拿到**本站域名**才拼地址：没有作品页地址时宁可不给链接 ——
-    硬猜一个域名等于把用户送去不存在的页面。演员 ID 是复合形态
-    ``yanyuan:<id>``，分类直接进路径；只有裸数字时按 ``yanyuan`` 兜底（本插件
-    关注的是演员，导演 / 编剧不会走到这里）。
+    只有拿到**站点域名**才拼地址：没有作品页地址时宁可不给链接 ——
+    硬猜一个域名等于把用户送去不存在的页面。路径形态由**身份前缀**决定
+    （:func:`site_info_url` 同一条规则）：``actor:`` 走 .org 新路径，
+    其余人物分类走 .net 老路径；作品页在哪个域不影响 —— 前缀才是站点事实。
     """
     kind, native = split_media_id(actor_id)
     if not native:
@@ -1519,7 +1901,10 @@ def actor_page_url(work_url: Any, actor_id: Any) -> str:
         return ""
     if not parts.scheme or not parts.netloc:
         return ""
-    path = _ACTOR_PATH.format(kind=kind or "yanyuan", id=native)
+    if kind in ("drama", "actor"):
+        path = f"/{_ORG_LANG}/{kind}/{native}"
+    else:
+        path = _NET_ACTOR_PATH.format(kind=kind or _DEFAULT_PERSON_KIND, id=native)
     return f"{parts.scheme}://{parts.netloc}{path}"
 
 
@@ -1542,7 +1927,7 @@ def detail_actor_rows(
     更新删掉；真的拿不到就留空，前端出人形占位。
 
     ⚠️ 演员身份只认 ``media_id``（复合 ``yanyuan:<id>``）。宿主 ``MediaCredit.id``
-    在 .net 里写的是**TMDB 人物 id**（见 NetSource ``payload`` 的 ``person_id``），
+    在 .net 里写的是**TMDB 人物 id**（数据源 ``payload`` 的 ``person_id``），
     拿它拼站点地址会 404；识别不出站点身份时留空，前端改用**名字**打开演员页
     （``/actors/detail?name=…``，数据源按名字精确匹配）。
 
@@ -1711,6 +2096,9 @@ def merge_detail_row(
     # 热度 / 播放量 / 收藏**不进详情**：快照那两列恒为 0（人物页卡片不印），
     # 真值是站点原文（「380.14万」），由前端从 ``/lookup`` 原样显示。
     data["kind"] = _clean_text(row.get("kind"))
+    # 状态角标（爆火 / 新剧 / 完结 / 预约…）：详情页顶部按它印标签的同一个数据面 ——
+    # 这里也带上，免得「墙上标着新剧、点进详情没了」（is_new 就是其中的「新剧」）
+    data["badges"] = [tag for tag in (row.get("badges") or []) if _clean_text(tag)]
     data["first_seen"] = _clean_text(row.get("first_seen"))
     data["is_new"] = bool(row.get("is_new"))
     data["in_library"] = in_library
@@ -1725,6 +2113,7 @@ def filter_works(
     year: str = "",
     studio: str = "",
     platform: str = "",
+    only_new: bool = False,
     only_not_in_library: bool = False,
     only_not_subscribed: bool = False,
     subscribed: Optional[Iterable[str]] = None,
@@ -1741,11 +2130,16 @@ def filter_works(
 
     ``only_not_subscribed`` 排除**已订阅**的行（``subscribed`` 给的是订阅清单的
     media_id 集合；不给这个集合时该条件不生效，不静默当「都没订阅」）。
+
+    ``only_new`` 只留 ``is_new`` 的行 —— 与作品卡上那枚「新剧」标签同一份判定
+    （:func:`is_added_work`：作品卡带站点「新剧」角标）。
     """
     word = normalize_title(keyword)
     subscribed_ids = {str(item).strip() for item in (subscribed or []) if str(item).strip()}
     result: List[Dict[str, Any]] = []
     for row in rows:
+        if only_new and not row.get("is_new"):
+            continue
         if only_not_subscribed and subscribed_ids:
             if _clean_text(row.get("media_id")) in subscribed_ids:
                 continue
@@ -1927,7 +2321,7 @@ class _LibraryProbe:
 
     * 年份：百科列表行不带年份（只在详情页，逐条现查代价太大），媒体库条目的
       year 也常是空 ⇒ 宿主跨来源回退的「标题+年份双全」永远凑不齐；
-    * 身份：库表条目以别的来源（tmdb/douban/手动）入库，``djbaike:duanju`` 号
+    * 身份：库表条目以别的来源（tmdb/douban/手动）入库，站点号段
       永远对不上 ``exist_by_media_identity``。
 
     类型过滤保留（作品行恒为 电视剧）：挡住同名电影的误判。
@@ -1988,6 +2382,18 @@ class _LibraryProbe:
         """清空 TTL 缓存（插件禁用 / 重载时调用，别把旧结论带进下一次运行）。"""
         self._cache.clear()
 
+    def reset(self) -> None:
+        """清空缓存**并解除熔断**（用户主动「刷新在库状态」时用）。
+
+        ``clear`` 只清 TTL 缓存；如果之前某次查库异常把探针熔断（``_disabled``），
+        光清缓存永远返回「未知」，用户点刷新也看不到变化。这里把 Oper 一起释放，
+        下次查询重新获取。
+        """
+        self._cache.clear()
+        self._disabled = False
+        self._oper = None
+        self.last_error = ""
+
     @property
     def available(self) -> bool:
         """判定通道是否可用（宿主 Oper 没有被之前的异常熔断掉）。
@@ -2042,7 +2448,7 @@ class _LibraryProbe:
         # 走宿主 ``exists_by_title`` 分支（标题精确相等）。年份不参与 —— 短剧两头
         # 都断：百科列表行不带年份（年份只在详情页，逐条现查代价太大），媒体库
         # 条目的 year 也常是空（实例：《跟我玩茶香四溢，真千金她拳拳暴击》《重生
-        # 1982，岳父一家上门逼婚》两侧年份皆空）。媒体身份（djbaike:duanju 号）也
+        # 1982，岳父一家上门逼婚》两侧年份皆空）。媒体身份（站点号段）也
         # 不参与 —— 库表条目以别的来源入库，身份永远对不上。仍带**类型过滤**
         # （作品行恒为 电视剧，库条目同为 电视剧）：挡住同名电影的误判；若发现
         # 有剧在库里被存成别的类型再放宽。
@@ -2086,6 +2492,12 @@ class _LibraryProbe:
 # 只能报缓存里已有的结论（表现为「已入库 0 部」）。预热线程在后台把全集判一遍
 # （真机 4600+ 部 ≈ 5 秒，结果进探针 TTL 缓存），统计随即变准 —— 用户不感知。
 _PROBE_WARMING = threading.Event()
+
+#: 「刷新在库状态」顺带踢的宿主媒体库同步是否还在跑（防重复触发）
+_MEDIA_SYNC_WATCHING = threading.Event()
+
+#: 宿主的媒体库同步任务 ID（见宿主 ``app/scheduler/catalog.py`` 的 ``JobSpec``）
+_MEDIA_SYNC_JOB_ID = "mediaserver_sync"
 
 
 def _start_probe_warm(plugin: "ShortDramaActorSubscribe") -> None:
@@ -2146,14 +2558,15 @@ class ShortDramaActorSubscribe(_PluginBase):
     plugin_name = "短剧演员订阅"
     plugin_desc = (
         "跟着喜欢的演员追短剧：填演员名，插件从短剧百科（duanjubaike.net）取回他们的全部作品，"
-        "摆成和「探索」页同形的海报墙；看中哪部点「订阅」，走的就是 MoviePilot 自己的订阅系统"
-        "（搜索、下载、整理全部由系统负责）。作品墙按演员筛选，新作品自动标「新」。"
+        "摆成和「探索」页同形的海报墙；看中哪部点「订阅」，记进插件自己的订阅清单"
+        "（宿主订阅系统不参与），由插件全分类补搜、命中即下。作品墙按演员筛选，"
+        "带站点「新剧」角标的作品会打上标签。"
     )
     plugin_icon = (
         "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/"
         "icons/ShortDramaActorSubscribe.png"
     )
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "m215owen"
     author_url = "https://github.com/m215owen"
     plugin_config_prefix = "shortdramaactorsubscribe_"
@@ -2176,6 +2589,9 @@ class ShortDramaActorSubscribe(_PluginBase):
     # 订阅站点：逗号分隔的站点 ID（空 = 跟随宿主订阅默认）。只作用于「提交订阅」，
     # 与上面 ``_search_sites``（作品墙点「搜索」跳资源页）是两件事，互不影响。
     _subscribe_sites = ""
+    # 发现页 RSS 站点：逗号分隔的站点 ID（2026-11-03 新增配置项；空 = 跟随订阅
+    # 站点集合）。只作用于发现页「站点 RSS」视图，与订阅站 RSS 增量检查互不影响。
+    _rss_sites = ""
     # 订阅下载目录：宿主 `/download/paths` 给出的 save_path（空 = 跟随宿主订阅默认）。
     # 自动订阅、批量订阅都带上它（见 ``_add_subscribe``）。
     _subscribe_save_path = ""
@@ -2195,6 +2611,10 @@ class ShortDramaActorSubscribe(_PluginBase):
     _auto_subscribe_scope = "new"
     _auto_subscribe_max_per_run = _AUTO_SUB_DEFAULT_MAX
     _auto_subscribe_skip_library = True
+    # 发现页展示哪些「列表 / 榜单」（原数据源「探索页」的配置项，2026-11-02 迁到本插件）：
+    #   * 空列表（默认）= 不筛选，数据源目录里有什么就显示什么；
+    #   * 非空 = 只显示勾选的 key（数据源站点切换后 key 会整批换，所以不存默认清单）。
+    _discover_tabs: List[str] = []
     # ⚠️ 下面两个锁在这里只是**占位**，真正的实例在 ``init_plugin`` 里重建：
     # 留在类属性上会被同一份源码的多个运行实例（虚拟分身 / 重载后的旧新实例）共用，
     # 表现为互相误判成「已有刷新在跑」而静默跳过整轮 —— 文档要求运行时容器按运行实例隔离。
@@ -2203,7 +2623,7 @@ class ShortDramaActorSubscribe(_PluginBase):
     #     会并发改同一份快照，整体覆盖写会把对方刚写的 key 抹掉）。
     _lock: Optional[Any] = None
     _snapshot_lock: Optional[Any] = None
-    # 进程内缓存（作品在 v5 起随快照落盘，这里只是本轮/短时复用；档案始终不落盘）：
+    # 进程内缓存（作品随快照落盘；档案 2026-11-03 起也落一份，见 `_DATA_PROFILES`）：
     #   * ``_works_cache``：actor_key → (works[], 写入时刻)，TTL = ``_WORKS_CACHE_TTL``；
     #   * ``_profile_cache``：actor_key → (profile{}, 写入时刻)，TTL = ``_PROFILE_CACHE_TTL``。
     # 与锁同理，必须在 ``init_plugin`` 里重建 —— 类属性字典会跨运行实例串味。
@@ -2217,6 +2637,8 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._snapshot_lock = threading.Lock()
         self._works_cache = {}
         self._profile_cache = {}
+        #: 档案有变化、还没落盘（见 `_save_profile_store`）
+        self._profiles_dirty = False
         #: 运行标志：``stop_service()`` 置 False，正在跑的整轮发现在下一位演员之前退出
         self._running = False
         #: 上一轮自动订阅结果 ``(成功, 库里已有跳过, 失败)``，任务日志用
@@ -2235,7 +2657,11 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._snapshot_lock = threading.Lock()
         self._sub_lock = threading.Lock()
         self._works_cache = {}
-        self._profile_cache = {}
+        # 落盘的档案直接装进进程内缓存（2026-11-03）：重启后已关注页立刻有头像，
+        # 不必等 enrich 现抓。（`get_data` 在这里已可用 —— 下面 `_rekey_actors`
+        # 也会读 data。）
+        self._profile_cache = self._load_profile_store()
+        self._profiles_dirty = False
         self._running = True
         self._last_auto_subscribe = (0, 0, 0)
         self._enabled = bool(config.get("enabled"))
@@ -2254,6 +2680,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._search_sites = self._parse_site_ids(config.get("search_sites"))
         self._subscribe_downloader = _clean_text(config.get("subscribe_downloader"))
         self._subscribe_sites = self._parse_site_ids(config.get("subscribe_sites"))
+        self._rss_sites = self._parse_site_ids(config.get("rss_sites"))
         self._subscribe_save_path = _clean_save_path(config.get("subscribe_save_path"))
         mode = _clean_text(config.get("subscribe_mode")).lower()
         self._subscribe_mode = mode if mode in ("follow", "normal", "best") else "follow"
@@ -2280,11 +2707,11 @@ class ShortDramaActorSubscribe(_PluginBase):
         self._auto_subscribe_skip_library = _to_bool(
             config.get("auto_subscribe_skip_library"), True
         )
-        # 自建订阅搜索（2026-10-22）：engine=host 走宿主订阅链（旧行为）；
-        # engine=self 由插件自己全分类搜索 + 择优下载（绕开站点分类错位）。
-        # 2026-10-23 用户口径：宿主订阅链路整套去除 —— 订阅引擎恒为**自建**
-        # （配置里的 ``subscribe_engine`` 只为兼容旧配置保留，不再参与分流）
-        self._subscribe_engine = "self"
+        # 发现页的列表 / 榜单（原数据源探索页配置）：空 = 全显示
+        self._discover_tabs = normalize_discover_tabs(config.get("discover_tabs"))
+        # 订阅引擎：**只有自建这一条**（2026-11-02 用户口径「宿主订阅完全去除」）。
+        # 插件自己全分类搜索 + 择优下载，绕开宿主订阅按媒体类型拼站点分类参数、
+        # 短剧被站点挂在电影分类搜不到的问题。配置项 ``subscribe_engine`` 已删除。
         self._self_interval_hours = max(
             1, _to_int(config.get("self_interval_hours")) or _SUB_SEARCH_DEFAULT_HOURS
         )
@@ -2309,14 +2736,13 @@ class ShortDramaActorSubscribe(_PluginBase):
             self._onlyonce = False
             self.update_config(self._live_config())
             logger.info(f"{PLUGIN_NAME} 已登记立即运行一次任务")
-            # 自建订阅引擎打开时，紧跟着也跑一轮订阅搜索（配置保存后马上能见效）
-            if self._subscribe_engine == "self":
-                self._add_once_job(
-                    delay_seconds=15,
-                    trigger="once",
-                    func=self.subscribe_search_task,
-                    job_id=_ONCE_SUB_JOB_ID,
-                )
+            # 紧跟着也跑一轮订阅搜索（配置保存后马上能见效）
+            self._add_once_job(
+                delay_seconds=15,
+                trigger="once",
+                func=self.subscribe_search_task,
+                job_id=_ONCE_SUB_JOB_ID,
+            )
 
     def get_state(self) -> bool:
         """返回插件当前是否启用。"""
@@ -2376,6 +2802,19 @@ class ShortDramaActorSubscribe(_PluginBase):
                 return table
         return {}
 
+    def _source_poster_url(self) -> Any:
+        """取数据源「按当前形态现拼海报」的方法（``poster_url``），取不到返回 ``None``。
+
+        只在这里取一次、循环里复用：:meth:`source_modules` 每次都要过一遍宿主插件
+        管理器，作品墙几千行逐行取不划算。老版本数据源没有这个方法 ⇒ 归一路跳过
+        （海报维持原样，见 :func:`_refresh_poster`）。
+        """
+        try:
+            func = self.source_modules().get("poster_url")
+        except Exception:  # noqa: BLE001 - 取不到就按「没有」处理
+            return None
+        return func if callable(func) else None
+
     def _source(self, method: str, **kwargs: Any) -> Any:
         """调用数据源的模块方法（不可用时抛 :class:`_SourceUnavailable`）。"""
         func = self.source_modules().get(method)
@@ -2385,41 +2824,172 @@ class ShortDramaActorSubscribe(_PluginBase):
             )
         return func(**kwargs)
 
-    def _source_people(self, kind: str, page: int) -> Dict[str, Any]:
+    # ── 榜单取数 ──
+    #
+    # 只认 ShortDramaBaikeScraper 的契约名：``list_ranks`` 回 ``{"ranks": [...]}``、
+    # ``rank_medias(rank=, page=)``。返回体形状
+    # ``rank / name / page / has_more / medias / message``，调用方
+    # （api_ranks / api_rank_works）只消费这个形状。
+    #
+    # 2026-11-03 用户口径：ShortDramaNetSource **完全废弃**，不做任何方法名兼容
+    # （它那套 ``discover_tabs`` / ``discover_medias`` 已从代码中移除）。
+
+    def _source_rank_catalog(self) -> Optional[Dict[str, Any]]:
+        """榜单目录（``list_ranks``）；数据源没提供返回 ``None``。
+
+        统一成 ``{"tabs": [{"key","name","paged"?}], "message": ""}``。
+        """
+        func = self.source_modules().get("list_ranks")
+        if not callable(func):
+            return None
+        raw = func()
+        if not isinstance(raw, dict):
+            return {"tabs": [], "message": ""}
+        return {
+            "tabs": raw.get("ranks") or raw.get("tabs") or [],
+            "message": _clean_text(raw.get("message")),
+        }
+
+    def _source_rank_works(self, key: str, page: int) -> Dict[str, Any]:
+        """一页榜单作品（``rank_medias(rank=, page=)``）。"""
+        func = self.source_modules().get("rank_medias")
+        if not callable(func):
+            raise _SourceUnavailable(
+                f"{_SOURCE_LABEL} 还没有提供榜单取数（rank_medias 模块方法）"
+            )
+        return func(rank=key, page=page)
+
+    # ── 站点画像：一切跟站点有关的判断都问这里 ──
+    #
+    # 2026-11-02 用户口径：「所有的改动都该和数据源插件配置的数据源变化」。
+    # 数据源配置页把 ``site`` 一改，身份号段（.org 的 drama:/actor: ↔ .net 的
+    # duanju:/yanyuan:…）、人物目录（.org 一本演员，.net 三本）、性别档整套换。
+    # 本插件**不猜**：一律读数据源的 ``site_profile``，读不到才退回「两套前缀都认」
+    # 的老行为（不会因为对面没登记方法而报错）。
+
+    def _source_site_profile(self) -> Dict[str, Any]:
+        """数据源当前站点画像（模块方法 ``site_profile``）；问不到就给空 dict。
+
+        60 秒缓存：画像本身是纯静态（零网络），但每次都要过一遍宿主插件管理器，
+        作品墙一个请求里会被问好几次。切站最多 60 秒后生效 —— 面板刷新本来也是
+        重新拉配置，感知不到这个延迟。
+        """
+        cached = getattr(self, "_site_profile_cache", None)
+        if isinstance(cached, tuple) and (time.time() - cached[0]) < _SITE_PROFILE_TTL:
+            return dict(cached[1])
+        try:
+            raw = self._source("site_profile")
+        except _SourceUnavailable:
+            raw = None
+        except Exception as err:  # noqa: BLE001 - 画像拿不到只是「不判站」
+            logger.debug(f"{PLUGIN_NAME} 取数据源站点画像失败：{err}")
+            raw = None
+        profile = dict(raw) if isinstance(raw, dict) else {}
+        if not _clean_text(profile.get("site")):
+            # 数据源没登记 site_profile（ShortDramaBaikeScraper 目前就是）：从它的
+            # 插件配置 ``site`` 补一份最小画像，而不是整段站点判断失效。
+            bridged = self._site_profile_from_source_config()
+            if bridged:
+                profile = {**bridged, **profile}
+        self._site_profile_cache = (time.time(), profile)
+        return dict(profile)
+
+    def _site_profile_from_source_config(self) -> Dict[str, Any]:
+        """数据源没提供 ``site_profile`` 时，从它的插件配置里读站点（``net`` / ``org``）。
+
+        ShortDramaBaikeScraper 的站点是配置项 ``site``。这里只补本插件真正要用的两项：
+
+        * ``site``：换站判定（订阅身份迁移 / 旧快照重解析）；
+        * ``person_kinds``：.org 只有一本演员目录 ⇒ 只给 ``yanyuan`` 一颗 chip。
+          ⚠️ 传的仍是 ``yanyuan``（不是 ``actor``）：对面 ``list_people`` 会先按
+          ``PEOPLE_KINDS`` 校验 kind，再按站点把它映射到演员目录 —— 传 ``actor``
+          会被当成非法分类直接回空页。
+
+        读不到配置返回空 dict（所有站点判断不启用，行为与改前一致）。
+        """
+        try:
+            from app.sdk.plugin import PluginManager
+
+            config = PluginManager().get_plugin_config(_SOURCE_PLUGIN_ID) or {}
+        except Exception as err:  # noqa: BLE001 - 读不到只是「不判站」
+            logger.debug(f"{PLUGIN_NAME} 读数据源配置失败：{err}")
+            return {}
+        if not isinstance(config, dict):
+            return {}
+        site = _clean_text(config.get("site")).lower()
+        if site == _SITE_TAG_ORG:
+            return {"site": site, "person_kinds": ["yanyuan"], "genders": []}
+        if site == _SITE_TAG_NET:
+            return {"site": site}
+        return {}
+
+    def _source_site(self) -> str:
+        """数据源当前站点（``org`` / ``net``）。空串 = 问不到，所有站点判断不启用。"""
+        return _clean_text(self._source_site_profile().get("site")).lower()
+
+    def _site_person_kinds(self) -> List[str]:
+        """当前站点的人物目录分类（有序，第一个是默认）。
+
+        .org 只有演员一本（``actor``）；.net 是三本（演员 / 导演 / 编剧）。
+        问不到画像时退回历史常量（老站顺序），行为与改前一致。
+        """
+        raw = self._source_site_profile().get("person_kinds")
+        picked: List[str] = []
+        for item in raw if isinstance(raw, (list, tuple)) else []:
+            kind = _clean_text(item).lower()
+            if kind in _PERSON_KINDS and kind not in picked:
+                picked.append(kind)
+        return picked or list(_PEOPLE_KINDS)
+
+    def _source_people(self, kind: str, page: int, gender: str = "") -> Dict[str, Any]:
         """向数据源要**一页人物目录**（模块方法 ``list_people``）。
+
+        ``gender`` 是「男 / 女」，空串 = 全部（2026-11-02 用户口径：发现页的演员
+        要分男女榜）。.org 的站点目录本身就是 ``?gender=男/女`` 三档，数据源原样透传；
+        老站（.net）没有这个筛选位，参数会被对面忽略、退回全部 —— 不报错。
 
         契约（数据源按这个形状给即可，多给的键原样透传）::
 
-            list_people(kind="yanyuan", page=1) -> {
-                "kind": "yanyuan", "page": 1, "has_more": True,
+            list_people(kind="yanyuan", page=1, gender="女") -> {
+                "kind": "yanyuan", "gender": "女", "page": 1, "has_more": True,
                 "people": [{"name": "李柯以", "media_id": "yanyuan:742922…",
                             "url": "...", "poster": "...", "gender": "女",
                             "job_title": "演员", "works_count": 0}],
             }
 
-        站点侧对应 ``/<kind>/list.html?page=N``（24 条/页，演员约 1396 页）；
-        ``kind`` 只取 :data:`_PERSON_KINDS` 里的三个。**性别 / 职业这类站点卡上
+        站点侧对应 ``/<kind>/list.html?page=N``（.net，24 条/页）或
+        ``/{语言}/actor?page=N``（.org）。**性别 / 职业这类站点卡上
         现成的字段一并带回来**（人物目录卡上就印着「女演员」）；导演 / 编剧目录的卡
         只有名字，``gender`` / ``job_title`` 由数据源留空、这里按分类补「导演 / 编剧」。
 
         ⚠️ 方法缺席（数据源停用 / 旧版本）时**不报错、不抛**：回空列表 + 一句说明，
         面板把说明原样显示，等对面恢复后同一个端点自动就有数据 —— 本插件不用跟着改。
         """
+        sex = normalize_gender(gender)
         try:
-            raw = self._source("list_people", kind=kind, page=page)
+            raw = self._source("list_people", kind=kind, page=page, gender=sex)
         except _SourceUnavailable:
             return {
                 "people": [],
+                "gender": sex,
                 "has_more": False,
                 "message": f"{_SOURCE_LABEL} 还没有提供人物目录（list_people 模块方法）",
             }
         except Exception as err:  # noqa: BLE001 - 目录取不到不该让面板打不开
             logger.warning(f"{PLUGIN_NAME} 取人物目录失败（{kind} 第 {page} 页）：{err}")
-            return {"people": [], "has_more": False, "message": f"人物目录获取失败：{err}"}
+            return {
+                "people": [],
+                "gender": sex,
+                "has_more": False,
+                "message": f"人物目录获取失败：{err}",
+            }
 
         if isinstance(raw, dict):
             items = raw.get("people") or raw.get("items") or []
             has_more = bool(raw.get("has_more"))
+            # 数据源可能收敛了分类（.org 只有演员一个目录，传 yanyuan 也回
+            # kind="actor"）—— 以返回的为准，行上的分类跟着走
+            kind = _clean_text(raw.get("kind")) or kind
         else:
             items = raw if isinstance(raw, list) else []
             # 数据源只回了裸列表：这一页满了就当还有下一页（下一页空自然收敛）
@@ -2449,7 +3019,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                     "works_count": _to_int(item.get("works_count")),
                 }
             )
-        return {"people": rows, "has_more": has_more, "message": ""}
+        return {"people": rows, "gender": sex, "has_more": has_more, "message": ""}
 
     def _source_profile(self, actor_id: str = "", name: str = "") -> Dict[str, Any]:
         """取一位演员的档案（口径 = ``_PROFILE_FIELDS``；纯 best-effort，不抛错）。
@@ -2477,7 +3047,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             logger.debug(f"{PLUGIN_NAME} 取演员档案失败（{actor_id or name}）：{err}")
             raw = None
         profile = profile_fields_of(raw)
-        kind = split_media_id(actor_id)[0] or "yanyuan"
+        kind = split_media_id(actor_id)[0] or _DEFAULT_PERSON_KIND
 
         def finish(fields: Dict[str, Any]) -> Dict[str, Any]:
             # 数据源不再落 job_title（v18）：按分类 + 性别把「女演员 / 导演 / 编剧」补回来
@@ -2580,6 +3150,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "search_sites": self._search_sites,
             "subscribe_downloader": self._subscribe_downloader,
             "subscribe_sites": self._subscribe_sites,
+            "rss_sites": self._rss_sites,
             "subscribe_save_path": self._subscribe_save_path,
             "subscribe_mode": self._subscribe_mode,
             "subscribe_prefer": self._subscribe_prefer,
@@ -2587,7 +3158,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "auto_subscribe_scope": self._auto_subscribe_scope,
             "auto_subscribe_max_per_run": self._auto_subscribe_max_per_run,
             "auto_subscribe_skip_library": self._auto_subscribe_skip_library,
-            "subscribe_engine": self._subscribe_engine,
+            "discover_tabs": list(self._discover_tabs),
             "self_interval_hours": self._self_interval_hours,
             "self_max_per_run": self._self_max_per_run,
             "self_max_pages": self._self_max_pages,
@@ -2607,6 +3178,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "search_sites": "",
             "subscribe_downloader": "",
             "subscribe_sites": "",
+            "rss_sites": "",
             "subscribe_save_path": "",
             "subscribe_mode": "follow",
             "subscribe_prefer": "seeders",
@@ -2614,7 +3186,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             "auto_subscribe_scope": "new",
             "auto_subscribe_max_per_run": _AUTO_SUB_DEFAULT_MAX,
             "auto_subscribe_skip_library": True,
-            "subscribe_engine": "host",
+            "discover_tabs": [],
             "self_interval_hours": _SUB_SEARCH_DEFAULT_HOURS,
             "self_max_per_run": _SUB_SEARCH_DEFAULT_MAX,
             "self_max_pages": _SUB_SEARCH_DEFAULT_PAGES,
@@ -2683,7 +3255,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "title": f"{self.plugin_name} · 追剧概览",
                 "subtitle": (
                     f"{len(self._actors)} 位演员｜{summary.get('total', 0)} 部作品"
-                    f"｜新作品 {summary.get('new', 0)} 部"
+                    f"｜新剧 {summary.get('new', 0)} 部"
                 ),
                 "refresh": 300,
                 "border": True,
@@ -2720,28 +3292,27 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "func_kwargs": {"trigger": "interval"},
             }
         )
-        # 自建订阅搜索（subscribe_engine=self）：全分类补搜 + 择优下载，
-        # 绕开宿主订阅按媒体类型拼站点分类参数、短剧被站点挂在电影分类搜不到的问题
-        if self._subscribe_engine == "self":
-            services.append(
-                {
-                    "id": f"{self.__class__.__name__}.SubSearch",
-                    "name": "短剧演员 · 自建订阅搜索",
-                    "trigger": IntervalTrigger(hours=max(1, self._self_interval_hours)),
-                    "func": self.subscribe_search_task,
-                    "func_kwargs": {"trigger": "interval"},
-                }
-            )
-            # 订阅站 RSS 增量检查：源取订阅站点的站点配置（不单独配置），固定节奏
-            services.append(
-                {
-                    "id": f"{self.__class__.__name__}.RssCheck",
-                    "name": "短剧演员 · 订阅站 RSS 增量",
-                    "trigger": IntervalTrigger(minutes=_RSS_CHECK_INTERVAL_MINUTES),
-                    "func": self.rss_check_task,
-                    "func_kwargs": {"trigger": "interval"},
-                }
-            )
+        # 自建订阅搜索：全分类补搜 + 择优下载（2026-11-02 起是唯一一条订阅链，
+        # 宿主的订阅任务不再参与）
+        services.append(
+            {
+                "id": f"{self.__class__.__name__}.SubSearch",
+                "name": "短剧演员 · 自建订阅搜索",
+                "trigger": IntervalTrigger(hours=max(1, self._self_interval_hours)),
+                "func": self.subscribe_search_task,
+                "func_kwargs": {"trigger": "interval"},
+            }
+        )
+        # 订阅站 RSS 增量检查：源取订阅站点的站点配置（不单独配置），固定节奏
+        services.append(
+            {
+                "id": f"{self.__class__.__name__}.RssCheck",
+                "name": "短剧演员 · 订阅站 RSS 增量",
+                "trigger": IntervalTrigger(minutes=_RSS_CHECK_INTERVAL_MINUTES),
+                "func": self.rss_check_task,
+                "func_kwargs": {"trigger": "interval"},
+            }
+        )
         return services
 
     @staticmethod
@@ -2761,7 +3332,20 @@ class ShortDramaActorSubscribe(_PluginBase):
     def on_plugin_action(self, event: Event) -> None:
         """响应远程命令；仅处理属于本插件的 action。"""
         event_data = getattr(event, "event_data", None) or {}
-        if _clean_text((event_data or {}).get("action")) != "shortdramaactorsubscribe_refresh":
+        action = _clean_text((event_data or {}).get("action"))
+        # 取消作品订阅（2026-10-24）：短剧百科整理插件在 Emby 删除媒体后发来
+        # ``media_id``，按订阅清单主键移除；幂等，不在清单里只记日志不报错。
+        if action == "shortdramaactorsubscribe_unsubscribe":
+            media_id = _clean_text((event_data or {}).get("media_id"))
+            if not media_id:
+                logger.warning(f"{PLUGIN_NAME} 取消订阅请求缺少 media_id")
+                return
+            ok, message = self._plugin_unsubscribe(
+                media_id, _clean_text((event_data or {}).get("title"))
+            )
+            logger.info(f"{PLUGIN_NAME} 取消作品订阅 {media_id}：{message}（{ok}）")
+            return
+        if action != "shortdramaactorsubscribe_refresh":
             return
         if not self._lock.acquire(blocking=False):
             logger.info(f"{PLUGIN_NAME} 已有刷新任务在运行，忽略本次命令")
@@ -2929,11 +3513,19 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "response_model": api_models.SubscriptionsResponse,
             },
             {
+                "path": "/subscribed_ids",
+                "endpoint": self.api_subscribed_ids,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "订阅身份的轻量快照（作品卡判「已订阅」用，不含台账明细）",
+                "response_model": api_models.SubscribedIdsResponse,
+            },
+            {
                 "path": "/subscribe",
                 "endpoint": self.api_subscribe,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "订阅一部作品（引擎=self 记插件清单，host 走宿主订阅链）",
+                "summary": "订阅一部作品（记插件订阅清单，等订阅搜索自动下载）",
                 "response_model": api_models.SubscribeResponse,
             },
             {
@@ -2941,7 +3533,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "endpoint": self.api_unsubscribe,
                 "methods": ["POST"],
                 "auth": "bear",
-                "summary": "取消一部作品的订阅（插件清单 + 宿主 djbaike 订阅都清）",
+                "summary": "取消一部作品的订阅（清插件订阅清单）",
                 "response_model": api_models.SubscribeResponse,
             },
             {
@@ -2983,6 +3575,14 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "auth": "bear",
                 "summary": "立即刷新作品",
                 "response_model": api_models.RefreshResponse,
+            },
+            {
+                "path": "/works/refresh_library",
+                "endpoint": self.api_refresh_library,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "清空在库判定缓存（作品墙「刷新在库状态」）",
+                "response_model": api_models.SubscribeResponse,
             },
             {
                 "path": "/config",
@@ -3049,32 +3649,29 @@ class ShortDramaActorSubscribe(_PluginBase):
         recent = sorted(
             ledger.values(), key=lambda row: _clean_text(row.get("time")), reverse=True
         )[:5]
-        # 自建订阅搜索汇总（引擎 = self 才有数字）。2026-10-22 起候选收敛为
-        # 「已订阅」的作品（见 _subscribed_works），各计数也只按订阅算 ——
-        # 台账里订阅之外的历史条目（早期全库试跑留下的）不再进统计。
-        if self._subscribe_engine == "self":
-            sub_ledger = self._sub_ledger()
-            # 订阅没有「暂停」态（2026-10-23 用户口径）：清单里的都算在跑，
-            # 暂停与否由台账的终态 / 冷却决定，不额外判断。
-            active_wanted = list(self._subscribed_works())
+        # 订阅搜索汇总。2026-10-22 起候选收敛为「已订阅」的作品（见
+        # _subscribed_works），各计数也只按订阅算 —— 台账里订阅之外的历史条目
+        # （早期全库试跑留下的）不再进统计。
+        sub_ledger = self._sub_ledger()
+        # 订阅没有「暂停」态（2026-10-23 用户口径）：清单里的都算在跑，
+        # 暂停与否由台账的终态 / 冷却决定，不额外判断。
+        active_wanted = list(self._subscribed_works())
 
-            def _sub_count(*states: str) -> int:
-                return sum(
-                    1
-                    for mid in active_wanted
-                    if _clean_text((sub_ledger.get(mid) or {}).get("state")) in states
-                )
-
-            sub_downloaded = _sub_count("downloaded")
-            sub_noresult = _sub_count("noresult")
-            sub_failed = _sub_count("failed")
-            sub_skipped = _sub_count("in_library", "history")
-            sub_pending = max(
-                0,
-                len(active_wanted) - sub_downloaded - sub_noresult - sub_failed - sub_skipped,
+        def _sub_count(*states: str) -> int:
+            return sum(
+                1
+                for mid in active_wanted
+                if _clean_text((sub_ledger.get(mid) or {}).get("state")) in states
             )
-        else:
-            sub_downloaded = sub_noresult = sub_failed = sub_skipped = sub_pending = 0
+
+        sub_downloaded = _sub_count("downloaded")
+        sub_noresult = _sub_count("noresult")
+        sub_failed = _sub_count("failed")
+        sub_skipped = _sub_count("in_library", "history")
+        sub_pending = max(
+            0,
+            len(active_wanted) - sub_downloaded - sub_noresult - sub_failed - sub_skipped,
+        )
         return schemas.Response(
             success=True,
             data=api_models.StatusData(
@@ -3084,7 +3681,6 @@ class ShortDramaActorSubscribe(_PluginBase):
                 works=int(summary.get("total", 0)),
                 new_works=int(summary.get("new", 0)),
                 last_refresh=last,
-                new_window_days=_NEW_WINDOW_DAYS,
                 states=[
                     api_models.ActorRow(**self._actor_row(key, record))
                     for key, record in snapshot.items()
@@ -3104,7 +3700,6 @@ class ShortDramaActorSubscribe(_PluginBase):
                     )
                     for row in recent
                 ],
-                sub_engine=self._subscribe_engine,
                 sub_downloaded=sub_downloaded,
                 sub_noresult=sub_noresult,
                 sub_failed=sub_failed,
@@ -3121,6 +3716,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         studio: str = "",
         platform: str = "",
         sort: str = "",
+        only_new: str = "",
         only_not_in_library: str = "",
         only_not_subscribed: str = "",
         keyword: str = "",
@@ -3144,6 +3740,8 @@ class ShortDramaActorSubscribe(_PluginBase):
           抠出来，同样「给出才有」，空选项时前端不显示这一栏）
         * ``sort`` —— 只支持 ``date``（首播日期，新剧在前，也是默认）。热度 / 播放 /
           评分三种排序已撤（2026-10-23 用户口径）：那些值在墙的快照里恒为 0
+        * ``only_new`` —— ``1`` 只看新剧（作品卡带站点「新剧」角标，与卡片左上
+          那枚绿色标签同一份判定 :func:`is_added_work`）
         * ``only_not_in_library`` —— ``1`` 只看未入库（只排除**明确已在库**的；
           查库失败/没有数据的「未知」作品保留，绝不把「没查成」显示成「都不在库」。
           判定与宿主媒体详情页同一套：身份精确匹配 → 片名+类型+年份回退）
@@ -3164,6 +3762,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "studio": studio,
                 "platform": platform,
                 "sort": sort,
+                "only_new": only_new,
                 "only_not_in_library": only_not_in_library,
                 "only_not_subscribed": only_not_subscribed,
                 "keyword": keyword,
@@ -3181,8 +3780,10 @@ class ShortDramaActorSubscribe(_PluginBase):
             probe = self.library_probe
             for row in chunk:
                 row["in_library"] = probe.lookup(row)
-        # 自建订阅搜索状态（引擎 = self 时每行带出台账结论，作品卡直接显示）
+        # 订阅搜索状态（每行带出台账结论，作品卡直接显示）
         self._attach_sub_state(chunk)
+        # 订阅身份（红心状态的**权威来源**，前端不再靠整份订阅清单猜）
+        self._mark_subscribed(chunk)
         facets = summary.get("facets") or {
             "genres": [],
             "years": [],
@@ -3202,7 +3803,6 @@ class ShortDramaActorSubscribe(_PluginBase):
                 page_size=size,
                 has_more=start + len(chunk) < total,
                 sort=sort_key,
-                new_window_days=_NEW_WINDOW_DAYS,
                 works=[api_models.WorkRow(**row) for row in chunk],
                 actor_filters=[
                     api_models.ActorFilterRow(**item)
@@ -3260,7 +3860,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             # _source_profile 等所有演员 ID 调用点一致）：数据源回退成裸数字时
             # 不能补成作品那个 ``duanju:`` 前缀，否则会拿演员号去查作品分类
             actor_id = canonical_media_id(
-                row.get("actor_id") or row.get("media_id"), default_kind="yanyuan"
+                row.get("actor_id") or row.get("media_id"), default_kind=_DEFAULT_PERSON_KIND
             )
             if not split_media_id(actor_id)[1]:
                 continue
@@ -3323,7 +3923,7 @@ class ShortDramaActorSubscribe(_PluginBase):
     ) -> "schemas.Response[api_models.WorkSearchData]":
         """在短剧百科里按片名查作品：返回候选（搜索结果页的作品卡片用）。
 
-        经 ``search_medias(meta=…, media_source="djbaike")`` 向**绑定的数据源**要候选 ——
+        经 ``search_medias(meta=…, media_source=_BAIKE_SOURCE)`` 向**绑定的数据源**要候选 ——
         与宿主搜索框同一条检索链路（库 → 站内搜索），返回宿主 ``MediaInfo``，
         这里只挑展示用的字段转成纯 dict。
         """
@@ -3545,7 +4145,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         不进快照 —— 关注列表的作品墙数据照旧走 ``/works``。
         参数是函数形参（FastAPI 按名注入，见 ``api_works`` 的说明）。
         """
-        actor_id = canonical_media_id(actor_id, default_kind="yanyuan")
+        actor_id = canonical_media_id(actor_id, default_kind=_DEFAULT_PERSON_KIND)
         name = _clean_text(name)
         if not split_media_id(actor_id)[1] and not name:
             raise HTTPException(
@@ -3601,7 +4201,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         汇总结果由前端 toast 一次说清。
         """
         body = payload if isinstance(payload, dict) else {}
-        actor_id = canonical_media_id(body.get("actor_id"), default_kind="yanyuan")
+        actor_id = canonical_media_id(body.get("actor_id"), default_kind=_DEFAULT_PERSON_KIND)
         name = _clean_text(body.get("name"))
         if not split_media_id(actor_id)[1] and not name:
             raise HTTPException(
@@ -3648,9 +4248,9 @@ class ShortDramaActorSubscribe(_PluginBase):
             if media_id in excluded:
                 skipped_subscribed += 1
                 continue
-            # 引擎 = self 时插件清单里的订阅也算「已订阅」（exclude_ids 兜不到
-            # 的场景：别的入口订的 / 前端集合还没刷出来）
-            if self._subscribe_engine == "self" and media_id in self._plugin_subs():
+            # 插件清单里的订阅也算「已订阅」（exclude_ids 兜不到的场景：
+            # 别的入口订的 / 前端集合还没刷出来）
+            if media_id in self._plugin_subs():
                 skipped_subscribed += 1
                 continue
             if probe is not None and probe.lookup(row) is True:
@@ -3741,7 +4341,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         now = time.time()
         if isinstance(cached, tuple) and now - cached[1] < _WORKS_CACHE_TTL:
             return cached[0]
-        actor_id = canonical_media_id(record.get("baike_id"), default_kind="yanyuan")
+        actor_id = canonical_media_id(record.get("baike_id"), default_kind=_DEFAULT_PERSON_KIND)
         if not split_media_id(actor_id)[1]:
             return list(cached[0]) if isinstance(cached, tuple) else []
         try:
@@ -3811,20 +4411,34 @@ class ShortDramaActorSubscribe(_PluginBase):
         profile.setdefault("media_id", _clean_text(record.get("media_id")))
         return profile
 
-    # ── 订阅（自建订阅系统的入口；引擎 = host 时退化为宿主订阅的代提交）──
+    # ── 订阅（自建订阅系统；2026-11-02 起宿主订阅完全去除）──
 
     def api_subscriptions(self) -> "schemas.Response[api_models.SubscriptionsData]":
         """当前订阅清单（作品墙左侧「订阅作品」面板的数据源）。
 
-        与 :meth:`_subscribed_works` 同口径：插件订阅清单 ∪ 宿主 ``djbaike`` 未暂停
-        订阅；每条附订阅搜索状态（引擎 = ``self`` 才有搜索行为）。
+        **唯一来源是插件订阅清单** —— 「插件清单 ∪ 宿主订阅表」那套 2026-11-02 起
+        完全废弃（用户口径：宿主订阅完全去除），宿主那边的订阅与本插件无关。
+
+        取清单前先跑一次 :meth:`_migrate_subscriptions`：数据源换过站时，用作品墙
+        已有的作品把旧身份的订阅就地换成当前站点身份（零网络）。每条带 ``site``
+        （身份属于哪一站）与 ``stale``（不是当前站的身份）—— 前端据此用**同名**
+        把卡片标成「已订阅」，换站后不会一屏全变成「未订阅」。
         """
-        wanted = self._subscribed_works()
-        ledger = self._sub_ledger() if self._subscribe_engine == "self" else {}
+        # 作品索引只建一次：迁移与清单都吃它（几千行的遍历，别做两遍）
+        works_index = self._works_by_id()
+        moved, total = self._migrate_subscriptions(works_index)
+        if moved:
+            logger.info(
+                f"{PLUGIN_NAME} 订阅清单已按当前站点身份替换 {moved}/{total} 条"
+            )
+        site = self._source_site()
+        wanted = self._subscribed_works(works_index)
+        ledger = self._sub_ledger()
         probe = self.library_probe
         items: List[api_models.SubscriptionRow] = []
         for media_id, info in wanted.items():
             entry = ledger.get(media_id) or {}
+            owner = identity_site(media_id)
             # 在库三态（探针现查，剧名唯一判据）：已订阅页的「已入库 / 未入库」
             # 筛选与卡片「已在媒体库」角标都吃它；查不了（探针不可用）就是 None
             in_library: Optional[bool] = None
@@ -3855,14 +4469,21 @@ class ShortDramaActorSubscribe(_PluginBase):
                     sites=_clean_text(info.get("sites")),
                     downloader=_clean_text(info.get("downloader")),
                     save_path=_clean_text(info.get("save_path")),
+                    # 身份归属：owner = 这条是哪个站点的号（空 = 融合身份）；
+                    # stale = 不是数据源当前站点（换过站还没换过来）——
+                    # 前端拿 stale 行的标题做「同名桥」，卡片才不会全变未订阅
+                    site=owner,
+                    stale=bool(site and owner and owner != site),
                 )
             )
         items.sort(key=lambda row: row.sub_time or "", reverse=True)
         return schemas.Response(
             success=True,
             data=api_models.SubscriptionsData(
-                engine=self._subscribe_engine,
                 items=items,
+                # 数据源当前站点（空 = 数据源没提供画像，前端不做同名桥）
+                site=site,
+                stale_count=sum(1 for row in items if row.stale),
                 # 配置页默认值：前端在订阅设置里当 placeholder / 「用默认」提示
                 default_sites=str(self._subscribe_sites or ""),
                 default_downloader=self._subscribe_downloader or "",
@@ -3873,10 +4494,10 @@ class ShortDramaActorSubscribe(_PluginBase):
     def api_subscribe(
         self, payload: Optional[Dict[str, Any]] = None
     ) -> "schemas.Response[None]":
-        """订阅一部作品。
+        """订阅一部作品：记进**插件订阅清单**，等订阅搜索自动下载（幂等）。
 
-        引擎 = ``self``：记进**插件订阅清单**（不进宿主订阅系统），等订阅搜索
-        自动下载；引擎 = ``host``：走宿主订阅链（与旧行为一致）。两路都幂等。
+        2026-11-02 起只有这一条路 —— 宿主订阅完全去除，不再提交宿主订阅系统。
+        换过站时同名记录会被就地替换成当前站点的身份（见 :meth:`_plugin_subscribe`）。
         """
         body = payload if isinstance(payload, dict) else {}
         title = _clean_text(body.get("title"))
@@ -3897,12 +4518,16 @@ class ShortDramaActorSubscribe(_PluginBase):
     def api_unsubscribe(
         self, payload: Optional[Dict[str, Any]] = None
     ) -> "schemas.Response[None]":
-        """取消订阅：只清**插件订阅清单**（宿主订阅链路整套去除）。"""
+        """取消订阅：从**插件订阅清单**里删掉（宿主订阅 2026-11-02 起完全去除）。
+
+        ``title`` 可选：换过站时卡上是当前身份、清单里是旧身份，按同名把它找出来
+        （见 :meth:`_plugin_unsubscribe`）。
+        """
         body = payload if isinstance(payload, dict) else {}
         media_id = _clean_text(body.get("media_id"))
         if not media_id:
             raise HTTPException(status_code=400, detail="缺少媒体身份")
-        ok, message = self._plugin_unsubscribe(media_id)
+        ok, message = self._plugin_unsubscribe(media_id, _clean_text(body.get("title")))
         # 不能恒 True：前端据此判断「真的取消了没」，恒 True 会让失败也提示成功
         return schemas.Response(success=ok, message=message)
 
@@ -3912,8 +4537,8 @@ class ShortDramaActorSubscribe(_PluginBase):
         """编辑一条订阅的配置（作品详情页「订阅设置」：「站点 / 下载器 / 目录」）。
 
         订阅**没有暂停态**（2026-10-23 用户口径）：要么在清单里、要么取消订阅，
-        所以这里只改落点三项。只对**插件订阅清单**里的订阅生效 —— 引擎 = ``self``
-        的订阅归插件自己管；宿主订阅（引擎 = ``host`` 期间建的）请到宿主订阅页操作。
+        所以这里只改落点三项。只对**插件订阅清单**里的订阅生效 —— 订阅归插件自己管
+        （2026-11-02 起宿主订阅完全去除），宿主那边的订阅与本插件无关。
         """
         body = payload if isinstance(payload, dict) else {}
         media_id = _clean_text(body.get("media_id"))
@@ -4056,8 +4681,6 @@ class ShortDramaActorSubscribe(_PluginBase):
         与定时任务同一把锁：上一轮还在跑时本轮直接结束（那轮会顺带把清过冷却的
         订阅搜掉，不重复排队）。
         """
-        if self._subscribe_engine != "self":
-            raise HTTPException(status_code=400, detail="订阅引擎不是自建模式，无订阅搜索可执行")
         if not self.get_state():
             raise HTTPException(status_code=400, detail="插件未启用")
         ledger = self._sub_ledger()
@@ -4111,7 +4734,7 @@ class ShortDramaActorSubscribe(_PluginBase):
 
         参数是函数形参（FastAPI 按名注入查询参数，见 ``api_works`` 的说明）。
         """
-        actor_id = canonical_media_id(actor_id, default_kind="yanyuan")
+        actor_id = canonical_media_id(actor_id, default_kind=_DEFAULT_PERSON_KIND)
         name = _clean_text(name)
         if not split_media_id(actor_id)[1] and not name:
             raise HTTPException(
@@ -4176,6 +4799,8 @@ class ShortDramaActorSubscribe(_PluginBase):
             return []
 
         label = pick("name") or name
+        # 卡片红心的权威判定（与作品墙同一口径）：这一页的行自己带 subscribed
+        self._mark_subscribed(rows)
         data = api_models.ActorDetailData(
             found=bool(profile) or bool(fallback) or bool(all_rows),
             actor_id=pick("actor_id") or actor_id,
@@ -4232,7 +4857,7 @@ class ShortDramaActorSubscribe(_PluginBase):
 
         数据面两拨（见 :func:`project_media_detail` / :func:`merge_detail_row`）：
 
-        1. 数据源 ``recognize_media(media_source="djbaike", media_id=…)`` 拿详情页的标准
+        1. 数据源 ``recognize_media(media_source=_BAIKE_SOURCE, media_id=…)`` 拿详情页的标准
            ``MediaInfo``（简介 / 题材 / 单集时长 / 集数 / 首播 / 出品方 / 评分 /
            语言 / 海报 / 剧照首图 / 演员表含角色）；
         2. 按 ``media_id`` 从本地快照那一行补上**宿主模型里没有**的字段 ——
@@ -4290,6 +4915,25 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "type": _BAIKE_TYPE,
             }
             message = "短剧数据源里没有这部剧的详情"
+        # 站点「热评」（2026-11-02 用户口径：作品详情支持网站的评论）。
+        # 数据源的 ``work_comments`` 走**详情缓存**（键 = 本页身份）：详情页刚
+        # ``recognize_media`` 过，这里通常零网络；没有缓存时才会多抓一次页面。
+        # 失败/老版本数据源没有这个方法 ⇒ 空数组 + ``comments_supported=False``，
+        # **绝不**因为评论区把整页详情打成 503（评论只是详情的一个区块）。
+        try:
+            site_comments = self._source("work_comments", media_id=native)
+        except _SourceUnavailable:
+            site_comments = None
+        except Exception as err:  # noqa: BLE001 - 评论区失败不影响详情
+            logger.warning(f"{PLUGIN_NAME} 取站点热评失败（{native}）：{err}")
+            site_comments = None
+        if isinstance(site_comments, dict):
+            data["site_comments"] = [
+                item
+                for item in site_comments.get("comments") or []
+                if isinstance(item, dict) and _clean_text(item.get("content"))
+            ]
+            data["comments_supported"] = bool(site_comments.get("supported"))
         row = self._snapshot_work_row(native)
         if row is not None:
             merge_detail_row(data, row, self.library_probe.lookup(row))
@@ -4304,7 +4948,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         零请求、插件重载后也不怕缓存冷掉；只有快照里还没作品（v4 老记录 / 刚添加
         还没抓过）时才退回进程内缓存。两处都没有就返回 ``None``（详情页只显示数据源
         给的内容，不硬编）—— 详情页不开网络补抓：那是作品墙的活。
-        ``is_new`` 现算（与作品墙同一口径：过了窗口的「新」自动消失）。
+        ``is_new`` 现算（与作品墙同一口径：站点撤掉「新剧」角标就自动不再是新）。
         """
         target = canonical_media_id(media_id)
         if not target:
@@ -4327,25 +4971,40 @@ class ShortDramaActorSubscribe(_PluginBase):
                     continue
                 row = work_row(work, actor, key)
                 row["first_seen"] = _clean_text(mapping.get(work_identity(work)))
-                row["is_new"] = is_fresh_work(row, time.time())
+                row["is_new"] = is_added_work(row, record)
                 return row
         return None
 
-    def api_refresh(self) -> "schemas.Response[api_models.RefreshData]":
-        """立即刷新全部演员的作品（忽略缓存）。"""
+    def api_refresh(self, clear_cache: str = "") -> "schemas.Response[api_models.RefreshData]":
+        """立即刷新全部演员的作品（忽略缓存）。
+
+        ``clear_cache=1``：刷新前先把**数据源的缓存**清掉（走它的 ``clear_cache``
+        模块方法，best-effort）。不这么做的话 force 刷新命中的还是数据源
+        24h 缓存里的旧行 —— 2026-11-04 实证：数据源作品结构加了 ``badges``
+        后，只刷快照、不清数据源缓存，墙上死活不出角标。面板的「刷新作品」
+        按钮走的就是这条（清缓存 + 强刷一次到位，100+ 位演员约数分钟）。
+        """
         if not self._actors:
             raise HTTPException(status_code=400, detail="还没有添加演员")
         if not self._lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="已有刷新任务在运行")
         try:
+            cleared: list[str] = []
+            if str(clear_cache or "").strip() in ("1", "true", "yes", "on"):
+                try:
+                    result = self._source("clear_cache")
+                    cleared = list((result or {}).get("cleared") or [])
+                except Exception as err:  # noqa: BLE001 - 清不掉就照旧强刷
+                    logger.warning(f"{PLUGIN_NAME} 清数据源缓存失败（照旧刷新）：{err}")
             before = self._load_actors()
             self._refresh_actors(force=True)
             fresh = self._collect_fresh(before)
             self._notify_fresh(fresh)
             _, summary = self._work_rows(with_probe=False)
+            note = f"（已清数据源缓存 {len(cleared)} 区）" if cleared else ""
             return schemas.Response(
                 success=True,
-                message=f"刷新完成：{summary.get('total', 0)} 部作品"
+                message=f"刷新完成{note}：{summary.get('total', 0)} 部作品"
                 + (f"，新增 {len(fresh)} 部" if fresh else ""),
                 data=api_models.RefreshData(
                     total=int(summary.get("total", 0)),
@@ -4354,6 +5013,70 @@ class ShortDramaActorSubscribe(_PluginBase):
             )
         finally:
             self._lock.release()
+
+    def api_refresh_library(self) -> "schemas.Response[None]":
+        """清空在库判定缓存，并（尽量）让宿主的媒体库表立刻变新。
+
+        在库结论带 600 秒 TTL（见 ``_LibraryProbe.CACHE_TTL``）：刚入库的剧在缓存
+        过期前仍显示「未入库」，用户只能干等。所以这里先清缓存与熔断状态。
+
+        但**只清缓存是不够的**：探针查的是宿主的本地库表 ``mediaserveritem``，而那张表
+        只有 ``mediaserver_sync`` 任务在灌（默认 6 小时一次）⇒ 刚从 Emby 入库的剧在表里
+        压根没有，重判一千遍还是「未入库」（实例：Emby 19:43 入库的《女相师》，本地表
+        停在 16:23 的快照）。所以这里顺手把这个任务踢一脚，起个后台线程等它跑完再清一次
+        缓存 —— 用户点一下刷新、等半分钟，结论就是真话。
+        """
+        if not self.get_state():
+            raise HTTPException(status_code=400, detail="插件未启用")
+        probe = self.library_probe
+        was_available = probe.available
+        probe.reset()
+        logger.info(f"{PLUGIN_NAME} 已重置在库判定缓存")
+        syncing = self._kick_media_sync()
+        if syncing:
+            message = "已重置在库缓存，并已触发媒体库同步（约 30–60 秒），完成后自动重判"
+        elif was_available:
+            message = "已清除在库缓存，正在重新判定"
+        else:
+            message = "媒体库检查已重置，下次判定会重新连接"
+        return schemas.Response(success=True, message=message, data=None)
+
+    def _kick_media_sync(self) -> bool:
+        """让宿主立刻跑一次媒体库同步（后台，不阻塞本请求）。返回是否已触发。"""
+        if _MEDIA_SYNC_WATCHING.is_set():
+            return False
+        try:
+            from app.application.scheduling import start_scheduler_job
+
+            # 不能带 kwargs：宿主 ``start`` 会把它们**原样透传给任务函数**
+            # （``MediaServerChain.sync() got an unexpected keyword argument 'manual'``）。
+            start_scheduler_job(_MEDIA_SYNC_JOB_ID)
+        except Exception as err:  # 宿主版本差异 / 调度器未就绪：不影响清缓存本身
+            logger.warning(f"{PLUGIN_NAME} 触发媒体库同步失败（不影响在库缓存重置）：{err}")
+            return False
+        _MEDIA_SYNC_WATCHING.set()
+        threading.Thread(target=self._watch_media_sync, daemon=True).start()
+        return True
+
+    def _watch_media_sync(self) -> None:
+        """媒体库同步跑完后把在库缓存再清几次（否则重判的仍是旧表）。
+
+        为什么不盯宿主任务状态：`start()` 触发的这一轮在调度器快照里一直显示「等待」
+        （实测 22:10:37 触发 → 22:11:12 同步完成，期间 status 恒为「等待」），拿它当
+        完成信号会漏。实测全量同步（1063 部）约 35–40 秒，所以按经验时长分三段清：
+        45 秒（主清）、再 60 秒、再 75 秒 —— 库再大也在后两段兜住。多清几次的代价只是
+        作品墙下次打开时逐条重判（单条毫秒级）。
+        """
+        try:
+            for delay in (45, 60, 75):
+                time.sleep(delay)
+                self.library_probe.reset()
+                logger.info(f"{PLUGIN_NAME} 媒体库同步后清在库缓存（+{delay}s）")
+        except Exception as err:  # noqa: BLE001 - 后台线程不能把异常抛出去
+            logger.warning(f"{PLUGIN_NAME} 等待媒体库同步失败：{err}")
+        finally:
+            _MEDIA_SYNC_WATCHING.clear()
+
 
     # ── 发现层：只认短剧百科 ──
 
@@ -4379,13 +5102,31 @@ class ShortDramaActorSubscribe(_PluginBase):
         works: List[Dict[str, Any]] = []
 
         existing = self._load_actors().get(key)
-        # 换了数据源插件：**旧 ID 与旧映射一律作废**。别家站点各排各的号，
-        # 拿别家的 12 去查 .net 的 12 是另一个人；旧映射留着还会把别的剧算成「已见过」。
+        # 换了数据源插件 **或同一插件换了站点**（net ↔ org）：旧 ID 一律作废。
+        # 两边各排各的号，拿别家的 12 去查本站的 12 是另一个人。
         same_source = (
             isinstance(existing, dict)
             and _clean_text(existing.get("source")) == _SOURCE_PLUGIN_ID
         )
-        if same_source:
+        # 数据源当前站点（``org`` / ``net``；问不到为空）。⚠️ 空时**不判站**：
+        # 宁可沿用旧 ID 等下一轮画像恢复再迁移，也不因瞬时故障把好端端的 ID 全清掉。
+        site_tag = _clean_text(self._source_site()).lower()
+        # ⚠️ **ID 前缀是硬事实，优先于落盘的 site 字段**：一次失败的重解析可能把
+        # ``site`` 写成当前站、ID 却还是旧站的（2026-11-05 实测：127 条 site=net
+        # 但 baike_id=actor:）。只信 site 会让换站判定就此自锁、再也不迁移。
+        # 老记录没存过 ``site`` 时也靠这层反推（yanyuan: 等恒老站、actor: 恒新站）。
+        existing_site = ""
+        if isinstance(existing, dict):
+            cached_id = _clean_text(existing.get("baike_id"))
+            if cached_id:
+                existing_site = identity_site(cached_id)
+            if not existing_site:
+                existing_site = _clean_text(existing.get("site")).lower()
+        same_site = same_source and (not site_tag or existing_site == site_tag)
+        # 本轮站点落盘：画像问不到时沿用旧值（别把已知站点抹成未知，
+        # 否则画像一恢复就被误判成「又换站了」）。
+        record["site"] = site_tag or existing_site
+        if same_site:
             # 数据源演员 ID 缓存在快照里：解析一次后，后续轮次直接按 ID 取作品页，
             # 不再走站外检索（站点检索一次要几秒，几十位演员逐个查一轮不可接受）
             record["baike_id"] = (
@@ -4394,9 +5135,31 @@ class ShortDramaActorSubscribe(_PluginBase):
             record["name"] = _clean_text(existing.get("name")) or record["name"]
             record["url"] = _clean_text(existing.get("url"))
             record["media_id"] = _clean_text(existing.get("media_id"))
+        elif isinstance(existing, dict):
+            # 换源 / 换站：旧 ID 必须**显式作废** —— _actor_id_of 认所有人物前缀
+            # （yanyuan / actor 都算人物号），不清空的话旧 ID 会活着走进
+            # _baike_works 的 ``actor_works`` 分支。⚠️ 换站尤其不能指望「查无此人」
+            # 自愈：数据源按前缀路由，旧站解析器还活着，旧号多半**仍取得到数**
+            # ——不在这里主动清，演员会一直跟着旧站的数据走。清掉后下一轮按名字
+            # 到当前站重检索（精确同名才回写新号，随后 _rekey_actors 归位新键）。
+            # 名字从旧档案里捞：键本身是旧源 ID，不能当检索词（档案里没名字的
+            # 过渡态由本方法尾部的 profile 兜底）。
+            record["baike_id"] = ""
+            record["name"] = _clean_text(existing.get("name"))
 
-        # 本轮时间戳：记首次发现 / 刷新时间（「新作品」不看它，看作品自己的首播日期）
+        # 本轮时间戳：既是刷新时间，也是本轮首次出现的作品的 ``first_seen`` ——
+        # 两者必须同一个值（作品墙排序 / 历史追溯都读它），解析过程中不再另生成。
+        # ⚠️「新剧」判定不看它：那个只看作品卡上的站点角标（见 is_added_work）。
         stamp = datetime.now().strftime(_STAMP_FORMAT)
+        # 上一轮的时间戳作基线保留（历史对照）。换源 / 换站时旧 ID / 旧映射作废，
+        # 基线一并作废 —— 那轮只建基线不标新（_collect_fresh 的判据要 baseline）。
+        previous_map = None
+        if same_site and isinstance(existing, dict):
+            candidate = existing.get("first_seen")
+            if isinstance(candidate, dict):
+                previous_map = candidate
+        if same_site and previous_map:
+            record["baseline"] = _clean_text((existing or {}).get("time"))
 
         self._baike_works(record, works)
         # ⚠️ 数据源这一轮空手而归时**沿用内存里的上次结果**（不再落盘旧作品）：
@@ -4408,11 +5171,9 @@ class ShortDramaActorSubscribe(_PluginBase):
                 works = cached[0]
                 record["stale"] = True
         # first_seen 映射：老键原样继承、新作品记本轮时间、下线的键剪掉
-        record["first_seen"] = merge_first_seen(
-            (existing or {}).get("first_seen") if isinstance(existing, dict) else None,
-            works,
-            stamp,
-        )
+        record["first_seen"] = merge_first_seen(previous_map, works, stamp)
+        # 本轮时间 == 本轮新作品的 first_seen（同一枚 stamp，见上面的说明）
+        record["time"] = stamp
         # 键是 ID（身份已收敛）时名字不随键来：从档案兜一层，拿不到才落回键
         if not _clean_text(record.get("name")):
             profile = self._source_profile(_clean_text(record.get("baike_id")), "")
@@ -4442,13 +5203,15 @@ class ShortDramaActorSubscribe(_PluginBase):
 
         链路（全部经 :meth:`_source` 精确打到 ShortDramaBaikeScraper）：
 
-        1. 快照里已缓存 ``baike_id``（复合 ``yanyuan:<id>``）→ 直接
-           ``actor_works(actor_id)``，零检索请求；
-        2. 没缓存 → ``search_actors(name)``，只收**归一化名字精确相等**的候选。
+        1. 快照里已缓存 ``baike_id``（复合人物 ID，``actor:<id>`` / ``yanyuan:<id>``）→
+           直接 ``actor_works(actor_id)``，零检索请求；
+        2. 没缓存 → ``search_actors(name)``（名字取 ``record["name"]``，键是 ID 时
+           名字在档案里），只收**归一化名字精确相等**的候选。
 
         缓存 ID 只在**形态对得上**时才用：数据源的人物号只会落在人物分类
-        （``yanyuan`` / ``daoyan`` / ``bianju``）下，别的分类前缀（作品号、别家站点的
-        号段）不是这位演员的号 —— 判废、清掉缓存、按名字重解析，不拿它去猜。
+        （.org ``actor`` / .net ``yanyuan`` / ``daoyan`` / ``bianju``）下，别的分类前缀
+        （作品号、别家站点的号段）不是这位演员的号 —— 判废、清掉缓存、按名字重解析，
+        不拿它去猜。
 
         任何异常都只记进 ``errors``，不会拖垮发现任务。
         """
@@ -4456,7 +5219,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         if not key:
             return
         try:
-            baike_id = canonical_media_id(record.get("baike_id"), default_kind="yanyuan")
+            baike_id = canonical_media_id(record.get("baike_id"), default_kind=_DEFAULT_PERSON_KIND)
             kind, native = split_media_id(baike_id)
             if not native or kind not in _PERSON_KINDS:
                 if baike_id:
@@ -4465,15 +5228,40 @@ class ShortDramaActorSubscribe(_PluginBase):
                 baike_id = ""
             if baike_id:
                 cards = self._source("actor_works", actor_id=baike_id) or []
-            else:
-                candidates = self._source("search_actors", name=key) or []
+                if not cards and _clean_text(record.get("name")):
+                    # 缓存 ID 在当前源查无此人：换源残留（旧号在新站不存在）、
+                    # 站点改版、条目下线都会走到这。清掉缓存按名字重检索一次 ——
+                    # 检索词必须是名字（键可能是旧源 ID，拿它搜人必然空手而归）。
+                    # 真没作品的演员会多花一次检索请求，换来自愈能力，划算。
+                    record["baike_id"] = ""
+                    baike_id = ""
+            if not baike_id:
+                # ⚠️ 检索词用名字（record["name"]），不能用键：键在「身份收敛到 ID」
+                # 之后是复合 ID（换源重建时还是旧源的 ID），拿它搜人必然空手而归。
+                search_name = _clean_text(record.get("name")) or key
+                candidates = self._source("search_actors", name=search_name) or []
                 matched = [
                     row
                     for row in candidates
                     if isinstance(row, dict)
-                    and _actor_name_key(row.get("name")) == _actor_name_key(key)
+                    and _actor_name_key(row.get("name")) == _actor_name_key(search_name)
                     and split_media_id(row.get("actor_id") or row.get("media_id"))[1]
                 ]
+                # ⚠️ 数据源的 search_actors 是「本地 ID 库 + 站内搜索」合并 —— 换站后
+                # 本地库里**旧站**的人物行往往排在最前，直接取 matched[0] 会把刚清掉的
+                # 旧站号原样拿回来（实测 net 下搜「王宇涵」第一候选仍是 actor:9244）。
+                # 按当前站点筛一遍，只认当前站号段；当前站确实没有精确同名候选时
+                # 才退回全部候选，避免整墙判成「未收录」。站点画像问不到就不筛。
+                site_tag = _clean_text(self._source_site()).lower()
+                if site_tag and matched:
+                    on_site = [
+                        row
+                        for row in matched
+                        if identity_site(row.get("actor_id") or row.get("media_id"))
+                        == site_tag
+                    ]
+                    if on_site:
+                        matched = on_site
                 if not matched:
                     # 稳定结果：站上没收录这位演员（或数据源插件未安装/已停用）
                     record["errors"].append(
@@ -4482,7 +5270,7 @@ class ShortDramaActorSubscribe(_PluginBase):
                     return
                 baike_id = canonical_media_id(
                     matched[0].get("actor_id") or matched[0].get("media_id"),
-                    default_kind="yanyuan",
+                    default_kind=_DEFAULT_PERSON_KIND,
                 )
                 record["baike_id"] = baike_id
                 cards = self._source("actor_works", actor_id=baike_id) or []
@@ -4516,10 +5304,14 @@ class ShortDramaActorSubscribe(_PluginBase):
         """当前到期待解析的演员（新加的 / 快照过期 / 字段版本落后 / 失败已到重试点）。"""
         ttl = self.snapshot_ttl_seconds()
         retry = self.retry_seconds()
+        site = _clean_text(self._source_site()).lower()
         return [
             key
             for key in self._actors
-            if record_needs_refresh(cached.get(key), ttl, retry, schema=_SNAPSHOT_SCHEMA)
+            if record_needs_refresh(
+                cached.get(key), ttl, retry, schema=_SNAPSHOT_SCHEMA,
+                source=_SOURCE_PLUGIN_ID, site=site,
+            )
         ]
 
     def _merge_snapshot(
@@ -4551,7 +5343,11 @@ class ShortDramaActorSubscribe(_PluginBase):
         （否则用户添加演员会等一次几十秒的解析）。
         """
         record = self._discover_actor(key)
-        record["time"] = datetime.now().strftime(_STAMP_FORMAT)
+        # ⚠️ 成功路径别覆盖 ``time``：它就是这一轮首次出现的作品的 ``first_seen``，改了会把
+        # 「多出来的作品」判没（只有失败继承下来的旧记录才需要补个新时间）。
+        record["time"] = _clean_text(record.get("time")) or datetime.now().strftime(
+            _STAMP_FORMAT
+        )
         self._merge_snapshot({key: record})
         return _to_int(record.get("works_count"))
 
@@ -4578,6 +5374,23 @@ class ShortDramaActorSubscribe(_PluginBase):
         if not due:
             return []
 
+        # 换站迁移的轮级汇总：本轮要重解析的演员里有多少位缓存 ID 属于另一站
+        # （逐条作废在 _discover_actor 的换站分支里做，这里只留一条总账日志）。
+        site_tag = _clean_text(self._source_site()).lower()
+        if site_tag:
+            stale_ids = sum(
+                1
+                for key in due
+                if isinstance(cached.get(key), dict)
+                and _clean_text(cached[key].get("baike_id"))
+                and identity_site(cached[key].get("baike_id")) != site_tag
+            )
+            if stale_ids:
+                logger.info(
+                    f"{PLUGIN_NAME} 数据源当前站点 {site_tag}：{stale_ids} 位演员的"
+                    f"缓存 ID 属于另一站，本轮按名字重新解析并迁移到当前站号段"
+                )
+
         for key in due:
             # 插件被停用（stop_service）时不再往下抓：剩下的演员留给下一轮
             if not self._running:
@@ -4597,7 +5410,12 @@ class ShortDramaActorSubscribe(_PluginBase):
                 record.setdefault("name", key)
                 failed = True
             record["state"] = "waiting" if failed else record_state(record)
-            record["time"] = datetime.now().strftime(_STAMP_FORMAT)
+            # ⚠️ 成功路径别覆盖 ``time``：它等于这一轮首次出现的作品的 ``first_seen``
+            # （同一枚 stamp）；覆盖了首次发现时间就错了。失败继承的旧记录
+            # 没有本轮 stamp，才用当下时间补一个数（刷新重试间隔要按它算）。
+            record["time"] = _clean_text(record.get("time")) or datetime.now().strftime(
+                _STAMP_FORMAT
+            )
             # ⚠️ 逐演员**增量落盘**：首轮解析可能拉长到几十分钟，宿主 reconcile 随时会
             # 重载插件打断整轮 —— 整轮结束才写盘会把已解析的演员全部丢回去重来。
             # 走 _merge_snapshot（锁内读-改-写）而不是拿本轮开头的 cached 整份覆盖：
@@ -4637,8 +5455,8 @@ class ShortDramaActorSubscribe(_PluginBase):
             「展示谁判谁」：默认由 ``api_works`` 对**返回页**逐行判；「只看未入库」
             筛选开启时才在本方法里全量判（筛选语义需要全集）。
 
-        ``is_new`` **不落盘**，每次查询现算（``release_date`` 是否在最近
-        :data:`_NEW_WINDOW_DAYS` 天内）—— 过了窗口的「新」自动消失。
+        ``is_new`` **不落盘**，每次查询按 :func:`is_added_work` 现算 ——
+        站点撤掉「新剧」角标后，下一轮刷新自然就不再算新。
 
         **作品随快照落盘**（v5）：作品内容直接读快照（:meth:`_actor_works_cached`
         快照优先，老记录 / 刚添加还没抓过才退回数据源）。
@@ -4649,6 +5467,8 @@ class ShortDramaActorSubscribe(_PluginBase):
         rows: Dict[str, Dict[str, Any]] = {}
         actor_counts: Dict[str, int] = {}
         now = time.time()
+        # 海报「现拼」函数只取一次（出墙前按当前出图形态重算，见 _refresh_poster）
+        poster_url = self._source_poster_url()
         for key, record in snapshot.items():
             if not isinstance(record, dict):
                 continue
@@ -4661,8 +5481,9 @@ class ShortDramaActorSubscribe(_PluginBase):
                 if not isinstance(work, dict):
                     continue
                 row = work_row(work, actor, key)
+                _refresh_poster(row, poster_url)
                 row["first_seen"] = _clean_text(mapping.get(work_identity(work)))
-                row["is_new"] = is_fresh_work(row, now)
+                row["is_new"] = is_added_work(row, record)
                 seen = rows.get(row["key"])
                 if seen:
                     # 同一部剧多位演员参演时合并演员名（「A / B」），命中任一演员的筛选都算
@@ -4758,9 +5579,10 @@ class ShortDramaActorSubscribe(_PluginBase):
             year=_clean_text(params.get("year")),
         studio=_clean_text(params.get("studio")),
         platform=_clean_text(params.get("platform")),
+        only_new=_to_bool(params.get("only_new")),
         only_not_in_library=_to_bool(params.get("only_not_in_library")),
         only_not_subscribed=_to_bool(params.get("only_not_subscribed")),
-        # 订阅身份来自订阅清单（插件清单 ∪ 宿主 djbaike 订阅），与卡片红心同一份真相
+        # 订阅身份来自订阅清单（插件清单 ∪ 宿主订阅），与卡片红心同一份真相
         subscribed=(
             set(self._subscribed_works())
             if _to_bool(params.get("only_not_subscribed"))
@@ -4807,6 +5629,20 @@ class ShortDramaActorSubscribe(_PluginBase):
         record = record if isinstance(record, dict) else {}
         cached = self._profile_cache.get(key)
         profile = cached[0] if isinstance(cached, tuple) else {}
+        if not profile:
+            # 档案历史上按「名字」写、卡片行按「关注键（actor:<n>）」读，两把键并存；
+            # 这里把记录里的 ID / 名字都试一遍，避免「刚补过档案、卡片仍是空图」。
+            for alt in (
+                _clean_text(record.get("baike_id")),
+                _clean_text(record.get("media_id")),
+                _clean_text(record.get("name")),
+            ):
+                if not alt or alt == key:
+                    continue
+                alt_cached = self._profile_cache.get(alt)
+                if isinstance(alt_cached, tuple) and alt_cached[0]:
+                    profile = alt_cached[0]
+                    break
         # 档案是**进程内缓存**（插件一重载就空）⇒ 没档案时按身份现拼头像，
         # 否则整面墙都是人形占位图（2026-10-18 真实反馈）。
         avatar = _clean_text(profile.get("profile")) or actor_poster_url(
@@ -4843,11 +5679,11 @@ class ShortDramaActorSubscribe(_PluginBase):
         ⚠️ 数据源没有 ``actor_profile`` 时头像只能从演员候选的 ``poster`` 来
         （见 :meth:`_source_profile`），简介 / 性别 / 国籍就是空。
         """
-        actor_id = canonical_media_id(actor_id, default_kind="yanyuan")
+        actor_id = canonical_media_id(actor_id, default_kind=_DEFAULT_PERSON_KIND)
         if not split_media_id(actor_id)[1]:
             record = self._load_actors().get(key)
             record = record if isinstance(record, dict) else {}
-            actor_id = canonical_media_id(record.get("baike_id"), default_kind="yanyuan")
+            actor_id = canonical_media_id(record.get("baike_id"), default_kind=_DEFAULT_PERSON_KIND)
         if not split_media_id(actor_id)[1]:
             return {}
         profile = self._source_profile(actor_id, name)
@@ -4858,7 +5694,15 @@ class ShortDramaActorSubscribe(_PluginBase):
         }
         if name:
             normalized.setdefault("name", name)
-        self._profile_cache[key] = (normalized, time.time())
+        stamp = time.time()
+        self._profile_cache[key] = (normalized, stamp)
+        # 同一份档案再挂到**规范 ID** 上：卡片行按 ID 取（`_actor_card_row` 的 key
+        # 是关注键 `actor:<n>`）、发现流程按名字写，只存一把键时另一边永远 miss ——
+        # 表现就是「刚 enrich 过，下次打开又是占位图」。
+        if actor_id and actor_id != key:
+            self._profile_cache[actor_id] = (normalized, stamp)
+        # 落盘（2026-11-03）：`.org` 头像拼不出来，只存内存 ⇒ 重启就没
+        self._profiles_dirty = True
         return normalized
 
     def _fill_actor_profiles(
@@ -4891,12 +5735,17 @@ class ShortDramaActorSubscribe(_PluginBase):
             return 0
 
         def fill_one(row: Dict[str, Any]) -> bool:
-            key = _clean_text(row.get("name"))
+            # 缓存键与 `_actor_card_row` 对齐：优先用**规范 ID**（actor:<n>），
+            # 没有 ID 才退回名字 —— 否则补完的档案写在名字键上，卡片下次按 ID
+            # 查不到，等于白补一次。
+            name = _clean_text(row.get("name"))
+            actor_ref = _clean_text(row.get("actor_id")) or _clean_text(
+                row.get("media_id")
+            )
+            key = actor_ref or name
             if not key:
                 return False
-            profile = self._fill_profile_cache(
-                key, key, _clean_text(row.get("actor_id"))
-            )
+            profile = self._fill_profile_cache(key, name, actor_ref)
             if not profile:
                 return False  # 还是抓不到（百科没给 / 暂不可用），留给下一轮发现任务
             for field in _CARD_PROFILE_FIELDS:
@@ -4912,27 +5761,33 @@ class ShortDramaActorSubscribe(_PluginBase):
         return filled
 
     def api_people(
-        self, kind: str = "yanyuan", page: str = "1"
+        self, kind: str = "", page: str = "1", gender: str = ""
     ) -> "schemas.Response[api_models.PeopleListData]":
-        """人物目录的一页（面板「发现演员」用，``GET /people``）。
+        """人物目录的一页（面板「发现」页用，``GET /people``）。
 
-        数据来自数据源的 ``list_people``（站点 ``/<kind>/list.html?page=N``，
-        24 条/页）。分类就是三个：演员 / 导演 / 编剧 —— 三者**同属人物**，
-        身份是复合 ID（``kind:<id>``），所以这里只做转发 + 标「已关注」，
-        不把任何人写进本地库（翻几十页就是几万人，入库会把库撑成浏览记录）。
+        数据来自数据源的 ``list_people``（.org 是 ``/{语言}/actor?gender=男|女&page=N``）。
+        **目录有哪几本由数据源当前站点决定**（问 ``site_profile.person_kinds``）：
+        .org 只有演员一本，.net 是演员 / 导演 / 编剧三本；取值不在当前站点里的
+        一律回落到该站默认分类。三者**同属人物**，身份是复合 ID（``kind:<id>``），
+        所以这里只做转发 + 标「已关注」，不把任何人写进本地库
+        （翻几十页就是几万人，入库会把库撑成浏览记录）。
+
+        ``gender``（2026-11-02 用户口径：演员分男女榜）：``男`` / ``女``，空串 = 全部。
+        站点只有两档性别参数，「全部」就是不带参数 —— 所以这里不做第三种取值。
+        老站没有性别筛选位（``site_profile.genders`` 为空），传了也会被对面忽略。
 
         ``kind`` / ``page`` 都按 ``str`` 收：面板与脚本都可能传空串 / ``"None"``，
         声明成 ``int`` 会被 FastAPI 直接挡成 422（数据源侧踩过这个坑）。
         """
         key = str(kind or "").strip().lower()
-        if key in ("", "none", "null", "undefined"):
-            key = _PEOPLE_KINDS[0]
-        if key not in _PERSON_KINDS:
-            key = _PEOPLE_KINDS[0]
+        site_kinds = self._site_person_kinds()
+        if key in ("", "none", "null", "undefined") or key not in site_kinds:
+            key = site_kinds[0]
         page_no = _to_int(page, 1) or 1
         page_no = max(1, page_no)
+        sex = normalize_gender(gender)
 
-        payload = self._source_people(key, page_no)
+        payload = self._source_people(key, page_no, gender=sex)
         followed_names = {_actor_name_key(name) for name in self._actors}
         followed_ids = {
             _clean_text(record.get("baike_id"))
@@ -4957,6 +5812,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             success=True,
             data=api_models.PeopleListData(
                 kind=key,
+                gender=sex,
                 page=page_no,
                 has_more=bool(payload.get("has_more")),
                 message=_clean_text(payload.get("message")),
@@ -4964,66 +5820,94 @@ class ShortDramaActorSubscribe(_PluginBase):
             ),
         )
 
-    def api_ranks(self) -> "schemas.Response[api_models.RanksData]":
-        """榜单目录（发现页「榜单」chips 用，``GET /ranks``）。
+    def api_ranks(self, all: str = "") -> "schemas.Response[api_models.RanksData]":
+        """发现页的「可浏览目录」—— 站点的列表 + 榜单（``GET /ranks``）。
 
-        2026-10-23 用户口径：榜单解析归**数据源**统一供给 —— 走跨插件模块方法
-        ``list_ranks``（与 ``list_people`` 同一条 ``_source`` 通道），本插件不再
-        自抓页面。目录是纯静态的，零网络。
+        2026-11-02：数据源的「探索页」整体下线，取数改走跨插件模块方法
+        ``list_ranks``（与 ``list_people`` 同一条 ``_source`` 通道）；目录是
+        **纯静态表，零网络**，站点切换后整张表都会换。
+
+        **显示哪几项由本插件的配置 ``discover_tabs`` 决定**（就是原数据源探索页
+        那项配置，2026-11-02 迁到这里）：空 = 数据源给什么就全显示（不存默认清单，
+        否则切站后全是错 key）；非空 = 只留勾选的。
+
+        ``all=1`` = **无视配置给全集**（配置页拿候选源用）。少了这个开关，
+        配置页就只能看到已勾的那几项，用户永远加不上别的 —— 所以必须分清：
+        发现页要过滤后的，配置页要全集。
         """
         try:
-            raw = self._source("list_ranks")
+            raw = self._source_rank_catalog()
+            if raw is None:
+                raise _SourceUnavailable
         except _SourceUnavailable:
             raw = None
-            message = f"{_SOURCE_LABEL} 还没有提供榜单目录（list_ranks 模块方法）"
+            message = f"{_SOURCE_LABEL} 还没有提供可浏览目录（list_ranks 模块方法）"
         except Exception as err:  # noqa: BLE001 - 目录取不到不该把面板打不开
-            logger.warning(f"{PLUGIN_NAME} 取榜单目录失败：{err}")
+            logger.warning(f"{PLUGIN_NAME} 取浏览目录失败：{err}")
             raw = None
-            message = f"榜单目录获取失败：{err}"
+            message = f"浏览目录获取失败：{err}"
         else:
             message = str(raw.get("message") or "") if isinstance(raw, dict) else ""
-        items = (raw or {}).get("ranks") if isinstance(raw, dict) else None
+        items = (raw or {}).get("tabs") if isinstance(raw, dict) else None
+        # 配置页要全集（all=1），发现页按勾选过滤
+        picked = set() if _to_bool(all, False) else set(self._discover_tabs)
+        rows: List[api_models.RankRow] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip().lower()
+            if not key or (picked and key not in picked):
+                continue
+            rows.append(
+                api_models.RankRow(
+                    key=key,
+                    name=str(item.get("name") or ""),
+                    # 分类列表可一直往下翻；榜单是整页一榜（数据源按站点页面判断）
+                    paged=item.get("paged") is not False,
+                    has_detail=True,
+                )
+            )
+        if picked and not rows and not message:
+            # 勾过但一个都对不上：多半是数据源切过站（key 整批换）——
+            # 这里不能什么都不说，否则用户只看到一本目录都没有
+            message = "配置里勾选的列表 / 榜单在当前数据源站点上都不存在（可能切过站），请重新勾选。"
         return schemas.Response(
             success=True,
-            data=api_models.RanksData(
-                ranks=[
-                    api_models.RankRow(
-                        key=str(item.get("key") or ""),
-                        name=str(item.get("name") or ""),
-                        has_detail=item.get("has_detail") is not False,
-                    )
-                    for item in (items or [])
-                    if isinstance(item, dict)
-                ],
-                message=message,
-            ),
+            data=api_models.RanksData(ranks=rows, message=message),
         )
 
     def api_rank_works(
         self, rank: str = "", page: str = "1"
     ) -> "schemas.Response[api_models.RankWorksData]":
-        """一个榜单的作品卡（发现页网格用，``GET /ranks/works?rank=rebo&page=1``）。
+        """一个列表 / 榜单的作品卡（发现页网格用，``GET /ranks/works?rank=<key>&page=1``）。
 
-        2026-10-23 用户口径：数据源按**实际页面**解析（不与 ``actor_works``
-        对齐），这里原样透传 ``medias``——不归一、不套在库判定与订阅台账；
-        卡片样式由前端映射到与作品页同一张卡。
+        2026-11-02：取数改走数据源的 ``rank_medias``（原探索页那套解析），
+        卡片按**实际页面**给（``media_id`` / ``title`` / ``badge`` / ``badges`` /
+        ``episodes`` / ``date`` / ``actors_text`` / ``poster`` / ``url``），
+        这里原样透传 ``medias`` —— 不归一、不套在库判定与订阅台账；卡片样式由前端
+        映射到与作品页同一张卡。
 
-        2026-10-24：「推荐」页支持翻页（``/tuijian.html?page=N``），按 ``page``
-        透传给数据源并回传 ``has_more``；``/paihang/*`` 排行榜页不分页
+        分类列表按站点分页（``page`` 透传、``has_more`` 回传）；榜单是整页一榜
         （传了也忽略，``has_more`` 恒假）。抓不到时 ``medias`` 空 + ``message``，
         不算接口失败。
+
+        2026-11-03 新增特殊 key ``rss``：不走数据源的 ``rank_medias``，改走
+        :meth:`_discover_rss_rank` —— 配置页「发现页 RSS 站点」的最新条目 →
+        数据源识别接口（``recognize_media``）→ 作品卡。
         """
         page_no = max(1, _to_int(page, 1))
         key = str(rank or "").strip().lower()
+        if key == "rss":
+            return self._discover_rss_rank(page_no)
         try:
-            raw = self._source("rank_medias", rank=key, page=page_no)
+            raw = self._source_rank_works(key, page_no)
         except _SourceUnavailable:
             return schemas.Response(
                 success=True,
                 data=api_models.RankWorksData(
                     rank=key,
                     page=page_no,
-                    message=f"{_SOURCE_LABEL} 还没有提供榜单取数（rank_medias 模块方法）",
+                    message=f"{_SOURCE_LABEL} 还没有提供列表 / 榜单取数（rank_medias 模块方法）",
                 ),
             )
         except Exception as err:  # noqa: BLE001 - 榜单取不到不该把面板打不开
@@ -5041,6 +5925,13 @@ class ShortDramaActorSubscribe(_PluginBase):
         if probe.available:
             for row in rows:
                 row["in_library"] = probe.lookup(row)
+        # 卡片的订阅红心 / 搜索状态：与作品墙**同一套后端权威判定**
+        # （2026-11-03 用户反馈「订阅了的作品显示没订阅」）。原先这三个榜单分支只判了
+        # 在库，没打 ``subscribed``，前端只能靠订阅清单集合兜底 —— 集合没加载、
+        # 或订阅台账里的身份与卡片 media_id 不是同一个（换站前后身份不同）时，
+        # 整面墙就被画成未订阅。行模型 ``extra="allow"``，加字段不会被截断。
+        self._mark_subscribed(rows)
+        self._attach_sub_state(rows)
         return schemas.Response(
             success=True,
             data=api_models.RankWorksData(
@@ -5050,6 +5941,276 @@ class ShortDramaActorSubscribe(_PluginBase):
                 has_more=bool(raw.get("has_more")),
                 medias=[api_models.RankMediaRow(**row) for row in rows],
                 message=str(raw.get("message") or ""),
+            ),
+        )
+
+    def _rss_ident_data(self) -> Dict[str, Any]:
+        """读 RSS 条目识别缓存（规范化剧名 → 识别结论 / miss 记录）。
+
+        进程生命周期内做**一次** v2 合并迁移：v2（search_medias 时代）的 miss
+        结论不搬（那是全量搜索 + normalize 前缀口径下的判定，对 ``recognize_media``
+        不公平，交给新方法重认），命中行补进 v3（media_id 不受识别方法影响）。
+        注意键不存在时 ``get_data`` 给**空 dict**，不能拿它当「迁移过」的信号，
+        用实例标志位记状态。
+        """
+        try:
+            data = self.get_data(_DATA_RSS_IDENT)
+        except Exception:  # noqa: BLE001 - 缓存读不到就当没有
+            data = None
+        merged = data if isinstance(data, dict) else {}
+        if getattr(self, "_rss_ident_migrated", False):
+            return merged
+        self._rss_ident_migrated = True
+        try:
+            legacy = self.get_data(_DATA_RSS_IDENT_LEGACY)
+        except Exception:  # noqa: BLE001
+            return merged
+        if not isinstance(legacy, dict) or not legacy:
+            return merged
+        fresh = {
+            key: row
+            for key, row in legacy.items()
+            if isinstance(row, dict) and not row.get("miss") and key not in merged
+        }
+        if fresh:
+            merged = {**fresh, **merged}
+            try:
+                self.save_data(_DATA_RSS_IDENT, merged)
+            except Exception:  # noqa: BLE001 - 迁移写失败只影响下次复用
+                pass
+        return merged
+
+    def _identify_rss_work(self, raw_title: str, budget: Dict[str, int]) -> Dict[str, Any]:
+        """把一条 RSS 种子标题识别成**数据源作品**（带落盘缓存与请求级预算）。
+
+        识别 = :func:`rss_drama_name` 从种子标题提取**中文剧名**（真名在方括号里，
+        拼音前缀搜不到）→ 数据源**识别接口** ``recognize_media``（2026-11-03
+        用户口径：不走 ``search_medias`` 全量搜索 —— 识别接口内部做标题匹配、
+        自带匹配缓存，命中即返回唯一结果）。识别出的必须是站点剧集身份
+        （``is_drama_media_id``）：站点未收录时识别接口可能回豆瓣 / TMDB 的
+        外部身份，按 miss 处理。
+        结论落插件数据（命中永久复用；miss 记 7 天后重试——站点新条目可能晚于百科上架）。
+        ``budget["searches"]`` 是本次请求已花的识别次数，超过预算直接放弃（站点流控），
+        下次打开发现页继续认。
+
+        返回 ``{"media_id","title","year","poster"}``；``{}`` = 本次没识别（预算外 /
+        识别失败），``{"miss": True, "name": 提取的剧名}`` = 识别过且没命中
+        （缓存期内不再搜；``name`` 供调用方出灰卡，剥不出来时缺省）。
+        """
+        name = rss_drama_name(raw_title)
+        key = normalize_title(name)
+        if not key:
+            return {"miss": True}
+        cache = self._rss_ident_data()
+        hit = cache.get(key)
+        if isinstance(hit, dict):
+            if not hit.get("miss"):
+                return hit
+            ts = _to_int(hit.get("ts"))
+            if ts and time.time() - ts < _DISCOVER_RSS_MISS_TTL:
+                return hit
+        if budget.get("searches", 0) >= _DISCOVER_RSS_IDENT_BUDGET:
+            return {"miss": True, "name": name}
+        budget["searches"] = budget.get("searches", 0) + 1
+        try:
+            info = self._source(
+                "recognize_media", meta=MetaInfo(name), media_source=_BAIKE_SOURCE
+            )
+        except Exception as err:  # noqa: BLE001 - 识别失败不影响其它条目
+            logger.warning(f"{PLUGIN_NAME} 发现页 RSS 条目识别失败（{name}）：{err}")
+            return {"miss": True, "name": name}
+        media_id = canonical_media_id(getattr(info, "media_id", "") or "")
+        title = _clean_text(getattr(info, "title", "") or "")
+        logger.debug(
+            f"{PLUGIN_NAME} [rss-ident] raw={raw_title!r} name={name!r} key={key!r} "
+            f"hit={media_id!r}/{title!r}"
+        )
+        # 外部身份（豆瓣 / TMDB 兜底）与小说 / 人物一律不算命中，按 miss 记
+        best = info if media_id and title and is_drama_media_id(media_id) else None
+        try:
+            if best is None:
+                cache[key] = {"miss": True, "ts": int(time.time()), "name": name}
+                self.save_data(_DATA_RSS_IDENT, cache)
+                return {"miss": True, "name": name}
+            row = {
+                "media_id": canonical_media_id(getattr(best, "media_id", "") or ""),
+                "title": _clean_text(getattr(best, "title", "") or ""),
+                "year": _clean_text(str(getattr(best, "year", "") or "")),
+                "poster": _clean_text(getattr(best, "poster_path", "") or ""),
+                "ts": int(time.time()),
+            }
+            cache[key] = row
+            self.save_data(_DATA_RSS_IDENT, cache)
+            return row
+        except Exception:  # noqa: BLE001 - 缓存写失败只影响下次复用
+            if best is None:
+                return {"miss": True, "name": name}
+            return {
+                "media_id": canonical_media_id(getattr(best, "media_id", "") or ""),
+                "title": _clean_text(getattr(best, "title", "") or ""),
+                "year": _clean_text(str(getattr(best, "year", "") or "")),
+                "poster": _clean_text(getattr(best, "poster_path", "") or ""),
+            }
+
+    def _discover_rss_items(self) -> Tuple[List[Dict[str, Any]], str]:
+        """拉一遍**发现页 RSS 站点**的最新条目（进程内缓存 10 分钟），返回 ``(条目, 错误说明)``。
+
+        源 = 配置页「发现页 RSS 站点」勾选（:meth:`_discover_rss_site_urls`，
+        空 = 回落订阅站点集合）；站点配置自带 RSS 直接用，没有则用 Cookie
+        现场生成并缓存 24 小时。条目去重后按发布时间倒序，超量截断。
+        """
+        cached = getattr(self, "_discover_rss_cache", None)
+        now = time.time()
+        if cached and now - cached[0] < _DISCOVER_RSS_TTL_SECONDS:
+            return cached[1], ""
+        try:
+            from app.db.oper.site import SiteOper
+            from app.sdk.network import RssHelper
+        except Exception as err:  # noqa: BLE001 - 宿主版本差异
+            return [], f"宿主 RSS 依赖不可用：{err}"
+        try:
+            urls, names = self._discover_rss_site_urls(RssHelper, SiteOper)
+        except Exception as err:  # noqa: BLE001
+            return [], f"解析站点 RSS 源失败：{err}"
+        if not urls:
+            return [], "没有可用的 RSS 源（勾选站点没配 RSS 且无法生成，或一个站点都没勾）"
+        items: List[Dict[str, Any]] = []
+        seen: set = set()
+        for url, name in zip(urls, names):
+            try:
+                entries = RssHelper().parse(url) or []
+            except Exception as err:  # noqa: BLE001 - 单站失败不影响其它站点
+                logger.warning(f"{PLUGIN_NAME} 发现页 RSS 拉取失败（{name}）：{err}")
+                continue
+            for entry in entries:
+                title = _clean_text(entry.get("title"))
+                if not title or title in seen:
+                    continue
+                seen.add(title)
+                pubdate = entry.get("pubdate")
+                items.append(
+                    {
+                        "title": title,
+                        "site": name,
+                        "pubdate": (
+                            pubdate.strftime("%Y-%m-%d %H:%M")
+                            if hasattr(pubdate, "strftime")
+                            else _clean_text(pubdate)
+                        ),
+                        "link": _clean_text(entry.get("link")),
+                    }
+                )
+                if len(items) >= _DISCOVER_RSS_MAX_ITEMS:
+                    break
+            if len(items) >= _DISCOVER_RSS_MAX_ITEMS:
+                break
+        # 发布时间倒序（解析不出的垫底）；多站交错时新种子在前
+        items.sort(key=lambda it: str(it.get("pubdate") or ""), reverse=True)
+        self._discover_rss_cache = (now, items)
+        return items, ""
+
+    def _discover_rss_rank(self, page_no: int) -> "schemas.Response":
+        """发现页「站点 RSS」视图：RSS 最新条目 → 数据源识别 → 标准作品卡。
+
+        卡行与榜单同一张（:class:`api_models.RankMediaRow`）：
+
+        * **识别命中**：``media_id`` 用识别出的百科身份 —— 点卡片进详情、订阅、
+          在库图标全部与作品页共用；
+        * **未识别**（百科暂未收录 / 本轮预算外）：``media_id`` 留空出**灰卡**，
+          只展示剧名与 RSS 出处（2026-11-03 用户口径「怎么只有一部」—— 百科对
+          PT 新种子的收录本来就滞后，不识别不出卡会让视图基本空白）；识别到后
+          下次刷新自动「转正」成作品卡。灰卡前端不响应点击。
+
+        同剧多条种子（分集 / 合集）去重留最新一条（命中按 media_id、灰卡按
+        规范化剧名）；``actors_text`` 放 RSS 出处（站点 · 发布时间）。
+        """
+        items, errmsg = self._discover_rss_items()
+        if not items:
+            return schemas.Response(
+                success=True,
+                data=api_models.RankWorksData(
+                    rank="rss", name="站点 RSS", page=page_no, message=errmsg or "RSS 暂无条目"
+                ),
+            )
+        budget: Dict[str, int] = {"searches": 0}
+        rows: List[Dict[str, Any]] = []
+        seen_mid: set = set()
+        seen_name: set = set()
+        ident_total = ident_hit = 0
+        probe = self.library_probe
+        for item in items:
+            ident_total += 1
+            raw_title = str(item.get("title"))
+            ident = self._identify_rss_work(raw_title, budget)
+            actors_text = " · ".join(
+                part for part in (str(item.get("site")), str(item.get("pubdate"))) if part
+            )
+            media_id = (
+                _clean_text(ident.get("media_id")) if ident and not ident.get("miss") else ""
+            )
+            if media_id and media_id not in seen_mid:
+                seen_mid.add(media_id)
+                ident_hit += 1
+                row = {
+                    "media_id": media_id,
+                    "title": _clean_text(ident.get("title")) or raw_title,
+                    "badge": "RSS",
+                    "episodes": 0,
+                    "date": str(item.get("pubdate") or "")[:10],
+                    "actors_text": actors_text,
+                    "poster": _clean_text(ident.get("poster") or ""),
+                    "url": "",
+                }
+                if probe.available:
+                    row["in_library"] = probe.lookup(row)
+                rows.append(row)
+                continue
+            # 未识别（miss / 预算外）：灰卡占位，识别到后转正
+            name = _clean_text(ident.get("name")) if ident else ""
+            if not name:
+                name = rss_drama_name(raw_title)
+            key = normalize_title(name)
+            if not key or key in seen_name:
+                continue
+            seen_name.add(key)
+            rows.append(
+                {
+                    "media_id": "",
+                    "title": name,
+                    "badge": "RSS",
+                    "episodes": 0,
+                    "date": str(item.get("pubdate") or "")[:10],
+                    "actors_text": actors_text,
+                    "poster": "",
+                    "url": str(item.get("link") or ""),
+                }
+            )
+        start = (page_no - 1) * 30
+        # 订阅红心 / 搜索状态：RSS 视图走的是**提前返回**的独立分支，通用榜单那段
+        # 打标到不了这里 —— 不补这一段，「订阅了的作品显示没订阅」在 RSS 上照旧
+        # （2026-11-03 用户反馈）。灰卡没有 media_id，靠 ``_mark_subscribed`` 的
+        # 「订阅剧名唯一命中」兜底。
+        self._mark_subscribed(rows)
+        self._attach_sub_state(rows)
+        message = ""
+        if errmsg:
+            message = errmsg
+        if ident_hit < ident_total:
+            note = (
+                f"已识别 {ident_hit}/{ident_total} 条（灰卡 = 百科暂未收录，"
+                f"识别到后自动变成作品卡；单次最多新认 "
+                f"{_DISCOVER_RSS_IDENT_BUDGET} 条）"
+            )
+            message = f"{message}；{note}" if message else note
+        return schemas.Response(
+            success=True,
+            data=api_models.RankWorksData(
+                rank="rss",
+                name="站点 RSS",
+                page=page_no,
+                has_more=len(rows) > page_no * 30,
+                medias=[api_models.RankMediaRow(**row) for row in rows[start : start + 30]],
+                message=message,
             ),
         )
 
@@ -5116,6 +6277,9 @@ class ShortDramaActorSubscribe(_PluginBase):
         if _to_bool(enrich):
             # 已关注列表动辄上百位：一次请求就尽力补全（并发 6 路，120 秒超时够用）
             self._fill_actor_profiles(rows, limit=len(rows))
+        # 补到的档案马上落盘（2026-11-03）：`.org` 头像拼不出来，只存内存时
+        # plugin reload / 实例重启后整墙又会变回人形占位。
+        self._save_profile_store()
         return schemas.Response(
             success=True,
             data=api_models.ActorCardsData(
@@ -5124,23 +6288,23 @@ class ShortDramaActorSubscribe(_PluginBase):
         )
 
     def _collect_fresh(self, before: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """找出这一轮**新出现、且最近 :data:`_NEW_WINDOW_DAYS` 天内上映**的作品。
+        """找出这一轮**新出现「新剧」角标**的作品（与作品墙「新剧」同一口径）。
 
-        两个条件都得满足，缺一不可：
+        判据完全交给 :func:`is_added_work`（作品卡上的站点「新剧」角标）—— 通知的数
+        必须和墙上的「新剧」对得上，两条路各自判定一旦漂移，用户就会看到「通知来了
+        但墙上没标 / 墙上标了但没通知」。
 
-        * 「新出现」= 刷新前还没有 ``first_seen`` 键 —— 首次建立基线的演员整批都不算
-          （否则一次导入十几位演员会整片刷屏）；
-        * 「最近上映」= ``release_date`` 在窗口内 —— 与作品墙「新作品」**同一口径**
-          （:func:`is_fresh_work`）。只按「新出现」报会跟墙上的标记对不上。
+        再跟**刷新前**的同演员快照比一次：上一轮就带着「新剧」角标的作品本轮不算新的 ——
+        角标会在站上挂好几天，不比这一下，每轮刷新都会把同一批剧重新通知一遍
+        （旧口径靠 ``first_seen`` 时间戳天然只报一次，换成角标判定后这份去重得自己补）。
 
-        作品从刚写回快照的 ``works`` 里查（取不到的只跳过，不硬编标题）。
+        ``before`` 里的键可能是换源前的旧号（:meth:`_rekey_actors` 之前）：按记录里的
+        ``baike_id`` 建索引，新旧键都能对上。作品从刚写回快照的 ``works`` 里查
+        （取不到的只跳过，不硬编标题）。
         """
         after = self._load_actors()
-        now = time.time()
-        # 主键正在从名字归位成 ID（:meth:`_rekey_actors` 在每轮刷新后跑）：基线
-        # ``before`` 还拿着旧键。按「键或记录里的 baike_id」建一次索引，新旧键都能对上
         baseline: Dict[str, Dict[str, Any]] = {}
-        for old_key, old_record in before.items():
+        for old_key, old_record in (before or {}).items():
             if not isinstance(old_record, dict):
                 continue
             old_id = _actor_id_of(old_record.get("baike_id"))
@@ -5149,35 +6313,34 @@ class ShortDramaActorSubscribe(_PluginBase):
         for key, record in after.items():
             if not isinstance(record, dict):
                 continue
-            old = baseline.get(key)
-            old_map = (old or {}).get("first_seen") if isinstance(old, dict) else None
-            if not isinstance(old_map, dict) or not old_map:
-                continue
-            current = record.get("first_seen")
-            current = current if isinstance(current, dict) else {}
-            new_keys = [item for item in current if item not in old_map]
-            if not new_keys:
-                continue
             actor = _clean_text(record.get("name")) or key
             works = snapshot_works(record)
             if not works:
                 cached = self._works_cache.get(key)
                 works = cached[0] if isinstance(cached, tuple) else []
-            lookup = {
-                work_identity(work): work for work in works if isinstance(work, dict)
+            old = baseline.get(key)
+            old = old if isinstance(old, dict) else {}
+            already_marked = {
+                work_identity(item)
+                for item in snapshot_works(old)
+                if isinstance(item, dict) and is_added_work(item, old)
             }
-            for item in new_keys:
-                work = lookup.get(item)
-                if not work or not is_fresh_work(work, now):
+            for work in works:
+                if not isinstance(work, dict):
+                    continue
+                if not is_added_work(work, record):
+                    continue
+                if work_identity(work) in already_marked:
+                    # 上一轮就带着这枚角标：不是「这一轮新冒出来的新剧」
                     continue
                 fresh.append({"actor": actor, **work})
         return fresh
 
     def _notify_fresh(self, fresh: List[Dict[str, Any]]) -> None:
-        """新作品汇总通知（一条，不逐条刷屏）。"""
+        """新剧汇总通知（一条，不逐条刷屏）。"""
         if not fresh or not self._notify:
             return
-        lines = [f"发现 {len(fresh)} 部新作品："]
+        lines = [f"发现 {len(fresh)} 部新剧："]
         for item in fresh[:10]:
             title = _clean_text(item.get("title"))
             actor = _clean_text(item.get("actor"))
@@ -5187,11 +6350,11 @@ class ShortDramaActorSubscribe(_PluginBase):
         try:
             self.post_message(
                 mtype=_MessageType.Plugin,
-                title=f"【{self.plugin_name}】新作品",
+                title=f"【{self.plugin_name}】新剧",
                 text="\n".join(lines),
             )
         except Exception as err:  # noqa: BLE001 - 通知失败不该影响发现结果
-            logger.warning(f"{PLUGIN_NAME} 发送新作品通知失败：{err}")
+            logger.warning(f"{PLUGIN_NAME} 发送新剧通知失败：{err}")
 
     @staticmethod
     def _log_actor_states(snapshot: Dict[str, Any]) -> None:
@@ -5256,7 +6419,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         )[:_SUB_SEARCH_LIMIT]
         self.save_data(_DATA_SUB_SEARCH, dict(rows))
 
-    # ── 自建订阅清单（引擎 = self 时订阅归插件自己管）──
+    # ── 插件订阅清单（订阅的唯一存放处；宿主订阅 2026-11-02 完全去除）──
 
     def _plugin_subs(self) -> Dict[str, Any]:
         """读插件订阅清单（``media_id`` → 订阅记录）。"""
@@ -5269,8 +6432,211 @@ class ShortDramaActorSubscribe(_PluginBase):
             if isinstance(value, dict) and str(key).strip()
         }
 
+    def _subscribed_lookup(
+        self, subs: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Set[str], Set[str], str]:
+        """订阅身份的两套判据：**ID 集合** + **换站旧身份的剧名键集合**。
+
+        卡片判「已订阅」只要这两样，所以这里只读订阅清单本身（``get_data`` 一次），
+        不跑 :meth:`_subscribed_works` —— 那个要为消歧遍历全部演员的作品快照建索引。
+
+        剧名键只收**唯一**的旧身份标题：清单里同名两条时按名字桥会指错剧，
+        宁可显示未订阅也不误标（与 :meth:`_stale_same_title` 同一口径）。
+        返回 ``(ids, stale_title_keys, site)``。
+        """
+        subs = subs if subs is not None else self._plugin_subs()
+        site = self._source_site()
+        ids: Set[str] = set()
+        stale_counts: Dict[str, int] = {}
+        for media_id, record in subs.items():
+            key = _clean_text(media_id)
+            if not key:
+                continue
+            ids.add(key)
+            owner = identity_site(key)
+            if site and owner and owner != site:
+                name = title_key((record or {}).get("title"))
+                if name:
+                    stale_counts[name] = stale_counts.get(name, 0) + 1
+        stale_keys = {name for name, count in stale_counts.items() if count == 1}
+        return ids, stale_keys, site
+
+    def _mark_subscribed(self, rows: List[Dict[str, Any]]) -> None:
+        """就地把 ``subscribed`` 写进作品行（作品墙 / 演员作品页 / 榜单卡的红心）。
+
+        这是**后端权威判定**：前端为这一个布尔值去拉整份订阅清单（上百 KB）时，
+        只要那一次请求失败或解析失败，整面墙就会错标成「未订阅」—— 2026-11-02
+        真机反馈的正是这个。所以列表行自己带答案，前端只做兜底。
+
+        **没有 media_id 的行**（发现页 RSS 的灰卡：百科暂未收录、只留剧名）走
+        「订阅剧名键唯一命中」兜底 —— 这类行没有身份可比，不带这一步即使那部剧
+        早就订阅了也一律画成未订阅（2026-11-03 用户反馈「订阅了的作品显示没订阅」）。
+        同名多条订阅时不认，宁可显示未订阅也不误标。
+
+        **身份与当前站点不符的行**同理：识别缓存是「命中永久复用」，换站前认出来的
+        老站号（``duanju:…`` 长号）/ 外部兜底号（``douban:…``）会一直留在 RSS 卡上，
+        跟订阅清单里的新站号（``drama:…``）永远对不上 —— 身份不可信时同样退回
+        剧名桥，不拿一个注定 miss 的号做判定。
+        """
+        if not rows:
+            return
+        subs = self._plugin_subs()
+        ids, stale_keys, site = self._subscribed_lookup(subs)
+        title_counts: Dict[str, int] = {}
+        for record in subs.values():
+            name = title_key((record or {}).get("title"))
+            if name:
+                title_counts[name] = title_counts.get(name, 0) + 1
+        for row in rows:
+            media_id = _clean_text(row.get("media_id"))
+            name_key = title_key(row.get("title"))
+            hit = bool(media_id and media_id in ids)
+            if not hit and name_key:
+                card_site = identity_site(media_id)
+                # 身份可信 = 有号，且（问不到当前站 / 号就属于当前站）。
+                # 老站号、外部兜底号跟订阅清单的新站号没有可比性，按灰卡同口径走剧名桥。
+                trusted = bool(media_id) and not (
+                    site and (not card_site or card_site != site)
+                )
+                if not trusted:
+                    hit = title_counts.get(name_key) == 1
+                elif stale_keys:
+                    hit = name_key in stale_keys
+            row["subscribed"] = hit
+
+    def api_subscribed_ids(self) -> "schemas.Response[api_models.SubscribedIdsData]":
+        """订阅身份的轻量快照（``GET /subscribed_ids``，作品卡判红心用）。
+
+        搜索结果里的作品来自**数据源** ``/lookup``（不经过本插件），后端没机会
+        逐行标注；前端拿这一份小载荷（几十字节/条）按 ``media_id`` 打回卡片，
+        比再拉一次完整订阅清单稳得多 —— 后者是上百 KB，失败了会静默变成空集合，
+        整屏「已订阅」全被画成「未订阅」。
+        """
+        subs = self._plugin_subs()
+        ids, stale_keys, site = self._subscribed_lookup(subs)
+        stale_titles: List[str] = []
+        if stale_keys:
+            for record in subs.values():
+                title = _clean_text((record or {}).get("title"))
+                if title and title_key(title) in stale_keys:
+                    stale_titles.append(title)
+        return schemas.Response(
+            success=True,
+            data=api_models.SubscribedIdsData(
+                ids=sorted(ids),
+                site=site,
+                stale_titles=stale_titles,
+                count=len(ids),
+                # 关注名单（演员身份）同一份载荷带回去：搜索结果里的演员卡来自数据源
+                # ``/lookup``，同样不经过本插件，前端要有个权威集合才判得准红心。
+                actor_ids=sorted(
+                    {str(item).strip() for item in self._actors if str(item).strip()}
+                ),
+            ),
+        )
+
+    def _stale_same_title(
+        self, title: Any, subs: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """订阅清单里**同名、且身份属于别的站点**的那一条 —— 换站后要认的就是它。
+
+        只认跨站同名：同站的两条同名可能是两部不同的剧，按名字合并会把 A 剧的订阅
+        指到 B 剧上（2026-11-02 判据）。返回空串 = 没有可替换的旧记录。
+        """
+        site = self._source_site()
+        key = title_key(title)
+        if not site or not key:
+            return ""
+        pool = subs if subs is not None else self._plugin_subs()
+        for media_id, entry in pool.items():
+            owner = identity_site(media_id)
+            if not owner or owner == site:
+                continue
+            if isinstance(entry, dict) and title_key(entry.get("title")) == key:
+                return media_id
+        return ""
+
+    def _migrate_subscriptions(
+        self, works_index: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> Tuple[int, int]:
+        """把**别的站点身份**的订阅就地换成当前站点身份 —— 用作品墙已有的作品，零网络。
+
+        2026-11-02 用户口径：「订阅身份迁移可以和作品已有的作品来快速替换」。
+        换站后号段整批变，但作品墙 / 演员作品快照里已经是**当前站点的身份 + 标题**，
+        直接按标题对上就行 —— 不必去站点逐个搜（那是几百次请求，而且短剧重名，
+        搜索结果反而不可靠）。
+
+        三条严格判据：① 只动身份**不属于当前站点**的记录；② 标题归一后精确相等；
+        ③ 当前站点身份里**唯一命中**才换 —— 同名多条一律跳过（宁可留着旧记录，
+        也不能把 A 剧的订阅指到 B 剧上）。台账键跟着搬，冷却重新起算。
+
+        返回 ``(迁移条数, 迁移前清单条数)``。
+        """
+        site = self._source_site()
+        subs = self._plugin_subs()
+        total = len(subs)
+        if not site or not subs:
+            return 0, total
+        stale = [
+            (media_id, entry)
+            for media_id, entry in subs.items()
+            if identity_site(media_id) not in ("", site) and isinstance(entry, dict)
+        ]
+        if not stale:
+            return 0, total
+        # 当前站点身份的作品：标题键 → 身份集合（作品墙 + 演员作品快照，全在内存）
+        index: Dict[str, set] = {}
+        pool = works_index if works_index is not None else self._works_by_id()
+        for media_id, work in pool.items():
+            if identity_site(media_id) != site:
+                continue
+            key = title_key(work.get("title"))
+            if key:
+                index.setdefault(key, set()).add(media_id)
+        if not index:
+            return 0, total
+        plan: List[Tuple[str, str, Dict[str, Any]]] = []
+        for media_id, entry in stale:
+            hits = index.get(title_key(entry.get("title"))) or set()
+            if len(hits) != 1:
+                continue
+            target = next(iter(hits))
+            if target != media_id:
+                plan.append((media_id, target, dict(entry)))
+        if not plan:
+            return 0, total
+        ledger = self._sub_ledger()
+        ledger_dirty = False
+        stamp = datetime.now().strftime(_STAMP_FORMAT)
+        for old_id, new_id, entry in plan:
+            subs.pop(old_id, None)
+            if new_id not in subs:
+                # 新身份那条还不存在：旧记录原样搬过来（落点覆写 / 演员一并保留）
+                entry["media_id"] = new_id
+                entry["replaced_from"] = old_id
+                entry["replaced_at"] = stamp
+                subs[new_id] = entry
+            if old_id in ledger:
+                row = ledger.pop(old_id)
+                if new_id not in ledger:
+                    ledger[new_id] = {**row, "media_id": new_id, "time": stamp}
+                ledger_dirty = True
+        self.save_data(_DATA_SUBS, subs)
+        if ledger_dirty:
+            self._save_sub_ledger(ledger)
+        logger.info(
+            f"{PLUGIN_NAME} 订阅身份迁移（站点 {site}）：{len(plan)} 条换成当前站点身份"
+            f"（清单共 {total} 条，同名多条 / 未在作品墙的保持原样）"
+        )
+        return len(plan), total
+
     def _plugin_subscribe(self, row: Dict[str, Any], actor: str = "") -> Tuple[bool, str]:
-        """把一部作品记进插件订阅清单（幂等；返回 ``(是否新增, 提示)``）。"""
+        """把一部作品记进插件订阅清单（幂等；返回 ``(是否新增, 提示)``）。
+
+        换过站时**同名替换**（2026-11-02 用户口径：订阅跟着数据源配置的站点走）：
+        清单里若有一条同名、身份属于别的站点的记录，就地把它换成当前身份 ——
+        不新建第二条（否则同一部剧在新旧号段各一条，会下两遍）。
+        """
         media_id = _clean_text(row.get("media_id"))
         title = _clean_text(row.get("title"))
         if not media_id or not title:
@@ -5278,33 +6644,67 @@ class ShortDramaActorSubscribe(_PluginBase):
         subs = self._plugin_subs()
         if media_id in subs:
             return False, "已在订阅清单里"
-        subs[media_id] = {
-            "time": datetime.now().strftime(_STAMP_FORMAT),
-            "title": title,
-            "year": _clean_text(row.get("year")),
-            "media_id": media_id,
-            "media_source": _clean_text(row.get("media_source")) or _BAIKE_SOURCE,
-            "actor": _clean_text(actor),
-            "poster": _clean_text(row.get("poster")),
-        }
+        stale_id = self._stale_same_title(title, subs)
+        now = datetime.now().strftime(_STAMP_FORMAT)
+        entry = dict(subs.get(stale_id) or {}) if stale_id else {}
+        entry.update(
+            {
+                "time": now,
+                "title": title,
+                "year": _clean_text(row.get("year")) or _clean_text(entry.get("year")),
+                "media_id": media_id,
+                "media_source": _clean_text(row.get("media_source")) or _BAIKE_SOURCE,
+                "actor": _clean_text(actor) or _clean_text(entry.get("actor")),
+                "poster": _clean_text(row.get("poster")) or _clean_text(entry.get("poster")),
+            }
+        )
+        if stale_id:
+            subs.pop(stale_id, None)
+            entry["replaced_from"] = stale_id
+            entry["replaced_at"] = now
+        subs[media_id] = entry
         self.save_data(_DATA_SUBS, subs)
-        # 订阅了就把搜索台账里的旧处理记录清掉（冷却 / 终态都不该挡住新订阅）
+        # 台账：换站替换时把旧身份那条搬到新身份（否则新身份要重新等冷却、
+        # 旧身份还留一条孤儿记录）；普通订阅则清掉同身份的旧处理记录
         ledger = self._sub_ledger()
-        if media_id in ledger:
+        if stale_id and stale_id in ledger:
+            ledger[media_id] = {**ledger.pop(stale_id), "media_id": media_id, "time": now}
+            self._save_sub_ledger(ledger)
+        elif media_id in ledger:
             del ledger[media_id]
             self._save_sub_ledger(ledger)
+        if stale_id:
+            return True, (
+                f"已订阅《{title}》（数据源当前站点身份 {media_id}，"
+                f"原旧站记录 {stale_id} 已替换）"
+            )
         return True, f"已订阅《{title}》，等订阅搜索自动下载"
 
-    def _plugin_unsubscribe(self, media_id: str) -> Tuple[bool, str]:
-        """把一部作品移出插件订阅清单（幂等）。"""
+    def _plugin_unsubscribe(
+        self, media_id: str, title: str = ""
+    ) -> Tuple[bool, str]:
+        """把一部作品移出插件订阅清单（幂等）。
+
+        换过站时卡上是**当前身份**、清单里还是**旧身份**：传了 ``title`` 就按同名
+        找那条旧记录（只认跨站同名，见 :meth:`_stale_same_title`）——
+        否则用户点取消只会得到「不在订阅清单里」。台账记录一并清掉
+        （重新订阅时不该被旧的终态 / 冷却挡住）。
+        """
         media_id = _clean_text(media_id)
         subs = self._plugin_subs()
-        if media_id not in subs:
+        key = media_id
+        if key not in subs and _clean_text(title):
+            key = self._stale_same_title(title, subs)
+        if key not in subs:
             return False, "不在订阅清单里"
-        title = _clean_text(subs[media_id].get("title"))
-        del subs[media_id]
+        name = _clean_text(subs[key].get("title"))
+        del subs[key]
         self.save_data(_DATA_SUBS, subs)
-        return True, f"已取消订阅《{title}》"
+        ledger = self._sub_ledger()
+        if key in ledger:
+            del ledger[key]
+            self._save_sub_ledger(ledger)
+        return True, f"已取消订阅《{name}》"
 
     def _plugin_subscribe_update(
         self,
@@ -5365,19 +6765,44 @@ class ShortDramaActorSubscribe(_PluginBase):
     def _subscribed_site_rss_urls(
         self, wanted: Dict[str, Any], RssHelper: Any, SiteOper: Any
     ) -> Tuple[List[str], List[str]]:
-        """从**订阅站点**的站点配置解析 RSS 源（不单独配置，2026-10-23 用户口径）。
+        """从**订阅站点**的站点配置解析 RSS 源（订阅增量检查用）。
 
         站点集合 = 配置页「订阅站点」默认 ∪ 各订阅自己的站点（都为空 = 不限定，
-        用全部启用站点）。每个站点：站点配置自带 ``rss`` 地址**直接用**；没有则
-        用站点 cookie 现场生成（``RssHelper.get_rss_link``，与宿主 CookieCloud
-        同步生成 RSS 同一套逻辑）—— 生成要去站点打一炮，进程内缓存 24 小时，
-        别每半小时都去生成一遍。
+        用全部启用站点）。取源逻辑见 :meth:`_site_rss_urls`。
 
         返回 ``(rss 地址列表, 站点名列表)``，两表按下标对齐。
         """
         site_ids: set = set(self._site_ids(self._subscribe_sites))
         for sub in wanted.values():
             site_ids.update(self._site_ids(sub.get("sites")))
+        return self._site_rss_urls(site_ids, RssHelper, SiteOper)
+
+    def _discover_rss_site_urls(
+        self, RssHelper: Any, SiteOper: Any
+    ) -> Tuple[List[str], List[str]]:
+        """发现页「站点 RSS」的源：**配置页勾选的站点**（``rss_sites``）。
+
+        2026-11-03 用户口径：发现页看什么站点有自己的配置项，不再跟着订阅站点走；
+        勾选为空时回落订阅站点集合（老配置不用重新勾一遍也能用）。
+        取源逻辑与订阅增量检查同一套（见 :meth:`_site_rss_urls`）。
+        """
+        site_ids = set(self._site_ids(self._rss_sites))
+        if not site_ids:
+            site_ids = set(self._site_ids(self._subscribe_sites))
+        return self._site_rss_urls(site_ids, RssHelper, SiteOper)
+
+    def _site_rss_urls(
+        self, site_ids: set, RssHelper: Any, SiteOper: Any
+    ) -> Tuple[List[str], List[str]]:
+        """按站点集合解析 RSS 源（不单独配置，2026-10-23 用户口径）。
+
+        每个站点：站点配置自带 ``rss`` 地址**直接用**；没有则
+        用站点 cookie 现场生成（``RssHelper.get_rss_link``，与宿主 CookieCloud
+        同步生成 RSS 同一套逻辑）—— 生成要去站点打一炮，进程内缓存 24 小时，
+        别每半小时都去生成一遍。``site_ids`` 为空 = 不限定，用全部启用站点。
+
+        返回 ``(rss 地址列表, 站点名列表)``，两表按下标对齐。
+        """
         try:
             sites = [
                 site
@@ -5628,18 +7053,12 @@ class ShortDramaActorSubscribe(_PluginBase):
                             ledger_dirty = True
                             skipped += 1
                             continue
-                        # ── 命中：补 djbaike 媒体识别（download_single 的硬门槛），
-                        # 交宿主下载链，落点沿用订阅自己的设置 ──
-                        try:
-                            media = MediaChain().recognize_media(
-                                meta=MetaInfo(title=row_title, subtitle=description),
-                                media_source=_MediaSourceEnum(_BAIKE_SOURCE),
-                            )
-                        except Exception as err:  # noqa: BLE001 - 识别失败只影响这一条
-                            media = None
-                            logger.warning(
-                                f"{PLUGIN_NAME} RSS 命中《{row_title}》识别媒体异常：{err}"
-                            )
+                        # ── 命中：补百科媒体识别（download_single 的硬门槛），
+                        # 交宿主下载链，落点沿用订阅自己的设置。
+                        # 先给作品墙里的确切 ID，按名只作兜底（见 _recognize_media_for）
+                        media = self._recognize_media_for(
+                            media_id, title=row_title, subtitle=description
+                        )
                         torrent_title = _clean_text(getattr(torrent, "title", None)) or title
                         page_url = _clean_text(getattr(torrent, "page_url", None))
                         if media is None:
@@ -5830,21 +7249,26 @@ class ShortDramaActorSubscribe(_PluginBase):
                     index[media_id] = work
         return index
 
-    def _subscribed_works(self) -> Dict[str, Dict[str, Any]]:
+    def _subscribed_works(
+        self, works_index: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> Dict[str, Dict[str, Any]]:
         """自建搜索的候选 = 当前**有效的订阅**（``media_id`` → 记录）。
 
-        两个来源取并集：
-        1. 插件订阅清单（引擎 = self 时「订阅」落这里，见 :meth:`_plugin_subscribe`）；
-        2. 宿主订阅表里 ``media_source=djbaike`` 的订阅（引擎切回宿主期间或更早
-           建下的订阅，切换引擎不丢）。
+        **唯一来源是插件订阅清单**（:data:`_DATA_SUBS`，见 :meth:`_plugin_subscribe`）。
+        「插件清单 ∪ 宿主订阅表」那套并集 2026-11-02 起**完全废弃**（用户口径：
+        宿主订阅完全去除）—— 宿主那边的订阅与本插件无关，不再读、不再合并、
+        也不为它保留任何字段。
 
         订阅没有暂停态（2026-10-23 用户口径）：清单里的都在跑，要停就取消订阅。
-        宿主订阅表里 ``state=S`` 的条目也一视同仁地纳入（它是「在清单里」的一种）。
 
         每条记录都会用 :meth:`_works_by_id` 补上 ``episode_count`` / ``media_id`` /
         ``media_source``（订阅清单本身不存这三项）：消歧的「集数 / 身份」旁证全靠它们。
         """
-        works_index = self._works_by_id()
+        if works_index is None:
+            works_index = self._works_by_id()
+        # 海报按数据源**当前形态**现拼（订阅清单里的 poster 是订阅那一刻的快照，
+        # 换过出图形态后可能是宿主代理不放行的老地址，见 _refresh_poster）
+        poster_url = self._source_poster_url()
 
         def enrich(
             media_id: str,
@@ -5858,7 +7282,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             save_path: str = "",
         ) -> Dict[str, Any]:
             work = works_index.get(media_id) or {}
-            return {
+            row = {
                 "name": name or _clean_text(work.get("title")),
                 "year": year or _clean_text(work.get("year")),
                 "actor": actor or _clean_text(work.get("actor")),
@@ -5871,6 +7295,8 @@ class ShortDramaActorSubscribe(_PluginBase):
                 "downloader": _clean_text(downloader),
                 "save_path": _clean_save_path(save_path),
             }
+            _refresh_poster(row, poster_url)
+            return row
 
         wanted: Dict[str, Dict[str, Any]] = {}
         for media_id, entry in self._plugin_subs().items():
@@ -5886,14 +7312,14 @@ class ShortDramaActorSubscribe(_PluginBase):
             )
         return wanted
     def _attach_sub_state(self, rows: List[Dict[str, Any]]) -> None:
-        """给作品行补自建订阅搜索状态（行就地改；引擎非 ``self`` 时不加字段）。
+        """给作品行补自建订阅搜索状态（行就地改）。
 
         作品墙 / 演员作品页都调它 —— 「哪部会被下载、为什么没下」直接写在卡上，
         不用去翻日志。字段：``sub_state``（downloaded / history / in_library /
         noresult / failed）、``sub_detail``（人话说明）、``sub_time``（处理时间）；
         没进台账的行不加字段（= 还没轮到）。
         """
-        if self._subscribe_engine != "self" or not rows:
+        if not rows:
             return
         ledger = self._sub_ledger()
         if not ledger:
@@ -5979,6 +7405,44 @@ class ShortDramaActorSubscribe(_PluginBase):
             logger.warning(f"{PLUGIN_NAME} 查询下载历史失败（按未下载处理）：{err}")
         return False, ""
 
+    def _recognize_media_for(
+        self,
+        media_id: str,
+        meta: Any = None,
+        title: str = "",
+        subtitle: str = "",
+    ) -> Optional[Any]:
+        """识别一部作品的媒体身份：**先按作品墙里的确切 ID，失败才退回按名**。
+
+        2026-10-25 改：订阅搜索 / RSS 原先只按作品名走 ``recognize_media``，一旦站内
+        按名搜不准（标题带全角冒号、种子标题只有拼音、别名与主标题不同）就整部失败。
+        作品墙的行本来就带确切的 ``duanju:…`` ID，数据源拿到 ``media_id`` 会直接
+        resolve 详情、完全不依赖搜索，稳定得多；按名只作为 ID 不可用时的兜底。
+        """
+        from app.chain.media import MediaChain
+        from app.schemas.types import MediaSource as _MediaSourceEnum
+
+        meta = meta or MetaInfo(title=title, subtitle=subtitle)
+        target = _clean_text(media_id)
+        if target:
+            try:
+                media = MediaChain().recognize_media(
+                    meta=meta,
+                    media_source=_MediaSourceEnum(_BAIKE_SOURCE),
+                    media_id=target,
+                )
+                if media is not None:
+                    return media
+            except Exception as err:  # noqa: BLE001 - 只影响这一部
+                logger.warning(f"{PLUGIN_NAME} 按 ID 识别媒体失败（{target}）：{err}")
+        try:
+            return MediaChain().recognize_media(
+                meta=meta, media_source=_MediaSourceEnum(_BAIKE_SOURCE)
+            )
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"{PLUGIN_NAME} 按名识别媒体失败（{title}）：{err}")
+            return None
+
     def _self_search_one(
         self,
         row: Dict[str, Any],
@@ -6011,7 +7475,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             }
 
         title = _clean_text(row.get("title"))
-        title_key = normalize_title(title)
+        wanted_title = normalize_title(title)  # 与模块级 title_key() 区分开：这是这部剧的归一名
         try:
             from app.chain.download import DownloadChain
             from app.chain.search import SearchChain
@@ -6055,7 +7519,7 @@ class ShortDramaActorSubscribe(_PluginBase):
 
         matched: List[Tuple[Any, str]] = []
         for context in contexts_all:
-            hit, why = match_work_context(context, row, title_key)
+            hit, why = match_work_context(context, row, wanted_title)
             if hit:
                 matched.append((context, why))
         if not matched:
@@ -6080,7 +7544,7 @@ class ShortDramaActorSubscribe(_PluginBase):
         seeders = _to_int(getattr(torrent, "seeders", 0))
         # ── 补全媒体三件套（真机实测的坑）：短剧大多不在 TMDB，搜索结果的
         # ``media_info`` 是 None ⇒ ``download_single`` 直接拒收「下载上下文缺少
-        # 媒体、元数据或种子信息」。按**作品名**走 djbaike 源补一次识别（名字与
+        # 媒体、元数据或种子信息」。按**作品名**走百科源补一次识别（名字与
         # 百科 ID 一一对应），识别不出再放弃这一部。
         if getattr(best, "media_info", None) is None or getattr(best, "meta_info", None) is None:
             try:
@@ -6091,9 +7555,11 @@ class ShortDramaActorSubscribe(_PluginBase):
                     title=title,
                     subtitle=_clean_text(getattr(torrent, "description", None)),
                 )
-                media = MediaChain().recognize_media(
+                media = self._recognize_media_for(
+                    _clean_text(row.get("media_id")),
                     meta=meta,
-                    media_source=_MediaSourceEnum(_BAIKE_SOURCE),
+                    title=title,
+                    subtitle=_clean_text(getattr(torrent, "description", None)),
                 )
                 if media is not None:
                     best.media_info = media
@@ -6169,15 +7635,13 @@ class ShortDramaActorSubscribe(_PluginBase):
     def subscribe_search_task(self, trigger: str = "interval") -> bool:
         """自建订阅搜索任务：给**已订阅**的短剧作品补搜下载。
 
-        自建器是独立的订阅系统（2026-10-22 用户口径）：订阅清单归插件自己管
-        （:data:`_DATA_SUBS`，另兼容历史宿主 ``djbaike`` 订阅），不提交宿主订阅
-        链；``subscribe_engine=self`` 时接管搜索这一步（全分类，绕开站点分类
-        错位），下载 / 整理 / 通知仍走宿主链。断点在台账（:data:`_DATA_SUB_SEARCH`）
-        里：终态跳过、失败 / 无结果按冷却重试，单轮预算用完即停，没轮到的下一轮继续。
+        自建器就是本插件唯一的订阅系统（2026-11-02 用户口径「宿主订阅完全去除」）：
+        订阅清单归插件自己管（:data:`_DATA_SUBS`），搜索这一步也自己做（全分类，
+        绕开站点分类错位），只有下载 / 整理 / 通知仍走宿主链。断点在台账
+        （:data:`_DATA_SUB_SEARCH`）里：终态跳过、失败 / 无结果按冷却重试，
+        单轮预算用完即停，没轮到的下一轮继续。
         """
         if not self.get_state() or not self._actors:
-            return False
-        if self._subscribe_engine != "self":
             return False
         if not self._sub_lock.acquire(blocking=False):
             logger.info(f"{PLUGIN_NAME} 上一轮订阅搜索还在进行，本次跳过（{trigger}）")
@@ -6199,7 +7663,7 @@ class ShortDramaActorSubscribe(_PluginBase):
             searched = downloaded = noresult = failed = skipped = 0
             # ── 候选范围：只搜「已订阅」的作品（2026-10-22 用户口径）──
             # 自建器是**订阅系统**，不是全库下载器：关注演员只决定作品墙，真正
-            # 要搜要下的是墙里点过订阅的那部（宿主订阅表里 ``media_source=djbaike``
+            # 要搜要下的是墙里点过订阅的那部（宿主订阅表里 ``media_source=duanju``
             # 的订阅 —— 卡片订阅 / 订阅全部 / 自动订阅三处都落到这）。已暂停（S）
             # 的订阅跳过：用户按了暂停就不该再自动下。
             wanted = self._subscribed_works()
@@ -6380,13 +7844,13 @@ class ShortDramaActorSubscribe(_PluginBase):
 
         1. ``auto_subscribe`` 开关关着 → 整轮不跑；
         2. 台账里已处理过（成功 / 跳过 / 失败都算）→ 不再重复提交；
-        3. 范围：``new`` 只订**最近 :data:`_NEW_WINDOW_DAYS` 天内上映**的作品
-           （与作品墙「新作品」同一口径 :func:`is_fresh_work`），``all`` 连历史作品一起；
+        3. 范围：``new`` 只订**这一轮多出来的**作品（与作品墙「新」同一口径
+           :func:`is_added_work`），``all`` 连历史作品一起；
         4. 已在媒体库 → 跳过并记台账（订阅只为拿到没有的片子）；
         5.         单轮上限：预算耗尽就停，**没轮到的直接留到下一轮**（不记台账）。
 
-        2026-10-22 引擎分流：``host`` 走宿主订阅链；``self`` 记进**插件订阅清单**
-        （不进宿主订阅系统），由订阅搜索任务接手 —— 同一部剧只有一条路，不重复下载。
+        2026-11-02 起只有一条路：记进**插件订阅清单**，由订阅搜索任务接手 ——
+        同一部剧只有一条路，不重复下载（宿主订阅系统完全不参与）。
         """
         if not self._auto_subscribe or not keys:
             return 0, 0, 0
@@ -6417,7 +7881,10 @@ class ShortDramaActorSubscribe(_PluginBase):
                 if not media_id or media_id in ledger:
                     continue
                 row["first_seen"] = _clean_text(mapping.get(work_identity(work)))
-                if self._auto_subscribe_scope == "new" and not is_fresh_work(row, now):
+                # 订阅范围 ``new`` = **只订带站点「新剧」角标的作品**（2026-11-02 口径，
+                # 与作品墙的「新剧」标签同一份判定）。角标撤掉后就不再订它；已订的
+                # 由台账去重，不会重复提交。
+                if self._auto_subscribe_scope == "new" and not is_added_work(row, record):
                     continue
                 if probe is not None and probe.lookup(row) is True:
                     skipped += 1
@@ -6535,6 +8002,68 @@ class ShortDramaActorSubscribe(_PluginBase):
 
     # ── 工具 ──
 
+    def _load_profile_store(self) -> Dict[str, Any]:
+        """从 data 里读**落盘的演员档案**，构造进程内缓存（``{key: (fields, ts)}``）。
+
+        与 :meth:`_load_actors` 同款读法：``get_data`` 在键不存在时返回**空字典**
+        （不是 ``None``），所以只判 ``isinstance(dict)`` 就够。
+
+        过期的（超过 :data:`_PROFILE_STORE_TTL`）直接丢掉 —— 宁可从占位图开始等
+        一次 ``enrich``，也不要把三年前的粉丝数当成现况。
+        """
+        data = self.get_data(_DATA_PROFILES)
+        if not isinstance(data, dict):
+            return {}
+        now = time.time()
+        store: Dict[str, Any] = {}
+        for key, record in data.items():
+            if not isinstance(record, dict):
+                continue
+            stamp = _to_float(record.get("time"))
+            if stamp and now - stamp > _PROFILE_STORE_TTL:
+                continue
+            fields = {
+                field: record.get(field)
+                for field in _PROFILE_FIELDS
+                if record.get(field) not in (None, "", 0)
+            }
+            if fields:
+                store[_clean_text(key)] = (fields, stamp or now)
+        return store
+
+    def _save_profile_store(self) -> None:
+        """把进程内档案缓存**合并写回** data（只在有变化时写）。
+
+        触发点：``/actors/cards`` 结束（含 ``enrich`` 补档之后）。发现任务顺带补的
+        档案不单独落盘，等下次打开面板一起写 —— 那些本来就在内存里，先攒着不亏。
+
+        ⚠️ 写的是**整份**缓存：``_profile_cache`` 初始化时已经把落盘档案装进来了，
+        所以「合并」是天然的，不需要读改写。
+        """
+        if not self._profiles_dirty:
+            return
+        payload: Dict[str, Any] = {}
+        for key, value in (self._profile_cache or {}).items():
+            if not isinstance(value, tuple) or len(value) != 2:
+                continue
+            fields, stamp = value
+            if not isinstance(fields, dict):
+                continue
+            row = {
+                field: fields.get(field)
+                for field in _PROFILE_FIELDS
+                if fields.get(field) not in (None, "", 0)
+            }
+            if not row:
+                continue
+            row["time"] = _to_float(stamp) or time.time()
+            payload[_clean_text(key)] = row
+        try:
+            self.save_data(_DATA_PROFILES, payload)
+            self._profiles_dirty = False
+        except Exception as err:  # noqa: BLE001 - 落盘失败不该影响这次请求
+            logger.warning(f"{PLUGIN_NAME} 演员档案落盘失败：{err}")
+
     def _load_actors(self) -> Dict[str, Any]:
         """加载演员快照；没有数据时返回空字典（首次运行）。
 
@@ -6570,8 +8099,22 @@ class ShortDramaActorSubscribe(_PluginBase):
         for key in self._actors:
             actor_id = _actor_id_of(key)
             if actor_id:
-                taken.add(actor_id)
-                next_actors.append(actor_id)
+                # 键已是 ID。⚠️ 换源后记录里可能已解析出**新源**的 ID（号段不同）——
+                # 跟随记录归位成新键，别让配置里一直挂着旧源的死号。
+                record = snapshot.get(key)
+                record_id = (
+                    _actor_id_of(record.get("baike_id"))
+                    if isinstance(record, dict)
+                    else ""
+                )
+                if record_id and record_id != actor_id and record_id not in taken:
+                    renamed[key] = record_id
+                    taken.add(record_id)
+                    next_actors.append(record_id)
+                    changed = True
+                else:
+                    taken.add(actor_id)
+                    next_actors.append(actor_id)
                 continue
             record = snapshot.get(key)
             new_key = _actor_id_of(record.get("baike_id")) if isinstance(record, dict) else ""

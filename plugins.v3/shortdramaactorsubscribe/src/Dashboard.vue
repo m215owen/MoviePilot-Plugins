@@ -21,17 +21,13 @@
           <div class="d-flex align-center flex-wrap mb-2" style="gap: 12px">
             <span class="text-caption">演员 <b>{{ status.actors || 0 }}</b></span>
             <span class="text-caption">作品 <b>{{ status.works || 0 }}</b></span>
-            <span class="text-caption">新作品 <b>{{ status.new_works || 0 }}</b></span>
+            <span class="text-caption">新剧 <b>{{ status.new_works || 0 }}</b></span>
             <span v-if="status.auto_subscribe" class="text-caption">
               已自动订阅 <b>{{ status.auto_subscribed || 0 }}</b>
             </span>
           </div>
-          <!-- 自建订阅搜索（引擎 = self 才有数字）：已下载 / 暂无 / 失败 / 待搜 -->
-          <div
-            v-if="status.sub_engine === 'self'"
-            class="d-flex align-center flex-wrap mb-2"
-            style="gap: 12px"
-          >
+          <!-- 订阅搜索（宿主订阅已去除，恒有数字）：已下载 / 暂无 / 失败 / 待搜 -->
+          <div class="d-flex align-center flex-wrap mb-2" style="gap: 12px">
             <span class="text-caption" title="自建订阅搜索：全分类补搜 + 择优下载">
               自建订阅 已下 <b>{{ status.sub_downloaded || 0 }}</b
               ><template v-if="status.sub_noresult">

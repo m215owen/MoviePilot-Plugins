@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { f as fetchSearchSites, a as fetchDownloadPaths, b as fetchDownloaderOptions, c as fetchActorList, s as saveConfig, _ as _export_sfc } from './_plugin-vue_export-helper-Clm0RiNn.js';
+import { f as fetchSearchSites, a as fetchDownloadPaths, b as fetchDownloaderOptions, c as fetchActorList, d as fetchRanks, s as saveConfig, _ as _export_sfc } from './_plugin-vue_export-helper-BdHzfgFO.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -64,14 +64,33 @@ const _hoisted_27 = {
 };
 const _hoisted_28 = { class: "text-caption sdas-dim" };
 const _hoisted_29 = {
-  key: 6,
+  key: 5,
   class: "text-caption sdas-dim"
 };
 const _hoisted_30 = {
-  key: 7,
+  key: 6,
   class: "text-caption sdas-dim"
 };
-const _hoisted_31 = {
+const _hoisted_31 = { class: "text-subtitle-2 mb-2" };
+const _hoisted_32 = {
+  class: "d-flex align-center px-4 pb-2",
+  style: { "gap": "8px" }
+};
+const _hoisted_33 = {
+  key: 7,
+  class: "text-caption text-warning mt-1"
+};
+const _hoisted_34 = { class: "text-subtitle-2 mb-2 mt-4" };
+const _hoisted_35 = {
+  class: "d-flex align-center px-4 pb-2",
+  style: { "gap": "8px" }
+};
+const _hoisted_36 = { class: "text-caption sdas-dim" };
+const _hoisted_37 = {
+  key: 9,
+  class: "text-caption sdas-dim mt-2"
+};
+const _hoisted_38 = {
   class: "d-flex align-center",
   style: { "gap": "8px" }
 };
@@ -98,6 +117,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         search_sites: "",
         subscribe_downloader: "",
         subscribe_sites: "",
+        rss_sites: "",
         subscribe_save_path: "",
         subscribe_mode: "follow",
         subscribe_prefer: "seeders",
@@ -105,19 +125,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         auto_subscribe_scope: "new",
         auto_subscribe_max_per_run: 5,
         auto_subscribe_skip_library: true,
-        subscribe_engine: "host",
+        discover_tabs: [],
         self_interval_hours: 6,
         self_max_per_run: 5,
         self_max_pages: 3
       };
     }
     const scopeOptions = [
-      { title: "只订新作品（推荐）", value: "new" },
+      { title: "只订新剧（推荐）", value: "new" },
       { title: "全部作品（含历史）", value: "all" }
-    ];
-    const engineOptions = [
-      { title: "宿主订阅系统（默认）", value: "host" },
-      { title: "自建订阅搜索（全分类补搜）", value: "self" }
     ];
     const local = ref(defaults());
     const saving = ref(false);
@@ -125,7 +141,26 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     const siteOptions = ref([]);
     const siteLoadFailed = ref(false);
     const siteLoading = ref(true);
+    const discoverOptions = ref([]);
+    const discoverLoading = ref(true);
+    const discoverMessage = ref("");
+    async function loadDiscoverOptions() {
+      discoverLoading.value = true;
+      try {
+        const payload = await fetchRanks(props, true);
+        discoverOptions.value = (payload.ranks || []).filter((item) => !!item.key).map((item) => ({ title: item.name || item.key, value: item.key }));
+        discoverMessage.value = payload.message || "";
+      } catch (err) {
+        discoverMessage.value = `列表 / 榜单目录加载失败：${err instanceof Error ? err.message : String(err)}`;
+      } finally {
+        discoverLoading.value = false;
+      }
+    }
+    function selectAllDiscoverTabs() {
+      local.value.discover_tabs = discoverOptions.value.map((item) => item.value);
+    }
     onMounted(async () => {
+      void loadDiscoverOptions();
       try {
         siteOptions.value = await fetchSearchSites(props);
       } catch {
@@ -172,6 +207,23 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
     });
     function selectAllSubscribeSites() {
       local.value.subscribe_sites = siteOptions.value.map((site) => site.id).join(",");
+    }
+    const rssSiteIds = computed(() => parseSiteIds(local.value.rss_sites));
+    const rssSiteModels = computed({
+      get: () => rssSiteIds.value,
+      set: (ids) => {
+        const unique = Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)));
+        local.value.rss_sites = unique.join(",");
+      }
+    });
+    const sortedRssSiteOptions = computed(() => {
+      const picked = new Set(rssSiteIds.value);
+      const selected = siteOptions.value.filter((site) => picked.has(site.id));
+      const rest = siteOptions.value.filter((site) => !picked.has(site.id));
+      return [...selected, ...rest];
+    });
+    function selectAllRssSites() {
+      local.value.rss_sites = siteOptions.value.map((site) => site.id).join(",");
     }
     const downloadPaths = ref([]);
     const downloadPathLoading = ref(true);
@@ -281,7 +333,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       }
       return map;
     });
-    const ACTOR_ID_RE = /^(?:yanyuan|daoyan|bianju):\d+$/;
+    const ACTOR_ID_RE = /^(?:yanyuan|daoyan|bianju|actor):\d+$/;
     const actorsDisplay = computed({
       get() {
         const idToName = actorIdToName.value;
@@ -299,7 +351,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         local.value.actors = String(value || "").split(/[,，;；\n\r]+/).map((line) => {
           const text = line.trim();
           if (!text) return "";
-          const mixed = text.match(/^(.*)｜((?:yanyuan|daoyan|bianju):\d+)$/);
+          const mixed = text.match(/^(.*)｜((?:yanyuan|daoyan|bianju|actor):\d+)$/);
           if (mixed) return mixed[2];
           if (ACTOR_ID_RE.test(text)) return text;
           const ids = actorNameToIds.value[text];
@@ -362,7 +414,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 icon: "mdi-movie-open-star-outline",
                 class: "mr-2"
               }),
-              _cache[25] || (_cache[25] = _createElementVNode("h3", { class: "ma-0" }, "短剧演员 · 设置", -1)),
+              _cache[28] || (_cache[28] = _createElementVNode("h3", { class: "ma-0" }, "短剧演员 · 设置", -1)),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_btn, {
                 icon: "mdi-close",
@@ -378,10 +430,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               density: "compact",
               class: "mb-3"
             }, {
-              default: _withCtx(() => [..._cache[26] || (_cache[26] = [
+              default: _withCtx(() => [..._cache[29] || (_cache[29] = [
                 _createTextVNode(" 作品全部来自", -1),
-                _createElementVNode("b", null, "短剧百科", -1),
-                _createTextVNode("（duanjubaike.net，已作为媒体数据源接入系统）。 在作品墙点「订阅」，走的就是", -1),
+                _createElementVNode("b", null, "短剧百科数据源", -1),
+                _createTextVNode("（ShortDramaBaikeScraper：duanjubaike.org / www.duanjubaike.net，已作为媒体数据源接入系统；站点由数据源插件统一配置）。 在作品墙点「订阅」，走的就是", -1),
                 _createElementVNode("b", null, "MoviePilot 自己的订阅系统", -1),
                 _createTextVNode(" —— 搜索、下载、整理全部由系统接管。 ", -1)
               ])]),
@@ -430,7 +482,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     _createVNode(_component_v_switch, {
                       modelValue: local.value.notify,
                       "onUpdate:modelValue": _cache[3] || (_cache[3] = ($event) => local.value.notify = $event),
-                      label: "新作品发系统通知",
+                      label: "新剧发系统通知",
                       color: "primary",
                       "hide-details": ""
                     }, null, 8, ["modelValue"])
@@ -463,7 +515,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[27] || (_cache[27] = _createTextVNode(" 关注的演员 ", -1)),
+              _cache[30] || (_cache[30] = _createTextVNode(" 关注的演员 ", -1)),
               _createElementVNode("span", _hoisted_4, "共 " + _toDisplayString(actorItems.value.length) + " 位", 1)
             ]),
             _createVNode(_component_v_textarea, {
@@ -476,7 +528,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               "hide-details": "",
               placeholder: "人名用逗号分隔。例：徐艺真，孙樾，王小亿"
             }, null, 8, ["modelValue"]),
-            _cache[63] || (_cache[63] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 单个添加也可以在作品墙右上角「添加演员」里填名字（会先在短剧百科里核对）。 ", -1)),
+            _cache[75] || (_cache[75] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 单个添加也可以在作品墙右上角「添加演员」里填名字（会先在短剧百科里核对）。 ", -1)),
             _createVNode(_component_v_divider, { class: "my-3" }),
             _createElementVNode("div", _hoisted_5, [
               _createVNode(_component_v_icon, {
@@ -484,8 +536,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "20",
                 class: "mr-1"
               }),
-              _cache[28] || (_cache[28] = _createElementVNode("span", { class: "sdas-block-title" }, "订阅", -1)),
-              _cache[29] || (_cache[29] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 投递 → 方式 → 自动化；作品墙「订阅」、订阅全部作品、自动订阅三处共用 ", -1))
+              _cache[31] || (_cache[31] = _createElementVNode("span", { class: "sdas-block-title" }, "订阅", -1)),
+              _cache[32] || (_cache[32] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 投递 → 方式 → 自动化；作品墙「订阅」、订阅全部作品、自动订阅三处共用 ", -1))
             ]),
             _createElementVNode("div", _hoisted_6, [
               _createVNode(_component_v_icon, {
@@ -493,8 +545,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[30] || (_cache[30] = _createTextVNode(" 订阅下载器 ", -1)),
-              _cache[31] || (_cache[31] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "作品墙提交订阅时使用的下载客户端", -1))
+              _cache[33] || (_cache[33] = _createTextVNode(" 订阅下载器 ", -1)),
+              _cache[34] || (_cache[34] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "作品墙提交订阅时使用的下载客户端", -1))
             ]),
             _createVNode(_component_v_row, { dense: "" }, {
               default: _withCtx(() => [
@@ -522,7 +574,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             }),
-            _cache[64] || (_cache[64] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+            _cache[76] || (_cache[76] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
               _createTextVNode(" 指定下载器后，作品墙点「订阅」会按此下载器"),
               _createElementVNode("b", null, "直接提交"),
               _createTextVNode("（系统订阅弹窗没有下载器选项，带不上偏好）； 留空则保持原样，弹出系统订阅对话框。下载客户端在宿主「设定 → 下载器」里维护。 ")
@@ -534,8 +586,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[32] || (_cache[32] = _createTextVNode(" 订阅下载目录 ", -1)),
-              _cache[33] || (_cache[33] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "订阅的保存目录（含自动订阅 / 订阅全部作品）", -1))
+              _cache[35] || (_cache[35] = _createTextVNode(" 订阅下载目录 ", -1)),
+              _cache[36] || (_cache[36] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "订阅的保存目录（含自动订阅 / 订阅全部作品）", -1))
             ]),
             _createVNode(_component_v_row, { dense: "" }, {
               default: _withCtx(() => [
@@ -573,7 +625,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                       _: 1
                     }, 8, ["modelValue", "items", "loading"]),
                     savePathModel.value && !savePathInList.value ? (_openBlock(), _createElementBlock("div", _hoisted_10, " 这个路径不是宿主登记的下载目录 —— 宿主保存时会退回默认目录。 请从列表里选一个（或先去宿主「设定 → 目录」把该目录加进下载目录） ")) : savePathInList.value ? (_openBlock(), _createElementBlock("div", _hoisted_11, [
-                      _cache[34] || (_cache[34] = _createTextVNode(" 实际提交的路径：", -1)),
+                      _cache[37] || (_cache[37] = _createTextVNode(" 实际提交的路径：", -1)),
                       _createElementVNode("span", _hoisted_12, _toDisplayString(effectiveSavePath.value), 1),
                       savePathAligned.value ? (_openBlock(), _createElementBlock("span", _hoisted_13, "（已按宿主登记值对齐）")) : (_openBlock(), _createElementBlock("span", _hoisted_14, "（与宿主登记值一致）"))
                     ])) : _createCommentVNode("", true)
@@ -583,7 +635,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             }),
-            _cache[65] || (_cache[65] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 目录来自宿主「设定 → 目录」里的下载目录。宿主要求保存目录**精确匹配**某个下载目录根 （子目录不算），所以这里只列根目录；留空则跟随宿主订阅默认。下载器是远端存储时， 值可能是 `存储:路径` 形式的 URI，原样提交即可。 ", -1)),
+            _cache[77] || (_cache[77] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 目录来自宿主「设定 → 目录」里的下载目录。宿主要求保存目录**精确匹配**某个下载目录根 （子目录不算），所以这里只列根目录；留空则跟随宿主订阅默认。下载器是远端存储时， 值可能是 `存储:路径` 形式的 URI，原样提交即可。 ", -1)),
             _createVNode(_component_v_divider, { class: "my-3" }),
             _createElementVNode("div", _hoisted_15, [
               _createVNode(_component_v_icon, {
@@ -591,8 +643,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[35] || (_cache[35] = _createTextVNode(" 订阅站点 ", -1)),
-              _cache[36] || (_cache[36] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 自动订阅 / 订阅全部作品只在勾选的站点里搜；不勾 = 走系统默认 ", -1))
+              _cache[38] || (_cache[38] = _createTextVNode(" 订阅站点 ", -1)),
+              _cache[39] || (_cache[39] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 自动订阅 / 订阅全部作品只在勾选的站点里搜；不勾 = 走系统默认 ", -1))
             ]),
             siteOptions.value.length ? (_openBlock(), _createBlock(_component_v_select, {
               key: 0,
@@ -618,7 +670,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     color: "primary",
                     onClick: selectAllSubscribeSites
                   }, {
-                    default: _withCtx(() => [..._cache[37] || (_cache[37] = [
+                    default: _withCtx(() => [..._cache[40] || (_cache[40] = [
                       _createTextVNode(" 全选 ", -1)
                     ])]),
                     _: 1
@@ -628,7 +680,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     variant: "tonal",
                     onClick: _cache[8] || (_cache[8] = ($event) => subscribeSiteModels.value = [])
                   }, {
-                    default: _withCtx(() => [..._cache[38] || (_cache[38] = [
+                    default: _withCtx(() => [..._cache[41] || (_cache[41] = [
                       _createTextVNode("清空", -1)
                     ])]),
                     _: 1
@@ -638,7 +690,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             }, 8, ["modelValue", "items"])) : siteLoading.value ? (_openBlock(), _createElementBlock("div", _hoisted_18, "正在加载站点列表…")) : (_openBlock(), _createElementBlock("div", _hoisted_19, " 当前没有启用中的站点 —— 订阅会直接走系统默认站点。 ")),
-            _cache[66] || (_cache[66] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+            _cache[78] || (_cache[78] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
               _createTextVNode(" 与上面的「资源搜索站点」是两件事：那一项只管作品墙点「搜索」跳转，这一项管"),
               _createElementVNode("b", null, "提交订阅"),
               _createTextVNode(" （自动订阅、订阅全部作品，以及作品墙点「订阅」时的直连提交）。 ")
@@ -650,8 +702,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[39] || (_cache[39] = _createTextVNode(" 订阅方式 ", -1)),
-              _cache[40] || (_cache[40] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "投递到哪已经定了，这里只决定「有资源就下」还是「洗版」", -1))
+              _cache[42] || (_cache[42] = _createTextVNode(" 订阅方式 ", -1)),
+              _cache[43] || (_cache[43] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "投递到哪已经定了，这里只决定「有资源就下」还是「洗版」", -1))
             ]),
             _createVNode(_component_v_btn_toggle, {
               modelValue: local.value.subscribe_mode,
@@ -667,7 +719,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   value: "follow",
                   size: "small"
                 }, {
-                  default: _withCtx(() => [..._cache[41] || (_cache[41] = [
+                  default: _withCtx(() => [..._cache[44] || (_cache[44] = [
                     _createTextVNode("跟随宿主设置", -1)
                   ])]),
                   _: 1
@@ -676,7 +728,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   value: "normal",
                   size: "small"
                 }, {
-                  default: _withCtx(() => [..._cache[42] || (_cache[42] = [
+                  default: _withCtx(() => [..._cache[45] || (_cache[45] = [
                     _createTextVNode("普通订阅", -1)
                   ])]),
                   _: 1
@@ -685,7 +737,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   value: "best",
                   size: "small"
                 }, {
-                  default: _withCtx(() => [..._cache[43] || (_cache[43] = [
+                  default: _withCtx(() => [..._cache[46] || (_cache[46] = [
                     _createTextVNode("洗版订阅", -1)
                   ])]),
                   _: 1
@@ -693,7 +745,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             }, 8, ["modelValue"]),
-            _cache[67] || (_cache[67] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+            _cache[79] || (_cache[79] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
               _createTextVNode(" 宿主订阅的「洗版」开关就是 `Subscribe.best_version`：普通订阅 = 有资源就下； 洗版订阅 = 持续比对画质、遇到更好的版本再替换。 "),
               _createElementVNode("b", null, "跟随宿主设置"),
               _createTextVNode(" = 不传值，按宿主「设定 → 订阅」里电视剧的洗版开关走（默认）； 这里显式选普通 / 洗版会覆盖宿主的默认。作品墙点「订阅」、自动订阅、订阅全部作品三处共用。 ")
@@ -705,8 +757,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[44] || (_cache[44] = _createTextVNode(" 优选条件 ", -1)),
-              _cache[45] || (_cache[45] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "同一部剧搜到多条资源时，挑哪条下载", -1))
+              _cache[47] || (_cache[47] = _createTextVNode(" 优选条件 ", -1)),
+              _cache[48] || (_cache[48] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "同一部剧搜到多条资源时，挑哪条下载", -1))
             ]),
             _createVNode(_component_v_btn_toggle, {
               modelValue: local.value.subscribe_prefer,
@@ -722,7 +774,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   value: "seeders",
                   size: "small"
                 }, {
-                  default: _withCtx(() => [..._cache[46] || (_cache[46] = [
+                  default: _withCtx(() => [..._cache[49] || (_cache[49] = [
                     _createTextVNode("按做种数", -1)
                   ])]),
                   _: 1
@@ -731,7 +783,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   value: "size_desc",
                   size: "small"
                 }, {
-                  default: _withCtx(() => [..._cache[47] || (_cache[47] = [
+                  default: _withCtx(() => [..._cache[50] || (_cache[50] = [
                     _createTextVNode("体积最大", -1)
                   ])]),
                   _: 1
@@ -740,7 +792,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   value: "size_asc",
                   size: "small"
                 }, {
-                  default: _withCtx(() => [..._cache[48] || (_cache[48] = [
+                  default: _withCtx(() => [..._cache[51] || (_cache[51] = [
                     _createTextVNode("体积最小", -1)
                   ])]),
                   _: 1
@@ -748,7 +800,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             }, 8, ["modelValue"]),
-            _cache[68] || (_cache[68] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+            _cache[80] || (_cache[80] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
               _createTextVNode(" 默认"),
               _createElementVNode("b", null, "按做种数"),
               _createTextVNode("（越多越稳）；"),
@@ -764,8 +816,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[49] || (_cache[49] = _createTextVNode(" 自动订阅演员作品 ", -1)),
-              _cache[50] || (_cache[50] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "发现到符合条件的新作品，直接交给宿主订阅系统", -1))
+              _cache[52] || (_cache[52] = _createTextVNode(" 自动订阅演员作品 ", -1)),
+              _cache[53] || (_cache[53] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "发现到符合条件的新剧，直接记进插件订阅清单", -1))
             ]),
             _createVNode(_component_v_switch, {
               modelValue: local.value.auto_subscribe,
@@ -833,10 +885,10 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               class: "mt-1",
               label: "已在媒体库的作品跳过"
             }, null, 8, ["modelValue"]),
-            _cache[69] || (_cache[69] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
-              _createTextVNode(" 订阅走宿主订阅系统（与作品墙点「订阅」同一条链路），搜索 / 下载 / 整理都由宿主接手； 集数按作品卡上的集数提交，下载器沿用上面「订阅下载器」。 "),
-              _createElementVNode("b", null, "只订新作品"),
-              _createTextVNode("：只订最近 7 天内上映（按作品卡上的首播 / 上映日期）的作品，与作品墙的「新作品」同口径； "),
+            _cache[81] || (_cache[81] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+              _createTextVNode(" 订阅记进**插件订阅清单**（与作品墙点「订阅」同一条链路；宿主订阅 2026-11-02 起完全去除）， 搜索由插件的订阅搜索任务全分类代跑，下载 / 整理仍由宿主接手；下载器沿用上面「订阅下载器」。 "),
+              _createElementVNode("b", null, "只订新剧"),
+              _createTextVNode("：只订带站点「新剧」角标的作品（与作品墙的「新剧」同口径）； "),
               _createElementVNode("b", null, "全部作品"),
               _createTextVNode("：连历史作品一起补订，按「单轮最多订阅」逐轮推进。 ")
             ], -1)),
@@ -847,95 +899,83 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[51] || (_cache[51] = _createTextVNode(" 订阅引擎 ", -1))
+              _cache[54] || (_cache[54] = _createTextVNode(" 订阅搜索 ", -1))
             ]),
-            _createVNode(_component_v_select, {
-              modelValue: local.value.subscribe_engine,
-              "onUpdate:modelValue": _cache[16] || (_cache[16] = ($event) => local.value.subscribe_engine = $event),
-              items: engineOptions,
-              "item-title": "title",
-              "item-value": "value",
-              label: "搜索下载走哪条链路",
-              variant: "outlined",
-              density: "compact",
-              "hide-details": ""
-            }, null, 8, ["modelValue"]),
-            _cache[70] || (_cache[70] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
-              _createElementVNode("b", null, "宿主订阅系统"),
-              _createTextVNode("：订阅交给宿主，搜索按媒体类型带站点分类参数 —— 个别站点把短剧挂在电影分类时会永远搜不到； "),
-              _createElementVNode("b", null, "自建订阅搜索"),
-              _createTextVNode("：插件自己就是订阅系统 —— 「订阅」记在插件自己的清单里（作品墙左侧面板可见）， **不提交宿主订阅系统**；搜索时全分类一起搜（电影 + 电视剧 + 短剧），按演员名 / 集数 / 年份消歧后直接提交下载， 下载 / 整理 / 通知仍归宿主。两种引擎自动互斥，只跑选中的那条。 ")
+            _cache[82] || (_cache[82] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+              _createTextVNode(" 订阅只有这一条链路："),
+              _createElementVNode("b", null, "插件自己就是订阅系统"),
+              _createTextVNode(" —— 「订阅」记在插件自己的清单里（作品墙左侧面板可见）， "),
+              _createElementVNode("b", null, "不再提交宿主订阅系统"),
+              _createTextVNode("（宿主那边的订阅与本插件无关）。搜索时全分类一起搜（电影 + 电视剧 + 短剧）， 按演员名 / 集数 / 年份消歧后直接提交下载，下载 / 整理 / 通知仍归宿主。 ")
             ], -1)),
-            local.value.subscribe_engine === "self" ? (_openBlock(), _createElementBlock(_Fragment, { key: 3 }, [
-              _createVNode(_component_v_row, {
-                dense: "",
-                class: "mt-1"
-              }, {
-                default: _withCtx(() => [
-                  _createVNode(_component_v_col, {
-                    cols: "12",
-                    sm: "4"
-                  }, {
-                    default: _withCtx(() => [
-                      _createVNode(_component_v_text_field, {
-                        modelValue: local.value.self_interval_hours,
-                        "onUpdate:modelValue": _cache[17] || (_cache[17] = ($event) => local.value.self_interval_hours = $event),
-                        modelModifiers: { number: true },
-                        type: "number",
-                        min: "1",
-                        label: "搜索间隔（小时）",
-                        variant: "outlined",
-                        density: "compact",
-                        "hide-details": ""
-                      }, null, 8, ["modelValue"])
-                    ]),
-                    _: 1
-                  }),
-                  _createVNode(_component_v_col, {
-                    cols: "12",
-                    sm: "4"
-                  }, {
-                    default: _withCtx(() => [
-                      _createVNode(_component_v_text_field, {
-                        modelValue: local.value.self_max_per_run,
-                        "onUpdate:modelValue": _cache[18] || (_cache[18] = ($event) => local.value.self_max_per_run = $event),
-                        modelModifiers: { number: true },
-                        type: "number",
-                        min: "1",
-                        max: "30",
-                        label: "单轮最多搜索（部）",
-                        variant: "outlined",
-                        density: "compact",
-                        "hide-details": ""
-                      }, null, 8, ["modelValue"])
-                    ]),
-                    _: 1
-                  }),
-                  _createVNode(_component_v_col, {
-                    cols: "12",
-                    sm: "4"
-                  }, {
-                    default: _withCtx(() => [
-                      _createVNode(_component_v_text_field, {
-                        modelValue: local.value.self_max_pages,
-                        "onUpdate:modelValue": _cache[19] || (_cache[19] = ($event) => local.value.self_max_pages = $event),
-                        modelModifiers: { number: true },
-                        type: "number",
-                        min: "1",
-                        max: "10",
-                        label: "每部最多翻页",
-                        variant: "outlined",
-                        density: "compact",
-                        "hide-details": ""
-                      }, null, 8, ["modelValue"])
-                    ]),
-                    _: 1
-                  })
-                ]),
-                _: 1
-              }),
-              _cache[52] || (_cache[52] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 只搜**已订阅**的作品（卡片订阅 / 订阅全部 / 自动订阅都记进订阅清单）；搜索站点 / 下载器 / 下载目录 沿用上面「订阅」分区的设置；无结果 72 小时、失败 24 小时后自动重试，单轮预算用完的下一轮接着跑（断点在台账里）。 另外，插件每 30 分钟自动拉一次**订阅站点的站点 RSS**（不打搜索接口，避开站点流控），新种子与当前订阅 按剧名消歧后直接下载；RSS 没有的仍由主动搜索兜底。 ", -1))
-            ], 64)) : _createCommentVNode("", true),
+            _createVNode(_component_v_row, {
+              dense: "",
+              class: "mt-1"
+            }, {
+              default: _withCtx(() => [
+                _createVNode(_component_v_col, {
+                  cols: "12",
+                  sm: "4"
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_text_field, {
+                      modelValue: local.value.self_interval_hours,
+                      "onUpdate:modelValue": _cache[16] || (_cache[16] = ($event) => local.value.self_interval_hours = $event),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "1",
+                      label: "搜索间隔（小时）",
+                      variant: "outlined",
+                      density: "compact",
+                      "hide-details": ""
+                    }, null, 8, ["modelValue"])
+                  ]),
+                  _: 1
+                }),
+                _createVNode(_component_v_col, {
+                  cols: "12",
+                  sm: "4"
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_text_field, {
+                      modelValue: local.value.self_max_per_run,
+                      "onUpdate:modelValue": _cache[17] || (_cache[17] = ($event) => local.value.self_max_per_run = $event),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "1",
+                      max: "30",
+                      label: "单轮最多搜索（部）",
+                      variant: "outlined",
+                      density: "compact",
+                      "hide-details": ""
+                    }, null, 8, ["modelValue"])
+                  ]),
+                  _: 1
+                }),
+                _createVNode(_component_v_col, {
+                  cols: "12",
+                  sm: "4"
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_text_field, {
+                      modelValue: local.value.self_max_pages,
+                      "onUpdate:modelValue": _cache[18] || (_cache[18] = ($event) => local.value.self_max_pages = $event),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "1",
+                      max: "10",
+                      label: "每部最多翻页",
+                      variant: "outlined",
+                      density: "compact",
+                      "hide-details": ""
+                    }, null, 8, ["modelValue"])
+                  ]),
+                  _: 1
+                })
+              ]),
+              _: 1
+            }),
+            _cache[83] || (_cache[83] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 只搜**已订阅**的作品（卡片订阅 / 订阅全部 / 自动订阅都记进订阅清单）；搜索站点 / 下载器 / 下载目录 沿用上面「订阅」分区的设置；无结果 72 小时、失败 24 小时后自动重试，单轮预算用完的下一轮接着跑（断点在台账里）。 另外，插件每 30 分钟自动拉一次**订阅站点的站点 RSS**（不打搜索接口，避开站点流控），新种子与当前订阅 按剧名消歧后直接下载；RSS 没有的仍由主动搜索兜底。 ", -1)),
             _createVNode(_component_v_divider, { class: "my-3" }),
             _createElementVNode("div", _hoisted_24, [
               _createVNode(_component_v_icon, {
@@ -943,8 +983,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "20",
                 class: "mr-1"
               }),
-              _cache[53] || (_cache[53] = _createElementVNode("span", { class: "sdas-block-title" }, "运行", -1)),
-              _cache[54] || (_cache[54] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "发现频率，以及作品墙「搜索」用的站点", -1))
+              _cache[55] || (_cache[55] = _createElementVNode("span", { class: "sdas-block-title" }, "运行", -1)),
+              _cache[56] || (_cache[56] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, "发现频率，以及作品墙「搜索」用的站点", -1))
             ]),
             _createElementVNode("div", _hoisted_25, [
               _createVNode(_component_v_icon, {
@@ -952,7 +992,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[55] || (_cache[55] = _createTextVNode(" 刷新节奏 ", -1))
+              _cache[57] || (_cache[57] = _createTextVNode(" 刷新节奏 ", -1))
             ]),
             _createVNode(_component_v_row, { dense: "" }, {
               default: _withCtx(() => [
@@ -963,7 +1003,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_text_field, {
                       modelValue: local.value.interval_hours,
-                      "onUpdate:modelValue": _cache[20] || (_cache[20] = ($event) => local.value.interval_hours = $event),
+                      "onUpdate:modelValue": _cache[19] || (_cache[19] = ($event) => local.value.interval_hours = $event),
                       modelModifiers: { number: true },
                       type: "number",
                       min: "1",
@@ -982,7 +1022,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   default: _withCtx(() => [
                     _createVNode(_component_v_text_field, {
                       modelValue: local.value.retry_minutes,
-                      "onUpdate:modelValue": _cache[21] || (_cache[21] = ($event) => local.value.retry_minutes = $event),
+                      "onUpdate:modelValue": _cache[20] || (_cache[20] = ($event) => local.value.retry_minutes = $event),
                       modelModifiers: { number: true },
                       type: "number",
                       min: "1",
@@ -997,7 +1037,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             }),
-            _cache[71] || (_cache[71] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 每隔「发现间隔」跑一轮发现任务，重抓距上次已超过一个间隔的演员（演员页要真抓网络，不会每轮全量重扫）； 解析失败属于临时故障，按分钟级重试。 ", -1)),
+            _cache[84] || (_cache[84] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, " 每隔「发现间隔」跑一轮发现任务，重抓距上次已超过一个间隔的演员（演员页要真抓网络，不会每轮全量重扫）； 解析失败属于临时故障，按分钟级重试。 ", -1)),
             _createVNode(_component_v_divider, { class: "my-3" }),
             _createElementVNode("div", _hoisted_26, [
               _createVNode(_component_v_icon, {
@@ -1005,13 +1045,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 size: "18",
                 class: "mr-1"
               }),
-              _cache[56] || (_cache[56] = _createTextVNode(" 资源搜索站点 ", -1)),
-              _cache[57] || (_cache[57] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 作品墙上点「搜索」时，只在勾选的站点里搜；不勾 = 走系统默认 ", -1))
+              _cache[58] || (_cache[58] = _createTextVNode(" 资源搜索站点 ", -1)),
+              _cache[59] || (_cache[59] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 作品墙上点「搜索」时，只在勾选的站点里搜；不勾 = 走系统默认 ", -1))
             ]),
             siteOptions.value.length ? (_openBlock(), _createBlock(_component_v_select, {
-              key: 4,
+              key: 3,
               modelValue: selectedSiteModels.value,
-              "onUpdate:modelValue": _cache[23] || (_cache[23] = ($event) => selectedSiteModels.value = $event),
+              "onUpdate:modelValue": _cache[22] || (_cache[22] = ($event) => selectedSiteModels.value = $event),
               items: sortedSiteOptions.value,
               "item-title": "name",
               "item-value": "id",
@@ -1032,7 +1072,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     color: "primary",
                     onClick: selectAllSites
                   }, {
-                    default: _withCtx(() => [..._cache[58] || (_cache[58] = [
+                    default: _withCtx(() => [..._cache[60] || (_cache[60] = [
                       _createTextVNode("全选", -1)
                     ])]),
                     _: 1
@@ -1040,9 +1080,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   _createVNode(_component_v_btn, {
                     size: "x-small",
                     variant: "tonal",
-                    onClick: _cache[22] || (_cache[22] = ($event) => selectedSiteModels.value = [])
+                    onClick: _cache[21] || (_cache[21] = ($event) => selectedSiteModels.value = [])
                   }, {
-                    default: _withCtx(() => [..._cache[59] || (_cache[59] = [
+                    default: _withCtx(() => [..._cache[61] || (_cache[61] = [
                       _createTextVNode("清空", -1)
                     ])]),
                     _: 1
@@ -1052,19 +1092,144 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             }, 8, ["modelValue", "items"])) : siteLoadFailed.value ? (_openBlock(), _createBlock(_component_v_alert, {
-              key: 5,
+              key: 4,
               type: "warning",
               variant: "tonal",
               density: "compact"
             }, {
-              default: _withCtx(() => [..._cache[60] || (_cache[60] = [
+              default: _withCtx(() => [..._cache[62] || (_cache[62] = [
                 _createTextVNode(" 站点列表加载失败，可稍后重新打开本页重试。 ", -1)
               ])]),
               _: 1
             })) : siteLoading.value ? (_openBlock(), _createElementBlock("div", _hoisted_29, "正在加载站点列表…")) : (_openBlock(), _createElementBlock("div", _hoisted_30, " 当前没有启用中的搜索站点 —— 作品墙的「搜索」会直接走系统默认行为。 ")),
             _createVNode(_component_v_divider, { class: "my-3" }),
+            _createElementVNode("div", _hoisted_31, [
+              _createVNode(_component_v_icon, {
+                icon: "mdi-compass-outline",
+                size: "18",
+                class: "mr-1"
+              }),
+              _cache[63] || (_cache[63] = _createTextVNode(" 发现页 ", -1)),
+              _cache[64] || (_cache[64] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 演员目录分男女榜（在「发现」页切换）；这里控制还露出哪些站点列表 / 榜单 ", -1))
+            ]),
+            _createVNode(_component_v_select, {
+              modelValue: local.value.discover_tabs,
+              "onUpdate:modelValue": _cache[24] || (_cache[24] = ($event) => local.value.discover_tabs = $event),
+              items: discoverOptions.value,
+              "item-title": "title",
+              "item-value": "value",
+              label: "发现页展示的列表 / 榜单",
+              variant: "outlined",
+              density: "compact",
+              multiple: "",
+              chips: "",
+              "closable-chips": "",
+              "hide-details": "",
+              loading: discoverLoading.value,
+              placeholder: discoverOptions.value.length ? "不选 = 全部显示" : "正在从数据源取目录…"
+            }, {
+              "prepend-item": _withCtx(() => [
+                _createElementVNode("div", _hoisted_32, [
+                  _createVNode(_component_v_btn, {
+                    size: "x-small",
+                    variant: "tonal",
+                    color: "primary",
+                    onClick: selectAllDiscoverTabs
+                  }, {
+                    default: _withCtx(() => [..._cache[65] || (_cache[65] = [
+                      _createTextVNode(" 全选 ", -1)
+                    ])]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_btn, {
+                    size: "x-small",
+                    variant: "tonal",
+                    onClick: _cache[23] || (_cache[23] = ($event) => local.value.discover_tabs = [])
+                  }, {
+                    default: _withCtx(() => [..._cache[66] || (_cache[66] = [
+                      _createTextVNode(" 清空 ", -1)
+                    ])]),
+                    _: 1
+                  }),
+                  _cache[67] || (_cache[67] = _createElementVNode("span", { class: "text-caption sdas-dim" }, "留空 = 全部显示", -1))
+                ])
+              ]),
+              _: 1
+            }, 8, ["modelValue", "items", "loading", "placeholder"]),
+            _cache[85] || (_cache[85] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+              _createTextVNode(" 选项来自"),
+              _createElementVNode("b", null, "数据源"),
+              _createTextVNode("（站点不同，能翻的列表 / 榜单也不同）：分类列表可以一直往下翻， 榜单是整榜一页。"),
+              _createElementVNode("b", null, "全部取消 = 发现页只留「演员」目录"),
+              _createTextVNode("。 这项配置原先在数据源插件的「探索页」里，2026-11-02 迁到这里。 ")
+            ], -1)),
+            discoverMessage.value ? (_openBlock(), _createElementBlock("div", _hoisted_33, _toDisplayString(discoverMessage.value), 1)) : _createCommentVNode("", true),
+            siteOptions.value.length ? (_openBlock(), _createElementBlock(_Fragment, { key: 8 }, [
+              _createElementVNode("div", _hoisted_34, [
+                _createVNode(_component_v_icon, {
+                  icon: "mdi-rss",
+                  size: "18",
+                  class: "mr-1"
+                }),
+                _cache[68] || (_cache[68] = _createTextVNode(" 发现页 RSS 站点 ", -1)),
+                _cache[69] || (_cache[69] = _createElementVNode("span", { class: "text-caption sdas-dim ml-2" }, " 发现页「站点 RSS」视图拉哪些站点的最新种子 ", -1))
+              ]),
+              _createVNode(_component_v_select, {
+                modelValue: rssSiteModels.value,
+                "onUpdate:modelValue": _cache[26] || (_cache[26] = ($event) => rssSiteModels.value = $event),
+                items: sortedRssSiteOptions.value,
+                "item-title": "name",
+                "item-value": "id",
+                label: "发现页 RSS 站点",
+                multiple: "",
+                chips: "",
+                "closable-chips": "",
+                variant: "outlined",
+                density: "compact",
+                "hide-details": "",
+                placeholder: "不选 = 跟随订阅站点"
+              }, {
+                "prepend-item": _withCtx(() => [
+                  _createElementVNode("div", _hoisted_35, [
+                    _createVNode(_component_v_btn, {
+                      size: "x-small",
+                      variant: "tonal",
+                      color: "primary",
+                      onClick: selectAllRssSites
+                    }, {
+                      default: _withCtx(() => [..._cache[70] || (_cache[70] = [
+                        _createTextVNode(" 全选 ", -1)
+                      ])]),
+                      _: 1
+                    }),
+                    _createVNode(_component_v_btn, {
+                      size: "x-small",
+                      variant: "tonal",
+                      onClick: _cache[25] || (_cache[25] = ($event) => rssSiteModels.value = [])
+                    }, {
+                      default: _withCtx(() => [..._cache[71] || (_cache[71] = [
+                        _createTextVNode("清空", -1)
+                      ])]),
+                      _: 1
+                    }),
+                    _createElementVNode("span", _hoisted_36, " 已选 " + _toDisplayString(rssSiteIds.value.length) + " / " + _toDisplayString(siteOptions.value.length), 1)
+                  ])
+                ]),
+                _: 1
+              }, 8, ["modelValue", "items"]),
+              _cache[72] || (_cache[72] = _createElementVNode("div", { class: "text-caption sdas-dim mt-1" }, [
+                _createTextVNode(" 与「订阅站点」是两件事：那一项管"),
+                _createElementVNode("b", null, "提交订阅"),
+                _createTextVNode("去哪搜，这一项管发现页「站点 RSS」 拉"),
+                _createElementVNode("b", null, "哪些站点"),
+                _createTextVNode("的最新种子。不勾 = 跟随订阅站点集合（老配置不用重新勾）。 站点识别出的种子会用"),
+                _createElementVNode("b", null, "数据源"),
+                _createTextVNode("识别成作品卡，点卡进详情 / 订阅。 ")
+              ], -1))
+            ], 64)) : !siteLoading.value ? (_openBlock(), _createElementBlock("div", _hoisted_37, " 当前没有启用中的站点 —— 「站点 RSS」视图会跟随订阅站点集合。 ")) : _createCommentVNode("", true),
+            _createVNode(_component_v_divider, { class: "my-3" }),
             saveError.value ? (_openBlock(), _createBlock(_component_v_alert, {
-              key: 8,
+              key: 10,
               type: "error",
               variant: "tonal",
               density: "compact",
@@ -1075,13 +1240,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
               ]),
               _: 1
             })) : _createCommentVNode("", true),
-            _createElementVNode("div", _hoisted_31, [
+            _createElementVNode("div", _hoisted_38, [
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_btn, {
                 variant: "text",
-                onClick: _cache[24] || (_cache[24] = ($event) => emit("close"))
+                onClick: _cache[27] || (_cache[27] = ($event) => emit("close"))
               }, {
-                default: _withCtx(() => [..._cache[61] || (_cache[61] = [
+                default: _withCtx(() => [..._cache[73] || (_cache[73] = [
                   _createTextVNode("取消", -1)
                 ])]),
                 _: 1
@@ -1091,7 +1256,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 loading: saving.value,
                 onClick: onSave
               }, {
-                default: _withCtx(() => [..._cache[62] || (_cache[62] = [
+                default: _withCtx(() => [..._cache[74] || (_cache[74] = [
                   _createTextVNode("保存", -1)
                 ])]),
                 _: 1
@@ -1105,6 +1270,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-75b62f1c"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-8621580b"]]);
 
 export { Config as default };

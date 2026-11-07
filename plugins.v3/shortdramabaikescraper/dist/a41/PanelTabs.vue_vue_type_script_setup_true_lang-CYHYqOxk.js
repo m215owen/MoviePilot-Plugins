@@ -1,30 +1,33 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { a as fetchBaikeList, d as deleteBaike, c as clearBaike, b as fetchCacheItems, e as fetchStatus, g as deleteCacheItem, h as clearCache, p as proxyImage, i as fetchNovel, j as fetchPerson, l as lookupRaw, k as envelopeOf } from './api-BI6_AAQl.js';
+import { a as siteKey, s as siteInfo, d as fetchStatus, b as setSite, e as ensureSite, g as fetchBaikeExtList, h as fetchBaikeList, i as backfillExtIds, j as deleteBaike, k as clearBaike, l as fetchCacheItems, m as deleteCacheItem, n as clearCache, p as proxyImage, o as fetchNovel, q as fetchPerson, r as lookupRaw, t as envelopeOf } from './site-UXzUndvw.js';
 
 const ENTITY_LABELS = {
-  duanju: "短剧",
+  duanju: "短剧（老站）",
   manju: "漫剧",
   hema: "漫剧（河马）",
   huolong: "漫剧（火龙）",
   xiaoshuo: "原著",
-  yanyuan: "演员",
+  yanyuan: "演员（老站）",
   daoyan: "导演",
   bianju: "编剧",
+  drama: "短剧（新站）",
+  actor: "演员（新站）",
   douban: "豆瓣作品",
   doubanp: "豆瓣人物"
 };
-const ENTITY_FILTERS = [
-  "duanju",
-  "manju",
-  "hema",
-  "huolong",
-  "xiaoshuo",
-  "yanyuan",
-  "daoyan",
-  "bianju",
-  "douban",
-  "doubanp"
-];
+const SITE_ENTITIES = {
+  net: ["duanju", "manju", "hema", "huolong", "xiaoshuo", "yanyuan", "daoyan", "bianju", "douban", "doubanp"],
+  org: ["drama", "actor", "douban", "doubanp"]
+};
+const MANJU_ENTITIES = ["manju", "hema", "huolong"];
+function entityFiltersFor(site, excludeManju = false) {
+  const key = String(site || "").trim().toLowerCase();
+  const list = SITE_ENTITIES[key] || SITE_ENTITIES.net;
+  return excludeManju ? list.filter((item) => !MANJU_ENTITIES.includes(item)) : [...list];
+}
+function isKnownEntity(entity) {
+  return Object.prototype.hasOwnProperty.call(ENTITY_LABELS, String(entity || "").trim());
+}
 const REGION_LABELS = {
   "djbaike.detail": "详情",
   "djbaike.person": "人物",
@@ -45,7 +48,7 @@ function entityOf(mediaId) {
   const at = text.indexOf(":");
   return at > 0 ? text.slice(0, at) : text;
 }
-const PERSON_ENTITIES = ["yanyuan", "daoyan", "bianju"];
+const PERSON_ENTITIES = ["yanyuan", "daoyan", "bianju", "actor", "doubanp"];
 function isPersonId(mediaId) {
   return PERSON_ENTITIES.includes(entityOf(mediaId));
 }
@@ -82,55 +85,98 @@ function percent(part, whole) {
 
 const {defineComponent:_defineComponent$5} = await importShared('vue');
 
-const {toDisplayString:_toDisplayString$4,createTextVNode:_createTextVNode$4,resolveComponent:_resolveComponent$4,withCtx:_withCtx$4,openBlock:_openBlock$5,createBlock:_createBlock$4,createCommentVNode:_createCommentVNode$4,withKeys:_withKeys$1,createVNode:_createVNode$4,createElementVNode:_createElementVNode$5,unref:_unref$3,renderList:_renderList$3,Fragment:_Fragment$3,createElementBlock:_createElementBlock$5,withModifiers:_withModifiers$1} = await importShared('vue');
+const {toDisplayString:_toDisplayString$4,createTextVNode:_createTextVNode$4,resolveComponent:_resolveComponent$4,withCtx:_withCtx$4,openBlock:_openBlock$5,createBlock:_createBlock$4,createCommentVNode:_createCommentVNode$4,unref:_unref$3,withKeys:_withKeys$1,createVNode:_createVNode$4,createElementVNode:_createElementVNode$5,renderList:_renderList$3,Fragment:_Fragment$3,createElementBlock:_createElementBlock$5,withModifiers:_withModifiers$1} = await importShared('vue');
 
 const _hoisted_1$5 = { class: "sdbs-page" };
 const _hoisted_2$5 = { class: "sdbs-filter-row" };
 const _hoisted_3$4 = { class: "sdbs-actions" };
-const _hoisted_4$4 = { class: "sdbs-meta" };
-const _hoisted_5$4 = { class: "sdbs-meta-item" };
-const _hoisted_6$4 = { class: "sdbs-meta-value" };
-const _hoisted_7$4 = { class: "sdbs-meta-item" };
-const _hoisted_8$4 = { class: "sdbs-meta-value sdbs-num" };
-const _hoisted_9$4 = {
-  key: 1,
+const _hoisted_4$4 = {
+  key: 0,
+  class: "sdbs-dim"
+};
+const _hoisted_5$4 = {
+  key: 0,
+  class: "sdbs-dim"
+};
+const _hoisted_6$4 = {
+  key: 0,
+  class: "sdbs-dim"
+};
+const _hoisted_7$4 = { class: "sdbs-meta" };
+const _hoisted_8$4 = { class: "sdbs-meta-item" };
+const _hoisted_9$4 = { class: "sdbs-meta-value" };
+const _hoisted_10$3 = { class: "sdbs-meta-item" };
+const _hoisted_11$3 = { class: "sdbs-meta-value sdbs-num" };
+const _hoisted_12$3 = {
+  key: 2,
   class: "sdbs-list"
 };
-const _hoisted_10$3 = { class: "sdbs-row-top" };
-const _hoisted_11$3 = ["onClick"];
-const _hoisted_12$3 = { class: "sdbs-row-main" };
-const _hoisted_13$3 = { class: "sdbs-row-title" };
-const _hoisted_14$3 = { class: "sdbs-tag" };
-const _hoisted_15$3 = ["title"];
-const _hoisted_16$3 = { class: "sdbs-key" };
-const _hoisted_17$3 = { key: 0 };
-const _hoisted_18$3 = { class: "sdbs-key" };
-const _hoisted_19$3 = { key: 1 };
-const _hoisted_20$3 = { class: "sdbs-key" };
-const _hoisted_21$2 = { key: 2 };
-const _hoisted_22$2 = {
+const _hoisted_13$3 = { class: "sdbs-row-top" };
+const _hoisted_14$3 = ["onClick"];
+const _hoisted_15$3 = { class: "sdbs-row-main" };
+const _hoisted_16$3 = { class: "sdbs-row-title" };
+const _hoisted_17$3 = { class: "sdbs-tag" };
+const _hoisted_18$3 = ["title"];
+const _hoisted_19$3 = { class: "sdbs-key" };
+const _hoisted_20$3 = { key: 0 };
+const _hoisted_21$3 = {
   key: 0,
   class: "sdbs-expand"
 };
-const _hoisted_23$1 = {
+const _hoisted_22$2 = {
   class: "sdbs-key",
   style: { "width": "120px" }
 };
-const _hoisted_24$1 = {
+const _hoisted_23$2 = {
   key: 0,
   class: "sdbs-key"
 };
-const _hoisted_25$1 = {
+const _hoisted_24$2 = {
   key: 1,
   class: "sdbs-dim"
 };
-const _hoisted_26$1 = { class: "sdbs-actions" };
-const _hoisted_27$1 = { class: "sdbs-raw" };
-const _hoisted_28$1 = {
-  key: 2,
+const _hoisted_25$2 = { class: "sdbs-actions" };
+const _hoisted_26$2 = { class: "sdbs-raw" };
+const _hoisted_27$1 = {
+  key: 3,
+  class: "sdbs-list"
+};
+const _hoisted_28$1 = { class: "sdbs-row-top" };
+const _hoisted_29$1 = ["onClick"];
+const _hoisted_30$1 = { class: "sdbs-row-main" };
+const _hoisted_31$1 = { class: "sdbs-row-title" };
+const _hoisted_32$1 = { class: "sdbs-tag" };
+const _hoisted_33$1 = ["title"];
+const _hoisted_34$1 = { class: "sdbs-key" };
+const _hoisted_35$1 = {
+  key: 0,
+  class: "sdbs-gap sdbs-dim"
+};
+const _hoisted_36$1 = {
+  key: 0,
+  class: "sdbs-expand"
+};
+const _hoisted_37$1 = {
+  class: "sdbs-key",
+  style: { "width": "120px" }
+};
+const _hoisted_38$1 = {
+  key: 0,
+  class: "sdbs-key"
+};
+const _hoisted_39$1 = {
+  key: 1,
+  class: "sdbs-dim"
+};
+const _hoisted_40$1 = { class: "sdbs-actions" };
+const _hoisted_41$1 = { class: "sdbs-raw" };
+const _hoisted_42$1 = {
+  key: 4,
   class: "sdbs-empty"
 };
-const {computed: computed$4,onBeforeUnmount,onMounted: onMounted$2,ref: ref$4,watch: watch$1} = await importShared('vue');
+const {computed: computed$4,onBeforeUnmount,onMounted: onMounted$3,ref: ref$4,watch: watch$1} = await importShared('vue');
+const EXT_DOUBAN = "__ext_douban__";
+const EXT_TMDB = "__ext_tmdb__";
 const _sfc_main$5 = /* @__PURE__ */ _defineComponent$5({
   __name: "BaikePanel",
   props: {
@@ -141,8 +187,15 @@ const _sfc_main$5 = /* @__PURE__ */ _defineComponent$5({
     const props = __props;
     const emit = __emit;
     const LIMITS = [25, 50, 100, 200];
-    const COLUMNS = [
+    const EXT_SOURCES = {
+      [EXT_DOUBAN]: "douban",
+      [EXT_TMDB]: "tmdb"
+    };
+    const SITE_COLUMNS = [
       { key: "media_id", label: "media_id" },
+      { key: "name", label: "name" }
+    ];
+    const EXT_COLUMNS = [
       { key: "name", label: "name" },
       { key: "douban", label: "douban" },
       { key: "tmdb", label: "tmdb" }
@@ -150,6 +203,7 @@ const _sfc_main$5 = /* @__PURE__ */ _defineComponent$5({
     const loading = ref$4(false);
     const loaded = ref$4(false);
     const items = ref$4([]);
+    const extItems = ref$4([]);
     const total = ref$4(0);
     const offset = ref$4(0);
     const limit = ref$4(50);
@@ -161,11 +215,55 @@ const _sfc_main$5 = /* @__PURE__ */ _defineComponent$5({
     const pending = ref$4(null);
     const confirmOpen = ref$4(false);
     const purging = ref$4(false);
+    const counts = ref$4({});
+    const extDouban = ref$4(0);
+    const extTmdb = ref$4(0);
+    const extMode = computed$4(() => Boolean(EXT_SOURCES[entity.value]));
+    const extSource = computed$4(() => EXT_SOURCES[entity.value] || "");
+    const extLabel = computed$4(
+      () => extSource.value === "douban" ? "豆瓣 id" : extSource.value === "tmdb" ? "TMDB id" : ""
+    );
+    const excludeManju = ref$4(true);
+    const backfilling = ref$4(false);
+    const backfillTip = ref$4("");
+    const cursor = ref$4("");
+    const chips = computed$4(() => {
+      const own = entityFiltersFor(siteKey.value, excludeManju.value);
+      const extra = Object.keys(counts.value).filter(
+        (key) => isKnownEntity(key) && !own.includes(key) && countOf(key) > 0 && !(excludeManju.value && MANJU_ENTITIES.includes(key))
+      ).sort();
+      return [...own, ...extra];
+    });
+    function countOf(entity2) {
+      return Number(counts.value[String(entity2 || "")] || 0);
+    }
+    async function loadStatus() {
+      try {
+        const status = await fetchStatus(props);
+        counts.value = status?.by_entity || {};
+        extDouban.value = Number(status?.ext_douban || 0);
+        extTmdb.value = Number(status?.ext_tmdb || 0);
+        excludeManju.value = status?.exclude_manju !== false;
+        setSite(status?.site);
+      } catch {
+        await ensureSite(props.api);
+      }
+      syncEntity();
+    }
+    function syncEntity() {
+      if (!entity.value || extMode.value) return;
+      if (chips.value.includes(entity.value)) return;
+      entity.value = "";
+      search();
+    }
     let token = 0;
     const filtered = computed$4(() => Boolean(submitted.value || entity.value));
+    const rowCount = computed$4(
+      () => extMode.value ? extItems.value.length : items.value.length
+    );
     const rangeText = computed$4(() => {
-      if (!items.value.length) return "0";
-      return `${offset.value + 1}–${offset.value + items.value.length}`;
+      if (!rowCount.value) return "0";
+      return `${offset.value + 1}–${offset.value + rowCount.value}`;
     });
     const emptyIcon = computed$4(() => {
       if (loading.value) return "mdi-progress-clock";
@@ -180,23 +278,37 @@ name：${pending.value.name || "（空）"}
 
 会联动删除它的详情缓存与人物缓存；下次识别到它会重新入库。`;
       }
-      return `清空整个 ID 库的 ${total.value} 条记录？
+      return `清空站点 ID 库的 ${total.value} 条记录？
 
-只删索引，**缓存不动**（缓存请到「缓存」分区单独清）。清空后 ID 库要靠后续识别 / 检索重新生长。`;
+只删「baike」表里的站点行，**外部 id（baike_ext 里的豆瓣 / TMDB）保留**；**缓存也不动**（缓存请到「缓存」分区单独清）。站点行清空后要靠后续识别 / 检索重新生长。`;
     });
     function subTitle(row) {
       const parts = [row.media_id];
-      if (row.douban) parts.push(`豆瓣 ${row.douban}`);
-      if (row.tmdb) parts.push(`TMDB ${row.tmdb}`);
       parts.push(entityLabel(entityOf(row.media_id)));
+      return parts.join(" · ");
+    }
+    function extValueOf(row) {
+      if (extSource.value === "douban") return row.douban;
+      if (extSource.value === "tmdb") return row.tmdb;
+      return "";
+    }
+    function otherExtOf(row) {
+      if (extSource.value === "douban" && row.tmdb) return `TMDB ${row.tmdb}`;
+      if (extSource.value === "tmdb" && row.douban) return `豆瓣 ${row.douban}`;
+      return "";
+    }
+    function extSubTitle(row) {
+      const parts = [row.name, `${extLabel.value || "外部 id"} ${extValueOf(row) || "（空）"}`];
+      if (row.douban && extSource.value !== "douban") parts.push(`豆瓣 ${row.douban}`);
+      if (row.tmdb && extSource.value !== "tmdb") parts.push(`TMDB ${row.tmdb}`);
       return parts.join(" · ");
     }
     function canLookup(row) {
       const id = String(row.media_id || "");
       return id.includes(":") && id.split(":")[1].length > 0;
     }
-    function toggle(row) {
-      opened.value = opened.value === row.media_id ? "" : row.media_id;
+    function toggle(key) {
+      opened.value = opened.value === key ? "" : key;
     }
     async function copy(text) {
       try {
@@ -209,6 +321,8 @@ name：${pending.value.name || "（空）"}
       submitted.value = String(keyword.value || "").trim();
       offset.value = 0;
       opened.value = "";
+      cursor.value = "";
+      backfillTip.value = "";
       void load();
     }
     function step(direction) {
@@ -220,31 +334,93 @@ name：${pending.value.name || "（空）"}
     }
     async function load() {
       const seq = ++token;
+      const wantExt = extMode.value;
       loading.value = true;
       error.value = "";
       try {
-        const data = await fetchBaikeList(props, {
-          q: submitted.value,
-          entity: entity.value,
-          offset: offset.value,
-          limit: limit.value
-        });
-        if (seq !== token) return;
-        items.value = data?.items || [];
-        total.value = Number(data?.total ?? items.value.length);
-        if (!items.value.length && total.value > 0 && offset.value > 0) {
+        let got = 0;
+        if (wantExt) {
+          const data = await fetchBaikeExtList(props, {
+            q: submitted.value,
+            offset: offset.value,
+            limit: limit.value,
+            source: extSource.value
+          });
+          if (seq !== token) return;
+          extItems.value = data?.items || [];
+          items.value = [];
+          got = extItems.value.length;
+          total.value = Number(data?.total ?? got);
+        } else {
+          const data = await fetchBaikeList(props, {
+            q: submitted.value,
+            entity: entity.value,
+            offset: offset.value,
+            limit: limit.value
+          });
+          if (seq !== token) return;
+          items.value = data?.items || [];
+          extItems.value = [];
+          got = items.value.length;
+          total.value = Number(data?.total ?? got);
+        }
+        if (!got && total.value > 0 && offset.value > 0) {
           offset.value = Math.max(0, Math.floor((total.value - 1) / limit.value) * limit.value);
         }
       } catch (err) {
         if (seq !== token) return;
-        error.value = `读取 ID 库失败：${err instanceof Error ? err.message : String(err)}`;
+        error.value = `读取 ${wantExt ? `外部 id 表（${extLabel.value}）` : "站点 ID 库"}失败：${err instanceof Error ? err.message : String(err)}`;
         items.value = [];
+        extItems.value = [];
         total.value = 0;
       } finally {
         if (seq === token) {
           loading.value = false;
           loaded.value = true;
         }
+      }
+    }
+    async function backfill() {
+      if (backfilling.value) return;
+      backfilling.value = true;
+      backfillTip.value = "";
+      error.value = "";
+      const personScope = PERSON_ENTITIES.includes(entity.value);
+      const BATCH = personScope ? 15 : 30;
+      const ROUNDS = personScope ? 2 : 5;
+      let scanned = 0;
+      let douban = 0;
+      let tmdb = 0;
+      let remaining = 0;
+      let throttled = false;
+      try {
+        for (let round = 0; round < ROUNDS; round += 1) {
+          const result = await backfillExtIds(props, {
+            entity: entity.value,
+            limit: BATCH,
+            after: cursor.value
+          });
+          scanned += result?.scanned || 0;
+          douban += result?.douban || 0;
+          tmdb += result?.tmdb || 0;
+          remaining = result?.remaining || 0;
+          const next = result?.cursor || "";
+          const moved = next !== cursor.value;
+          cursor.value = next;
+          if (result?.throttled) {
+            throttled = true;
+            break;
+          }
+          if (!moved) break;
+        }
+        const parts = personScope ? [`扫了 ${scanned} 个演员/人物`, `补豆瓣 ${douban}`, `补 TMDB ${tmdb}`, `剩余待补 ${remaining}`] : [`扫了 ${scanned} 条`, `补豆瓣 ${douban}`, `补 TMDB ${tmdb}`, `剩余待补 ${remaining}`];
+        backfillTip.value = parts.join(" · ") + (throttled ? "（豆瓣风控，等 10 分钟以上再点）" : remaining > 0 ? "（再点一次继续往后扫）" : "");
+        await load();
+        await loadStatus();
+      } catch (err) {
+        error.value = `批量补 id 失败：${err instanceof Error ? err.message : String(err)}`;
+      } finally {
+        backfilling.value = false;
       }
     }
     function askDelete(row) {
@@ -276,6 +452,7 @@ name：${pending.value.name || "（空）"}
         confirmOpen.value = false;
         pending.value = null;
         opened.value = "";
+        await loadStatus();
         await load();
       } catch (err) {
         error.value = `操作失败：${err instanceof Error ? err.message : String(err)}`;
@@ -283,7 +460,11 @@ name：${pending.value.name || "（空）"}
         purging.value = false;
       }
     }
-    __expose({ reload: load });
+    async function refresh() {
+      await loadStatus();
+      await load();
+    }
+    __expose({ reload: refresh });
     let timer;
     watch$1(
       () => keyword.value,
@@ -302,7 +483,8 @@ name：${pending.value.name || "（空）"}
         }, 350);
       }
     );
-    onMounted$2(() => {
+    onMounted$3(() => {
+      void loadStatus();
       void load();
     });
     onBeforeUnmount(() => {
@@ -345,9 +527,9 @@ name：${pending.value.name || "（空）"}
             "hide-details": "",
             clearable: "",
             "prepend-inner-icon": "mdi-magnify",
-            placeholder: "按 media_id 或 name 模糊过滤（例如：以爱为家 / duanju:7696）",
+            placeholder: extMode.value ? `按名字 / ${extLabel.value} 模糊过滤（例如：马倩倩 / ${extSource.value === "douban" ? "38500395" : "298016"}）` : `按 media_id 或 name 模糊过滤（例如：以爱为家 / ${_unref$3(siteInfo).sampleId}）`,
             onKeydown: _cache[1] || (_cache[1] = _withKeys$1(($event) => search(), ["enter"]))
-          }, null, 8, ["modelValue"]),
+          }, null, 8, ["modelValue", "placeholder"]),
           _createVNode$4(_component_v_btn, {
             size: "small",
             variant: "tonal",
@@ -355,7 +537,7 @@ name：${pending.value.name || "（空）"}
             loading: loading.value,
             onClick: _cache[2] || (_cache[2] = ($event) => search())
           }, {
-            default: _withCtx$4(() => [..._cache[14] || (_cache[14] = [
+            default: _withCtx$4(() => [..._cache[15] || (_cache[15] = [
               _createTextVNode$4(" 查询 ", -1)
             ])]),
             _: 1
@@ -379,23 +561,47 @@ name：${pending.value.name || "（空）"}
                 size: "x-small",
                 value: ""
               }, {
-                default: _withCtx$4(() => [..._cache[15] || (_cache[15] = [
+                default: _withCtx$4(() => [..._cache[16] || (_cache[16] = [
                   _createTextVNode$4("全部", -1)
                 ])]),
                 _: 1
               }),
-              (_openBlock$5(true), _createElementBlock$5(_Fragment$3, null, _renderList$3(_unref$3(ENTITY_FILTERS), (key) => {
+              (_openBlock$5(true), _createElementBlock$5(_Fragment$3, null, _renderList$3(chips.value, (key) => {
                 return _openBlock$5(), _createBlock$4(_component_v_btn, {
                   key,
                   size: "x-small",
-                  value: key
+                  value: key,
+                  title: `${_unref$3(entityLabel)(key)} · 库里 ${countOf(key)} 条`
                 }, {
                   default: _withCtx$4(() => [
-                    _createTextVNode$4(_toDisplayString$4(_unref$3(entityLabel)(key)), 1)
+                    _createTextVNode$4(_toDisplayString$4(_unref$3(entityLabel)(key)) + " ", 1),
+                    countOf(key) ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_4$4, _toDisplayString$4(countOf(key)), 1)) : _createCommentVNode$4("", true)
                   ]),
                   _: 2
-                }, 1032, ["value"]);
-              }), 128))
+                }, 1032, ["value", "title"]);
+              }), 128)),
+              _createVNode$4(_component_v_btn, {
+                size: "x-small",
+                value: EXT_DOUBAN,
+                title: `外部 id 表（baike_ext）里有豆瓣 id 的记录：名字 + 豆瓣 id，共 ${extDouban.value} 条；与站点行无关，清空站点库也不受影响`
+              }, {
+                default: _withCtx$4(() => [
+                  _cache[17] || (_cache[17] = _createTextVNode$4(" 豆瓣 id ", -1)),
+                  extDouban.value ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_5$4, _toDisplayString$4(extDouban.value), 1)) : _createCommentVNode$4("", true)
+                ]),
+                _: 1
+              }, 8, ["title"]),
+              _createVNode$4(_component_v_btn, {
+                size: "x-small",
+                value: EXT_TMDB,
+                title: `外部 id 表（baike_ext）里有 TMDB id 的记录：名字 + TMDB id，共 ${extTmdb.value} 条；与站点行无关，清空站点库也不受影响`
+              }, {
+                default: _withCtx$4(() => [
+                  _cache[18] || (_cache[18] = _createTextVNode$4(" TMDB id ", -1)),
+                  extTmdb.value ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_6$4, _toDisplayString$4(extTmdb.value), 1)) : _createCommentVNode$4("", true)
+                ]),
+                _: 1
+              }, 8, ["title"])
             ]),
             _: 1
           }, 8, ["modelValue"]),
@@ -408,7 +614,7 @@ name：${pending.value.name || "（空）"}
             loading: loading.value,
             onClick: _cache[5] || (_cache[5] = ($event) => load())
           }, {
-            default: _withCtx$4(() => [..._cache[16] || (_cache[16] = [
+            default: _withCtx$4(() => [..._cache[19] || (_cache[19] = [
               _createTextVNode$4(" 刷新 ", -1)
             ])]),
             _: 1
@@ -416,31 +622,45 @@ name：${pending.value.name || "（空）"}
           _createVNode$4(_component_v_btn, {
             size: "x-small",
             variant: "text",
+            "prepend-icon": "mdi-link-variant-plus",
+            title: _unref$3(PERSON_ENTITIES).includes(entity.value) ? "按豆瓣演职员表给人物补影人 id（同片同名即同一人；一批 20 部作品，可反复点）" : "给库里 douban / tmdb 两列全空的行按名补一次外部 id（豆瓣精确匹配；一批 20 条，可反复点；豆瓣限流时会自动停）",
+            loading: backfilling.value,
+            disabled: extMode.value || !loaded.value || !total.value || backfilling.value,
+            onClick: _cache[6] || (_cache[6] = ($event) => backfill())
+          }, {
+            default: _withCtx$4(() => [..._cache[20] || (_cache[20] = [
+              _createTextVNode$4(" 补 id ", -1)
+            ])]),
+            _: 1
+          }, 8, ["title", "loading", "disabled"]),
+          _createVNode$4(_component_v_btn, {
+            size: "x-small",
+            variant: "text",
             color: "error",
             "prepend-icon": "mdi-delete-sweep-outline",
-            title: "清空整个 ID 库（缓存不动）",
-            disabled: !loaded.value || !total.value,
-            onClick: _cache[6] || (_cache[6] = ($event) => askClear())
+            title: "清空站点 ID 库（外部 id 与缓存都不动）",
+            disabled: extMode.value || !loaded.value || !total.value,
+            onClick: _cache[7] || (_cache[7] = ($event) => askClear())
           }, {
-            default: _withCtx$4(() => [..._cache[17] || (_cache[17] = [
+            default: _withCtx$4(() => [..._cache[21] || (_cache[21] = [
               _createTextVNode$4(" 清空 ", -1)
             ])]),
             _: 1
           }, 8, ["disabled"])
         ]),
-        _createElementVNode$5("div", _hoisted_4$4, [
-          _createElementVNode$5("span", _hoisted_5$4, [
+        _createElementVNode$5("div", _hoisted_7$4, [
+          _createElementVNode$5("span", _hoisted_8$4, [
             _createVNode$4(_component_v_icon, {
               size: "14",
               icon: "mdi-format-list-numbered"
             }),
-            _cache[18] || (_cache[18] = _createTextVNode$4(" 共 ", -1)),
-            _createElementVNode$5("span", _hoisted_6$4, _toDisplayString$4(loaded.value ? total.value : "—"), 1),
-            _cache[19] || (_cache[19] = _createTextVNode$4(" 条 ", -1))
+            _cache[22] || (_cache[22] = _createTextVNode$4(" 共 ", -1)),
+            _createElementVNode$5("span", _hoisted_9$4, _toDisplayString$4(loaded.value ? total.value : "—"), 1),
+            _cache[23] || (_cache[23] = _createTextVNode$4(" 条 ", -1))
           ]),
-          _createElementVNode$5("span", _hoisted_7$4, [
-            _cache[20] || (_cache[20] = _createTextVNode$4(" 显示 ", -1)),
-            _createElementVNode$5("span", _hoisted_8$4, _toDisplayString$4(rangeText.value), 1)
+          _createElementVNode$5("span", _hoisted_10$3, [
+            _cache[24] || (_cache[24] = _createTextVNode$4(" 显示 ", -1)),
+            _createElementVNode$5("span", _hoisted_11$3, _toDisplayString$4(rangeText.value), 1)
           ]),
           _createVNode$4(_component_v_spacer),
           _createVNode$4(_component_v_btn, {
@@ -449,7 +669,7 @@ name：${pending.value.name || "（空）"}
             icon: "mdi-chevron-left",
             title: "上一页",
             disabled: offset.value <= 0 || loading.value,
-            onClick: _cache[7] || (_cache[7] = ($event) => step(-1))
+            onClick: _cache[8] || (_cache[8] = ($event) => step(-1))
           }, null, 8, ["disabled"]),
           _createVNode$4(_component_v_btn, {
             size: "x-small",
@@ -457,13 +677,13 @@ name：${pending.value.name || "（空）"}
             icon: "mdi-chevron-right",
             title: "下一页",
             disabled: offset.value + limit.value >= total.value || loading.value,
-            onClick: _cache[8] || (_cache[8] = ($event) => step(1))
+            onClick: _cache[9] || (_cache[9] = ($event) => step(1))
           }, null, 8, ["disabled"]),
           _createVNode$4(_component_v_select, {
             modelValue: limit.value,
             "onUpdate:modelValue": [
-              _cache[9] || (_cache[9] = ($event) => limit.value = $event),
-              _cache[10] || (_cache[10] = ($event) => search())
+              _cache[10] || (_cache[10] = ($event) => limit.value = $event),
+              _cache[11] || (_cache[11] = ($event) => search())
             ],
             density: "compact",
             variant: "outlined",
@@ -472,27 +692,39 @@ name：${pending.value.name || "（空）"}
             style: { "max-width": "96px" }
           }, null, 8, ["modelValue"])
         ]),
-        items.value.length ? (_openBlock$5(), _createElementBlock$5("div", _hoisted_9$4, [
+        backfillTip.value ? (_openBlock$5(), _createBlock$4(_component_v_alert, {
+          key: 1,
+          type: "info",
+          variant: "tonal",
+          density: "compact",
+          class: "mb-2"
+        }, {
+          default: _withCtx$4(() => [
+            _createTextVNode$4(_toDisplayString$4(backfillTip.value), 1)
+          ]),
+          _: 1
+        })) : _createCommentVNode$4("", true),
+        !extMode.value && items.value.length ? (_openBlock$5(), _createElementBlock$5("div", _hoisted_12$3, [
           (_openBlock$5(true), _createElementBlock$5(_Fragment$3, null, _renderList$3(items.value, (row) => {
             return _openBlock$5(), _createElementBlock$5("div", {
               key: row.media_id,
               class: "sdbs-row"
             }, [
-              _createElementVNode$5("div", _hoisted_10$3, [
+              _createElementVNode$5("div", _hoisted_13$3, [
                 _createElementVNode$5("button", {
                   type: "button",
                   class: "sdbs-row-head",
-                  onClick: ($event) => toggle(row)
+                  onClick: ($event) => toggle(row.media_id)
                 }, [
                   _createVNode$4(_component_v_icon, {
                     size: "14",
                     icon: opened.value === row.media_id ? "mdi-chevron-down" : "mdi-chevron-right"
                   }, null, 8, ["icon"]),
-                  _createElementVNode$5("span", _hoisted_12$3, [
-                    _createElementVNode$5("span", _hoisted_13$3, _toDisplayString$4(row.name || "（未记录名字）"), 1),
-                    _createElementVNode$5("span", _hoisted_14$3, _toDisplayString$4(_unref$3(entityLabel)(_unref$3(entityOf)(row.media_id))), 1)
+                  _createElementVNode$5("span", _hoisted_15$3, [
+                    _createElementVNode$5("span", _hoisted_16$3, _toDisplayString$4(row.name || "（未记录名字）"), 1),
+                    _createElementVNode$5("span", _hoisted_17$3, _toDisplayString$4(_unref$3(entityLabel)(_unref$3(entityOf)(row.media_id))), 1)
                   ])
-                ], 8, _hoisted_11$3),
+                ], 8, _hoisted_14$3),
                 _createVNode$4(_component_v_btn, {
                   class: "sdbs-row-del",
                   size: "x-small",
@@ -507,31 +739,23 @@ name：${pending.value.name || "（空）"}
                 class: "sdbs-row-sub",
                 title: subTitle(row)
               }, [
-                _createElementVNode$5("span", _hoisted_16$3, _toDisplayString$4(row.media_id), 1),
-                row.douban ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_17$3, [
-                  _cache[21] || (_cache[21] = _createTextVNode$4(" · 豆瓣 ", -1)),
-                  _createElementVNode$5("span", _hoisted_18$3, _toDisplayString$4(row.douban), 1)
-                ])) : _createCommentVNode$4("", true),
-                row.tmdb ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_19$3, [
-                  _cache[22] || (_cache[22] = _createTextVNode$4(" · TMDB ", -1)),
-                  _createElementVNode$5("span", _hoisted_20$3, _toDisplayString$4(row.tmdb), 1)
-                ])) : _createCommentVNode$4("", true),
-                !row.name ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_21$2, " · 无名字（不可按名检索）")) : _createCommentVNode$4("", true)
-              ], 8, _hoisted_15$3),
-              opened.value === row.media_id ? (_openBlock$5(), _createElementBlock$5("div", _hoisted_22$2, [
+                _createElementVNode$5("span", _hoisted_19$3, _toDisplayString$4(row.media_id), 1),
+                !row.name ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_20$3, " · 无名字（不可按名检索）")) : _createCommentVNode$4("", true)
+              ], 8, _hoisted_18$3),
+              opened.value === row.media_id ? (_openBlock$5(), _createElementBlock$5("div", _hoisted_21$3, [
                 _createVNode$4(_component_v_table, {
                   density: "compact",
                   class: "mb-1"
                 }, {
                   default: _withCtx$4(() => [
                     _createElementVNode$5("tbody", null, [
-                      (_openBlock$5(), _createElementBlock$5(_Fragment$3, null, _renderList$3(COLUMNS, (col) => {
+                      (_openBlock$5(), _createElementBlock$5(_Fragment$3, null, _renderList$3(SITE_COLUMNS, (col) => {
                         return _createElementVNode$5("tr", {
                           key: col.key
                         }, [
-                          _createElementVNode$5("td", _hoisted_23$1, _toDisplayString$4(col.key), 1),
+                          _createElementVNode$5("td", _hoisted_22$2, _toDisplayString$4(col.key), 1),
                           _createElementVNode$5("td", null, [
-                            row[col.key] ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_24$1, _toDisplayString$4(row[col.key]), 1)) : (_openBlock$5(), _createElementBlock$5("span", _hoisted_25$1, "（空）"))
+                            row[col.key] ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_23$2, _toDisplayString$4(row[col.key]), 1)) : (_openBlock$5(), _createElementBlock$5("span", _hoisted_24$2, "（空）"))
                           ])
                         ]);
                       }), 64))
@@ -539,14 +763,14 @@ name：${pending.value.name || "（空）"}
                   ]),
                   _: 2
                 }, 1024),
-                _createElementVNode$5("div", _hoisted_26$1, [
+                _createElementVNode$5("div", _hoisted_25$2, [
                   _createVNode$4(_component_v_btn, {
                     size: "x-small",
                     variant: "text",
                     "prepend-icon": "mdi-content-duplicate",
                     onClick: ($event) => copy(JSON.stringify(row, null, 2))
                   }, {
-                    default: _withCtx$4(() => [..._cache[23] || (_cache[23] = [
+                    default: _withCtx$4(() => [..._cache[25] || (_cache[25] = [
                       _createTextVNode$4(" 复制这一行 JSON ", -1)
                     ])]),
                     _: 1
@@ -560,26 +784,96 @@ name：${pending.value.name || "（空）"}
                     title: "按 media_id 查这条的详情（会出网，命中缓存则零请求）",
                     onClick: ($event) => emit("lookup", row.media_id)
                   }, {
-                    default: _withCtx$4(() => [..._cache[24] || (_cache[24] = [
+                    default: _withCtx$4(() => [..._cache[26] || (_cache[26] = [
                       _createTextVNode$4(" 查详情 ", -1)
                     ])]),
                     _: 1
                   }, 8, ["disabled", "onClick"])
                 ]),
-                _createElementVNode$5("pre", _hoisted_27$1, _toDisplayString$4(JSON.stringify(row, null, 2)), 1)
+                _createElementVNode$5("pre", _hoisted_26$2, _toDisplayString$4(JSON.stringify(row, null, 2)), 1)
               ])) : _createCommentVNode$4("", true)
             ]);
           }), 128))
-        ])) : (_openBlock$5(), _createElementBlock$5("div", _hoisted_28$1, [
+        ])) : extMode.value && extItems.value.length ? (_openBlock$5(), _createElementBlock$5("div", _hoisted_27$1, [
+          (_openBlock$5(true), _createElementBlock$5(_Fragment$3, null, _renderList$3(extItems.value, (row) => {
+            return _openBlock$5(), _createElementBlock$5("div", {
+              key: row.name,
+              class: "sdbs-row"
+            }, [
+              _createElementVNode$5("div", _hoisted_28$1, [
+                _createElementVNode$5("button", {
+                  type: "button",
+                  class: "sdbs-row-head",
+                  onClick: ($event) => toggle(row.name)
+                }, [
+                  _createVNode$4(_component_v_icon, {
+                    size: "14",
+                    icon: opened.value === row.name ? "mdi-chevron-down" : "mdi-chevron-right"
+                  }, null, 8, ["icon"]),
+                  _createElementVNode$5("span", _hoisted_30$1, [
+                    _createElementVNode$5("span", _hoisted_31$1, _toDisplayString$4(row.name), 1),
+                    _createElementVNode$5("span", _hoisted_32$1, _toDisplayString$4(extLabel.value), 1)
+                  ])
+                ], 8, _hoisted_29$1)
+              ]),
+              _createElementVNode$5("div", {
+                class: "sdbs-row-sub",
+                title: extSubTitle(row)
+              }, [
+                _createElementVNode$5("span", null, [
+                  _createTextVNode$4(_toDisplayString$4(extLabel.value) + " ", 1),
+                  _createElementVNode$5("span", _hoisted_34$1, _toDisplayString$4(extValueOf(row) || "（空）"), 1)
+                ]),
+                otherExtOf(row) ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_35$1, "· 另有 " + _toDisplayString$4(otherExtOf(row)), 1)) : _createCommentVNode$4("", true)
+              ], 8, _hoisted_33$1),
+              opened.value === row.name ? (_openBlock$5(), _createElementBlock$5("div", _hoisted_36$1, [
+                _createVNode$4(_component_v_table, {
+                  density: "compact",
+                  class: "mb-1"
+                }, {
+                  default: _withCtx$4(() => [
+                    _createElementVNode$5("tbody", null, [
+                      (_openBlock$5(), _createElementBlock$5(_Fragment$3, null, _renderList$3(EXT_COLUMNS, (col) => {
+                        return _createElementVNode$5("tr", {
+                          key: col.key
+                        }, [
+                          _createElementVNode$5("td", _hoisted_37$1, _toDisplayString$4(col.key), 1),
+                          _createElementVNode$5("td", null, [
+                            row[col.key] ? (_openBlock$5(), _createElementBlock$5("span", _hoisted_38$1, _toDisplayString$4(row[col.key]), 1)) : (_openBlock$5(), _createElementBlock$5("span", _hoisted_39$1, "（空）"))
+                          ])
+                        ]);
+                      }), 64))
+                    ])
+                  ]),
+                  _: 2
+                }, 1024),
+                _createElementVNode$5("div", _hoisted_40$1, [
+                  _createVNode$4(_component_v_btn, {
+                    size: "x-small",
+                    variant: "text",
+                    "prepend-icon": "mdi-content-duplicate",
+                    onClick: ($event) => copy(JSON.stringify(row, null, 2))
+                  }, {
+                    default: _withCtx$4(() => [..._cache[27] || (_cache[27] = [
+                      _createTextVNode$4(" 复制这一行 JSON ", -1)
+                    ])]),
+                    _: 1
+                  }, 8, ["onClick"])
+                ]),
+                _createElementVNode$5("pre", _hoisted_41$1, _toDisplayString$4(JSON.stringify(row, null, 2)), 1)
+              ])) : _createCommentVNode$4("", true)
+            ]);
+          }), 128))
+        ])) : (_openBlock$5(), _createElementBlock$5("div", _hoisted_42$1, [
           _createVNode$4(_component_v_icon, {
             size: "26",
             icon: emptyIcon.value
           }, null, 8, ["icon"]),
-          _createElementVNode$5("span", null, _toDisplayString$4(loading.value ? "读取中…" : filtered.value ? "库里没有匹配的记录" : "库里还没有记录：识别 / 检索过一次就会有"), 1)
+          _createElementVNode$5("span", null, _toDisplayString$4(loading.value ? "读取中…" : extMode.value ? submitted.value ? `外部 id 表里没有匹配「${submitted.value}」的 ${extLabel.value}` : `${extLabel.value}还是空的：补过一次 id 就会有记录` : filtered.value ? "站点库里没有匹配的记录" : "站点库里还没有记录：识别 / 检索过一次就会有"), 1)
         ])),
         _createVNode$4(_component_v_dialog, {
           modelValue: confirmOpen.value,
-          "onUpdate:modelValue": _cache[13] || (_cache[13] = ($event) => confirmOpen.value = $event),
+          "onUpdate:modelValue": _cache[14] || (_cache[14] = ($event) => confirmOpen.value = $event),
           "max-width": "460"
         }, {
           default: _withCtx$4(() => [
@@ -606,9 +900,9 @@ name：${pending.value.name || "（空）"}
                     _createVNode$4(_component_v_btn, {
                       variant: "text",
                       disabled: purging.value,
-                      onClick: _cache[11] || (_cache[11] = ($event) => closeConfirm())
+                      onClick: _cache[12] || (_cache[12] = ($event) => closeConfirm())
                     }, {
-                      default: _withCtx$4(() => [..._cache[25] || (_cache[25] = [
+                      default: _withCtx$4(() => [..._cache[28] || (_cache[28] = [
                         _createTextVNode$4("取消", -1)
                       ])]),
                       _: 1
@@ -617,7 +911,7 @@ name：${pending.value.name || "（空）"}
                       color: "error",
                       variant: "flat",
                       loading: purging.value,
-                      onClick: _cache[12] || (_cache[12] = ($event) => confirmPurge())
+                      onClick: _cache[13] || (_cache[13] = ($event) => confirmPurge())
                     }, {
                       default: _withCtx$4(() => [
                         _createTextVNode$4(_toDisplayString$4(pending.value ? "删除" : "清空"), 1)
@@ -661,23 +955,27 @@ const _hoisted_13$2 = {
   key: 0,
   class: "sdbs-tag"
 };
-const _hoisted_14$2 = ["title"];
-const _hoisted_15$2 = { class: "sdbs-key" };
-const _hoisted_16$2 = {
+const _hoisted_14$2 = {
+  key: 1,
+  class: "sdbs-tag"
+};
+const _hoisted_15$2 = ["title"];
+const _hoisted_16$2 = { class: "sdbs-key" };
+const _hoisted_17$2 = {
   key: 0,
   class: "sdbs-tag"
 };
-const _hoisted_17$2 = {
+const _hoisted_18$2 = {
   key: 0,
   class: "sdbs-expand"
 };
-const _hoisted_18$2 = { class: "sdbs-actions" };
-const _hoisted_19$2 = { class: "sdbs-raw" };
-const _hoisted_20$2 = {
+const _hoisted_19$2 = { class: "sdbs-actions" };
+const _hoisted_20$2 = { class: "sdbs-raw" };
+const _hoisted_21$2 = {
   key: 2,
   class: "sdbs-empty"
 };
-const {computed: computed$3,onMounted: onMounted$1,ref: ref$3} = await importShared('vue');
+const {computed: computed$3,onMounted: onMounted$2,ref: ref$3} = await importShared('vue');
 const _sfc_main$4 = /* @__PURE__ */ _defineComponent$4({
   __name: "CachePanel",
   props: {
@@ -735,6 +1033,10 @@ ID 库不动。清空后首次识别会重新出网抓页，换来的是「全�
       const value = item.value;
       if (!isPlainObject(value)) return "";
       return String(value.kind || value.type || value.media_source || "");
+    }
+    function entityTag(item) {
+      const entity = entityOf(item.parent || item.key);
+      return isKnownEntity(entity) ? entityLabel(entity) : "";
     }
     function rawJson(item) {
       try {
@@ -834,7 +1136,7 @@ ID 库不动。清空后首次识别会重新出网抓页，换来的是「全�
       }
     }
     __expose({ reload: load });
-    onMounted$1(async () => {
+    onMounted$2(async () => {
       await loadRegions();
       await load();
     });
@@ -980,7 +1282,8 @@ ID 库不动。清空后首次识别会重新出网抓页，换来的是「全�
                   }, null, 8, ["icon"]),
                   _createElementVNode$4("span", _hoisted_11$2, [
                     _createElementVNode$4("span", _hoisted_12$2, _toDisplayString$3(summary(item)), 1),
-                    kindTag(item) ? (_openBlock$4(), _createElementBlock$4("span", _hoisted_13$2, _toDisplayString$3(kindTag(item)), 1)) : _createCommentVNode$3("", true)
+                    entityTag(item) ? (_openBlock$4(), _createElementBlock$4("span", _hoisted_13$2, _toDisplayString$3(entityTag(item)), 1)) : _createCommentVNode$3("", true),
+                    kindTag(item) ? (_openBlock$4(), _createElementBlock$4("span", _hoisted_14$2, _toDisplayString$3(kindTag(item)), 1)) : _createCommentVNode$3("", true)
                   ])
                 ], 8, _hoisted_10$2),
                 _createVNode$3(_component_v_btn, {
@@ -997,11 +1300,11 @@ ID 库不动。清空后首次识别会重新出网抓页，换来的是「全�
                 class: "sdbs-row-sub",
                 title: `${region.value} · ${item.parent || item.key}`
               }, [
-                _createElementVNode$4("span", _hoisted_15$2, _toDisplayString$3(item.key), 1),
-                item.parent ? (_openBlock$4(), _createElementBlock$4("span", _hoisted_16$2, _toDisplayString$3(item.parent), 1)) : _createCommentVNode$3("", true)
-              ], 8, _hoisted_14$2),
-              opened.value === item.key ? (_openBlock$4(), _createElementBlock$4("div", _hoisted_17$2, [
-                _createElementVNode$4("div", _hoisted_18$2, [
+                _createElementVNode$4("span", _hoisted_16$2, _toDisplayString$3(item.key), 1),
+                item.parent ? (_openBlock$4(), _createElementBlock$4("span", _hoisted_17$2, _toDisplayString$3(item.parent), 1)) : _createCommentVNode$3("", true)
+              ], 8, _hoisted_15$2),
+              opened.value === item.key ? (_openBlock$4(), _createElementBlock$4("div", _hoisted_18$2, [
+                _createElementVNode$4("div", _hoisted_19$2, [
                   _createVNode$3(_component_v_btn, {
                     size: "x-small",
                     variant: "text",
@@ -1025,11 +1328,11 @@ ID 库不动。清空后首次识别会重新出网抓页，换来的是「全�
                     _: 1
                   }, 8, ["onClick"])
                 ]),
-                _createElementVNode$4("pre", _hoisted_19$2, _toDisplayString$3(rawJson(item)), 1)
+                _createElementVNode$4("pre", _hoisted_20$2, _toDisplayString$3(rawJson(item)), 1)
               ])) : _createCommentVNode$3("", true)
             ]);
           }), 128))
-        ])) : (_openBlock$4(), _createElementBlock$4("div", _hoisted_20$2, [
+        ])) : (_openBlock$4(), _createElementBlock$4("div", _hoisted_21$2, [
           _createVNode$3(_component_v_icon, {
             size: "26",
             icon: loading.value ? "mdi-progress-clock" : "mdi-database-off-outline"
@@ -1258,7 +1561,11 @@ const _hoisted_19$1 = { class: "sdbs-meta-value" };
 const _hoisted_20$1 = { class: "sdbs-meta-item" };
 const _hoisted_21$1 = { class: "sdbs-meta-value sdbs-key" };
 const _hoisted_22$1 = { class: "sdbs-meta-item" };
-const {computed: computed$1,onMounted,ref: ref$2} = await importShared('vue');
+const _hoisted_23$1 = ["href"];
+const _hoisted_24$1 = { class: "sdbs-dim" };
+const _hoisted_25$1 = { class: "sdbs-meta-item" };
+const _hoisted_26$1 = { class: "sdbs-meta-value" };
+const {computed: computed$1,onMounted: onMounted$1,ref: ref$2} = await importShared('vue');
 const _sfc_main$2 = /* @__PURE__ */ _defineComponent$2({
   __name: "OverviewPanel",
   props: {
@@ -1276,9 +1583,13 @@ const _sfc_main$2 = /* @__PURE__ */ _defineComponent$2({
     });
     const entityRows = computed$1(() => {
       const counts = status.value?.by_entity || {};
-      const known = ENTITY_FILTERS.map((key) => ({ key, count: Number(counts[key] || 0) }));
-      const extra = Object.keys(counts).filter((key) => !ENTITY_FILTERS.includes(key)).sort().map((key) => ({ key, count: Number(counts[key] || 0) }));
-      return [...known, ...extra].filter((row) => row.count > 0 || ENTITY_FILTERS.includes(row.key));
+      const excludeManju = status.value?.exclude_manju !== false;
+      const own = entityFiltersFor(siteKey.value, excludeManju);
+      const known = own.map((key) => ({ key, count: Number(counts[key] || 0) }));
+      const extra = Object.keys(counts).filter(
+        (key) => !own.includes(key) && Number(counts[key] || 0) > 0 && !(excludeManju && MANJU_ENTITIES.includes(key))
+      ).sort().map((key) => ({ key, count: Number(counts[key] || 0) }));
+      return [...known, ...extra];
     });
     const cacheRows = computed$1(() => {
       const counts = status.value?.by_region || {};
@@ -1295,6 +1606,7 @@ const _sfc_main$2 = /* @__PURE__ */ _defineComponent$2({
       error.value = "";
       try {
         status.value = await fetchStatus(props);
+        setSite(status.value?.site);
       } catch (err) {
         error.value = `读取状态失败：${err instanceof Error ? err.message : String(err)}`;
         status.value = null;
@@ -1304,7 +1616,7 @@ const _sfc_main$2 = /* @__PURE__ */ _defineComponent$2({
       }
     }
     __expose({ reload: load });
-    onMounted(() => {
+    onMounted$1(() => {
       void load();
     });
     return (_ctx, _cache) => {
@@ -1428,12 +1740,21 @@ const _sfc_main$2 = /* @__PURE__ */ _defineComponent$2({
               icon: "mdi-web"
             }),
             _cache[16] || (_cache[16] = _createTextVNode$2(" 站点 ", -1)),
-            _cache[17] || (_cache[17] = _createElementVNode$2("a", {
+            _createElementVNode$2("a", {
               class: "sdbs-key",
-              href: "https://www.duanjubaike.net",
+              href: _unref$1(siteInfo).base,
               target: "_blank",
               rel: "noreferrer noopener"
-            }, "duanjubaike.net", -1))
+            }, _toDisplayString$1(_unref$1(siteInfo).host), 9, _hoisted_23$1),
+            _createElementVNode$2("span", _hoisted_24$1, _toDisplayString$1(_unref$1(siteKey) === "org" ? "新站" : "老站"), 1)
+          ]),
+          _createElementVNode$2("span", _hoisted_25$1, [
+            _createVNode$2(_component_v_icon, {
+              size: "14",
+              icon: "mdi-filter-remove-outline"
+            }),
+            _cache[17] || (_cache[17] = _createTextVNode$2(" 排除 ", -1)),
+            _createElementVNode$2("span", _hoisted_26$1, _toDisplayString$1(status.value?.exclude_manju === false ? "未开启" : _unref$1(siteInfo).excludeName), 1)
           ]),
           _createVNode$2(_component_v_spacer),
           _createVNode$2(_component_v_btn, {
@@ -1456,7 +1777,7 @@ const _sfc_main$2 = /* @__PURE__ */ _defineComponent$2({
 
 const {defineComponent:_defineComponent$1} = await importShared('vue');
 
-const {toDisplayString:_toDisplayString,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,openBlock:_openBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,withKeys:_withKeys,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,Fragment:_Fragment,createElementBlock:_createElementBlock$1,unref:_unref,normalizeStyle:_normalizeStyle,renderList:_renderList,normalizeClass:_normalizeClass} = await importShared('vue');
+const {toDisplayString:_toDisplayString,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,openBlock:_openBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,unref:_unref,withKeys:_withKeys,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,Fragment:_Fragment,createElementBlock:_createElementBlock$1,normalizeStyle:_normalizeStyle,renderList:_renderList,normalizeClass:_normalizeClass} = await importShared('vue');
 
 const _hoisted_1$1 = { class: "sdbs-page" };
 const _hoisted_2$1 = { class: "sdbs-searchbox" };
@@ -1486,144 +1807,148 @@ const _hoisted_15 = {
   class: "sdbs-key"
 };
 const _hoisted_16 = {
+  key: 1,
+  class: "sdbs-key"
+};
+const _hoisted_17 = {
   key: 0,
   class: "text-caption sdbs-dim mt-1",
   style: { "padding-inline-start": "0" }
 };
-const _hoisted_17 = {
+const _hoisted_18 = {
   key: 1,
   class: "text-body-2 sdbs-clamp mt-2 sdbs-pre"
 };
-const _hoisted_18 = { class: "sdbs-section mt-3" };
-const _hoisted_19 = { class: "sdbs-count" };
-const _hoisted_20 = { class: "sdbs-grid" };
-const _hoisted_21 = ["title", "onClick"];
-const _hoisted_22 = {
+const _hoisted_19 = { class: "sdbs-section mt-3" };
+const _hoisted_20 = { class: "sdbs-count" };
+const _hoisted_21 = { class: "sdbs-grid" };
+const _hoisted_22 = ["title", "onClick"];
+const _hoisted_23 = {
   key: 0,
   class: "sdbs-mark"
 };
-const _hoisted_23 = {
+const _hoisted_24 = {
   key: 1,
   class: "sdbs-mark"
 };
-const _hoisted_24 = { class: "sdbs-card-title" };
-const _hoisted_25 = { class: "sdbs-card-sub" };
-const _hoisted_26 = {
+const _hoisted_25 = { class: "sdbs-card-title" };
+const _hoisted_26 = { class: "sdbs-card-sub" };
+const _hoisted_27 = {
   key: 0,
   class: "sdbs-badge-douban"
 };
-const _hoisted_27 = { class: "sdbs-card-meta" };
-const _hoisted_28 = { class: "sdbs-section" };
-const _hoisted_29 = {
+const _hoisted_28 = { class: "sdbs-card-meta" };
+const _hoisted_29 = { class: "sdbs-section" };
+const _hoisted_30 = {
   class: "d-flex",
   style: { "gap": "12px" }
 };
-const _hoisted_30 = { style: { "flex": "1 1 auto", "min-width": "0" } };
-const _hoisted_31 = {
+const _hoisted_31 = { style: { "flex": "1 1 auto", "min-width": "0" } };
+const _hoisted_32 = {
   class: "text-subtitle-1 d-flex align-center flex-wrap",
   style: { "gap": "8px" }
 };
-const _hoisted_32 = { class: "sdbs-tag" };
-const _hoisted_33 = ["title"];
-const _hoisted_34 = { class: "sdbs-key" };
-const _hoisted_35 = { key: 0 };
-const _hoisted_36 = { key: 1 };
-const _hoisted_37 = {
+const _hoisted_33 = { class: "sdbs-tag" };
+const _hoisted_34 = ["title"];
+const _hoisted_35 = { class: "sdbs-key" };
+const _hoisted_36 = { key: 0 };
+const _hoisted_37 = { key: 1 };
+const _hoisted_38 = {
   key: 0,
   class: "text-caption sdbs-dim mt-1",
   style: { "padding-inline-start": "0" }
 };
-const _hoisted_38 = {
+const _hoisted_39 = {
   key: 1,
   class: "text-body-2 sdbs-clamp mt-2 sdbs-pre"
 };
-const _hoisted_39 = { class: "sdbs-section mt-3" };
-const _hoisted_40 = { class: "sdbs-count" };
-const _hoisted_41 = { class: "sdbs-grid" };
-const _hoisted_42 = ["title", "onClick"];
-const _hoisted_43 = {
+const _hoisted_40 = { class: "sdbs-section mt-3" };
+const _hoisted_41 = { class: "sdbs-count" };
+const _hoisted_42 = { class: "sdbs-grid" };
+const _hoisted_43 = ["title", "onClick"];
+const _hoisted_44 = {
   key: 0,
   class: "sdbs-mark"
 };
-const _hoisted_44 = { class: "sdbs-card-title" };
-const _hoisted_45 = { class: "sdbs-card-sub" };
-const _hoisted_46 = { class: "sdbs-card-meta" };
-const _hoisted_47 = { class: "sdbs-section" };
-const _hoisted_48 = {
+const _hoisted_45 = { class: "sdbs-card-title" };
+const _hoisted_46 = { class: "sdbs-card-sub" };
+const _hoisted_47 = { class: "sdbs-card-meta" };
+const _hoisted_48 = { class: "sdbs-section" };
+const _hoisted_49 = {
   class: "d-flex",
   style: { "gap": "12px" }
 };
-const _hoisted_49 = {
+const _hoisted_50 = {
   key: 0,
   class: "sdbs-mark"
 };
-const _hoisted_50 = { style: { "flex": "1 1 auto", "min-width": "0" } };
-const _hoisted_51 = { class: "text-subtitle-1" };
-const _hoisted_52 = {
+const _hoisted_51 = { style: { "flex": "1 1 auto", "min-width": "0" } };
+const _hoisted_52 = { class: "text-subtitle-1" };
+const _hoisted_53 = {
   class: "sdbs-meta",
   style: { "margin": "4px 0 6px" }
 };
-const _hoisted_53 = {
-  key: 0,
-  class: "sdbs-meta-item"
-};
 const _hoisted_54 = {
-  key: 1,
+  key: 0,
   class: "sdbs-meta-item"
 };
 const _hoisted_55 = {
+  key: 1,
+  class: "sdbs-meta-item"
+};
+const _hoisted_56 = {
   key: 2,
   class: "sdbs-meta-item"
 };
-const _hoisted_56 = ["title"];
-const _hoisted_57 = { class: "sdbs-key" };
-const _hoisted_58 = { key: 0 };
-const _hoisted_59 = { key: 1 };
-const _hoisted_60 = {
+const _hoisted_57 = ["title"];
+const _hoisted_58 = { class: "sdbs-key" };
+const _hoisted_59 = { key: 0 };
+const _hoisted_60 = { key: 1 };
+const _hoisted_61 = {
   key: 0,
   class: "sdbs-chips mt-1"
 };
-const _hoisted_61 = ["title"];
-const _hoisted_62 = {
+const _hoisted_62 = ["title"];
+const _hoisted_63 = {
   key: 1,
   class: "sdbs-chips mt-2"
 };
-const _hoisted_63 = {
+const _hoisted_64 = {
   key: 2,
   class: "text-body-2 sdbs-clamp mt-2 sdbs-pre"
 };
-const _hoisted_64 = {
+const _hoisted_65 = {
   key: 3,
   class: "sdbs-credit-row"
 };
-const _hoisted_65 = ["title", "onClick"];
-const _hoisted_66 = {
+const _hoisted_66 = ["title", "onClick"];
+const _hoisted_67 = {
   key: 4,
   class: "sdbs-credit-row"
 };
-const _hoisted_67 = ["title", "onClick"];
-const _hoisted_68 = { class: "sdbs-section" };
-const _hoisted_69 = { class: "sdbs-count" };
-const _hoisted_70 = { class: "sdbs-grid" };
-const _hoisted_71 = ["title", "onClick"];
-const _hoisted_72 = {
+const _hoisted_68 = ["title", "onClick"];
+const _hoisted_69 = { class: "sdbs-section" };
+const _hoisted_70 = { class: "sdbs-count" };
+const _hoisted_71 = { class: "sdbs-grid" };
+const _hoisted_72 = ["title", "onClick"];
+const _hoisted_73 = {
   key: 0,
   class: "sdbs-mark"
 };
-const _hoisted_73 = { class: "sdbs-card-title" };
-const _hoisted_74 = { class: "sdbs-card-sub" };
-const _hoisted_75 = { class: "sdbs-card-meta" };
-const _hoisted_76 = {
+const _hoisted_74 = { class: "sdbs-card-title" };
+const _hoisted_75 = { class: "sdbs-card-sub" };
+const _hoisted_76 = { class: "sdbs-card-meta" };
+const _hoisted_77 = {
   key: 6,
   class: "sdbs-empty"
 };
-const _hoisted_77 = { class: "text-caption sdbs-dim" };
-const _hoisted_78 = {
+const _hoisted_78 = { class: "text-caption sdbs-dim" };
+const _hoisted_79 = {
   key: 7,
   class: "sdbs-empty"
 };
-const _hoisted_79 = { class: "sdbs-actions" };
-const _hoisted_80 = { class: "sdbs-raw" };
+const _hoisted_80 = { class: "sdbs-actions" };
+const _hoisted_81 = { class: "sdbs-raw" };
 const {computed,ref: ref$1} = await importShared('vue');
 const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
   __name: "QueryPanel",
@@ -1678,8 +2003,13 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
       return out;
     });
     function personIdFromUrl(url) {
-      const matched = /[/](yanyuan|daoyan|bianju)\/info-(\d+)\.html/.exec(url || "");
-      return matched ? `${matched[1]}:${matched[2]}` : "";
+      const text = String(url || "");
+      const douban = /douban\.com\/(?:celebrity|personage)\/(\d+)/.exec(text);
+      if (douban) return `doubanp:${douban[1]}`;
+      const org = /duanjubaike\.org\/[^/]+\/(actor)\/(\d+)/.exec(text);
+      if (org) return `${org[1]}:${org[2]}`;
+      const net = /[/](yanyuan|daoyan|bianju)\/info-(\d+)\.html/.exec(text);
+      return net ? `${net[1]}:${net[2]}` : "";
     }
     function creditChips(items, withRole = false, limit = 0) {
       const list2 = items || [];
@@ -2033,9 +2363,9 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
             "hide-details": "",
             clearable: "",
             "prepend-inner-icon": "mdi-magnify",
-            placeholder: "media_id（duanju:769…）或剧名 / 演员名，例如：以爱为家",
+            placeholder: `media_id（${_unref(siteInfo).sampleId}）或剧名 / 演员名，例如：以爱为家`,
             onKeydown: _cache[1] || (_cache[1] = _withKeys(($event) => submitSearch(), ["enter"]))
-          }, null, 8, ["modelValue"]),
+          }, null, 8, ["modelValue", "placeholder"]),
           _createVNode$1(_component_v_btn, {
             class: "sdbs-search-btn",
             size: "small",
@@ -2187,27 +2517,28 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                     title: person.value.media_id
                   }, [
                     _createElementVNode$1("span", _hoisted_14, _toDisplayString(person.value.media_id), 1),
-                    person.value.douban_id ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_15, "· " + _toDisplayString(person.value.douban_id), 1)) : _createCommentVNode$1("", true)
+                    person.value.douban_id ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_15, "· " + _toDisplayString(person.value.douban_id), 1)) : _createCommentVNode$1("", true),
+                    person.value.tmdb_id ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_16, "· " + _toDisplayString(person.value.tmdb_id), 1)) : _createCommentVNode$1("", true)
                   ], 8, _hoisted_13),
-                  person.value.douban_info?.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_16, _toDisplayString(person.value.douban_info.join("　")), 1)) : _createCommentVNode$1("", true),
-                  person.value.intro ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_17, _toDisplayString(person.value.intro), 1)) : _createCommentVNode$1("", true)
+                  person.value.douban_info?.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_17, _toDisplayString(person.value.douban_info.join("　")), 1)) : _createCommentVNode$1("", true),
+                  person.value.intro ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_18, _toDisplayString(person.value.intro), 1)) : _createCommentVNode$1("", true)
                 ])
               ])
             ]),
             _: 1
           }),
           person.value.works?.length ? (_openBlock$1(), _createElementBlock$1(_Fragment, { key: 0 }, [
-            _createElementVNode$1("div", _hoisted_18, [
+            _createElementVNode$1("div", _hoisted_19, [
               _createVNode$1(_component_v_icon, {
                 icon: "mdi-movie-multiple-outline",
                 size: "16"
               }),
               _cache[20] || (_cache[20] = _createElementVNode$1("span", null, "作品", -1)),
-              _createElementVNode$1("span", _hoisted_19, _toDisplayString(person.value.works.length), 1),
+              _createElementVNode$1("span", _hoisted_20, _toDisplayString(person.value.works.length), 1),
               _createVNode$1(_component_v_spacer),
               _cache[21] || (_cache[21] = _createElementVNode$1("span", { class: "text-caption sdbs-dim" }, "点海报查这部片的详情 · 含豆瓣合并来源（角标「豆瓣」）", -1))
             ]),
-            _createElementVNode$1("div", _hoisted_20, [
+            _createElementVNode$1("div", _hoisted_21, [
               (_openBlock$1(true), _createElementBlock$1(_Fragment, null, _renderList(person.value.works, (work) => {
                 return _openBlock$1(), _createElementBlock$1("div", {
                   key: work.media_id,
@@ -2219,20 +2550,20 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                     class: "sdbs-poster",
                     style: _normalizeStyle(work.poster ? { backgroundImage: `url(${_unref(proxyImage)(work.poster)})` } : void 0)
                   }, [
-                    work.episodes ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_22, _toDisplayString(work.episodes) + " 集", 1)) : work.rating ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_23, _toDisplayString(Number(work.rating).toFixed(1)), 1)) : _createCommentVNode$1("", true)
+                    work.episodes ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_23, _toDisplayString(work.episodes) + " 集", 1)) : work.rating ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_24, _toDisplayString(Number(work.rating).toFixed(1)), 1)) : _createCommentVNode$1("", true)
                   ], 4),
-                  _createElementVNode$1("div", _hoisted_24, _toDisplayString(work.name || work.media_id), 1),
-                  _createElementVNode$1("div", _hoisted_25, [
-                    work.origin === "douban" ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_26, "豆瓣")) : _createCommentVNode$1("", true),
+                  _createElementVNode$1("div", _hoisted_25, _toDisplayString(work.name || work.media_id), 1),
+                  _createElementVNode$1("div", _hoisted_26, [
+                    work.origin === "douban" ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_27, "豆瓣")) : _createCommentVNode$1("", true),
                     _createTextVNode$1(" " + _toDisplayString(work.date || work.year || work.kind || "—"), 1)
                   ]),
-                  _createElementVNode$1("div", _hoisted_27, _toDisplayString((work.tags || []).slice(0, 2).join(" / ") || " "), 1)
-                ], 8, _hoisted_21);
+                  _createElementVNode$1("div", _hoisted_28, _toDisplayString((work.tags || []).slice(0, 2).join(" / ") || " "), 1)
+                ], 8, _hoisted_22);
               }), 128))
             ])
           ], 64)) : _createCommentVNode$1("", true)
         ], 64)) : novel.value ? (_openBlock$1(), _createElementBlock$1(_Fragment, { key: 3 }, [
-          _createElementVNode$1("div", _hoisted_28, [
+          _createElementVNode$1("div", _hoisted_29, [
             _createVNode$1(_component_v_icon, {
               icon: "mdi-book-open-variant",
               size: "16"
@@ -2271,44 +2602,44 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
             class: "pa-3"
           }, {
             default: _withCtx$1(() => [
-              _createElementVNode$1("div", _hoisted_29, [
+              _createElementVNode$1("div", _hoisted_30, [
                 _createElementVNode$1("div", {
                   class: "sdbs-avatar-box",
                   style: _normalizeStyle(novel.value.poster ? { backgroundImage: `url(${_unref(proxyImage)(novel.value.poster)})` } : void 0)
                 }, null, 4),
-                _createElementVNode$1("div", _hoisted_30, [
-                  _createElementVNode$1("div", _hoisted_31, [
+                _createElementVNode$1("div", _hoisted_31, [
+                  _createElementVNode$1("div", _hoisted_32, [
                     _createElementVNode$1("span", null, "《" + _toDisplayString(novel.value.name) + "》", 1),
-                    _createElementVNode$1("span", _hoisted_32, _toDisplayString(novel.value.kind), 1)
+                    _createElementVNode$1("span", _hoisted_33, _toDisplayString(novel.value.kind), 1)
                   ]),
                   _createElementVNode$1("div", {
                     class: "sdbs-row-sub mt-1",
                     style: { "padding-inline-start": "0" },
                     title: novel.value.media_id
                   }, [
-                    _createElementVNode$1("span", _hoisted_34, _toDisplayString(novel.value.media_id), 1),
-                    novel.value.author ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_35, " · 作者：" + _toDisplayString(novel.value.author), 1)) : _createCommentVNode$1("", true),
-                    novel.value.words ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_36, " · " + _toDisplayString(novel.value.words), 1)) : _createCommentVNode$1("", true)
-                  ], 8, _hoisted_33),
-                  novel.value.aka ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_37, " 又名：《" + _toDisplayString(novel.value.aka) + "》 ", 1)) : _createCommentVNode$1("", true),
-                  novel.value.overview ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_38, _toDisplayString(novel.value.overview), 1)) : _createCommentVNode$1("", true)
+                    _createElementVNode$1("span", _hoisted_35, _toDisplayString(novel.value.media_id), 1),
+                    novel.value.author ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_36, " · 作者：" + _toDisplayString(novel.value.author), 1)) : _createCommentVNode$1("", true),
+                    novel.value.words ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_37, " · " + _toDisplayString(novel.value.words), 1)) : _createCommentVNode$1("", true)
+                  ], 8, _hoisted_34),
+                  novel.value.aka ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_38, " 又名：《" + _toDisplayString(novel.value.aka) + "》 ", 1)) : _createCommentVNode$1("", true),
+                  novel.value.overview ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_39, _toDisplayString(novel.value.overview), 1)) : _createCommentVNode$1("", true)
                 ])
               ])
             ]),
             _: 1
           }),
           novel.value.adaptations?.length ? (_openBlock$1(), _createElementBlock$1(_Fragment, { key: 0 }, [
-            _createElementVNode$1("div", _hoisted_39, [
+            _createElementVNode$1("div", _hoisted_40, [
               _createVNode$1(_component_v_icon, {
                 icon: "mdi-movie-multiple-outline",
                 size: "16"
               }),
               _cache[25] || (_cache[25] = _createElementVNode$1("span", null, "改编作品", -1)),
-              _createElementVNode$1("span", _hoisted_40, _toDisplayString(novel.value.adaptation_count || novel.value.adaptations.length), 1),
+              _createElementVNode$1("span", _hoisted_41, _toDisplayString(novel.value.adaptation_count || novel.value.adaptations.length), 1),
               _createVNode$1(_component_v_spacer),
               _cache[26] || (_cache[26] = _createElementVNode$1("span", { class: "text-caption sdbs-dim" }, "改编自本原著的剧，点海报看详情", -1))
             ]),
-            _createElementVNode$1("div", _hoisted_41, [
+            _createElementVNode$1("div", _hoisted_42, [
               (_openBlock$1(true), _createElementBlock$1(_Fragment, null, _renderList(novel.value.adaptations, (work) => {
                 return _openBlock$1(), _createElementBlock$1("div", {
                   key: work.media_id,
@@ -2320,17 +2651,17 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                     class: "sdbs-poster",
                     style: _normalizeStyle(work.poster ? { backgroundImage: `url(${_unref(proxyImage)(work.poster)})` } : void 0)
                   }, [
-                    work.episodes ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_43, _toDisplayString(work.episodes) + " 集", 1)) : _createCommentVNode$1("", true)
+                    work.episodes ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_44, _toDisplayString(work.episodes) + " 集", 1)) : _createCommentVNode$1("", true)
                   ], 4),
-                  _createElementVNode$1("div", _hoisted_44, _toDisplayString(work.name || work.media_id), 1),
-                  _createElementVNode$1("div", _hoisted_45, _toDisplayString(work.date || work.kind || "—"), 1),
-                  _createElementVNode$1("div", _hoisted_46, _toDisplayString(work.kind || " "), 1)
-                ], 8, _hoisted_42);
+                  _createElementVNode$1("div", _hoisted_45, _toDisplayString(work.name || work.media_id), 1),
+                  _createElementVNode$1("div", _hoisted_46, _toDisplayString(work.date || work.kind || "—"), 1),
+                  _createElementVNode$1("div", _hoisted_47, _toDisplayString(work.kind || " "), 1)
+                ], 8, _hoisted_43);
               }), 128))
             ])
           ], 64)) : _createCommentVNode$1("", true)
         ], 64)) : single.value ? (_openBlock$1(), _createElementBlock$1(_Fragment, { key: 4 }, [
-          _createElementVNode$1("div", _hoisted_47, [
+          _createElementVNode$1("div", _hoisted_48, [
             _createVNode$1(_component_v_icon, {
               icon: "mdi-movie-open-outline",
               size: "16"
@@ -2384,31 +2715,31 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
             class: "pa-3"
           }, {
             default: _withCtx$1(() => [
-              _createElementVNode$1("div", _hoisted_48, [
+              _createElementVNode$1("div", _hoisted_49, [
                 _createElementVNode$1("div", {
                   class: "sdbs-poster",
                   style: _normalizeStyle([{ "flex": "0 0 auto", "width": "104px" }, single.value.poster_path ? { backgroundImage: `url(${_unref(proxyImage)(single.value.poster_path)})` } : void 0])
                 }, [
-                  single.value.vote_average ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_49, _toDisplayString(Number(single.value.vote_average).toFixed(1)), 1)) : _createCommentVNode$1("", true)
+                  single.value.vote_average ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_50, _toDisplayString(Number(single.value.vote_average).toFixed(1)), 1)) : _createCommentVNode$1("", true)
                 ], 4),
-                _createElementVNode$1("div", _hoisted_50, [
-                  _createElementVNode$1("div", _hoisted_51, _toDisplayString(single.value.title || "（无标题）"), 1),
-                  _createElementVNode$1("div", _hoisted_52, [
-                    single.value.year ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_53, [
+                _createElementVNode$1("div", _hoisted_51, [
+                  _createElementVNode$1("div", _hoisted_52, _toDisplayString(single.value.title || "（无标题）"), 1),
+                  _createElementVNode$1("div", _hoisted_53, [
+                    single.value.year ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_54, [
                       _createVNode$1(_component_v_icon, {
                         size: "14",
                         icon: "mdi-calendar"
                       }),
                       _createTextVNode$1(_toDisplayString(single.value.year), 1)
                     ])) : _createCommentVNode$1("", true),
-                    single.value.number_of_episodes ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_54, [
+                    single.value.number_of_episodes ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_55, [
                       _createVNode$1(_component_v_icon, {
                         size: "14",
                         icon: "mdi-playlist-play"
                       }),
                       _createTextVNode$1(_toDisplayString(single.value.number_of_episodes) + " 集 ", 1)
                     ])) : _createCommentVNode$1("", true),
-                    single.value.type ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_55, [
+                    single.value.type ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_56, [
                       _createVNode$1(_component_v_icon, {
                         size: "14",
                         icon: "mdi-tag-outline"
@@ -2421,11 +2752,11 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                     style: { "padding-inline-start": "0" },
                     title: single.value.media_id || ""
                   }, [
-                    _createElementVNode$1("span", _hoisted_57, _toDisplayString(single.value.media_id || "—"), 1),
-                    single.value.douban_id ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_58, " · 豆瓣 " + _toDisplayString(single.value.douban_id), 1)) : _createCommentVNode$1("", true),
-                    single.value.tmdb_id ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_59, " · TMDB " + _toDisplayString(single.value.tmdb_id), 1)) : _createCommentVNode$1("", true)
-                  ], 8, _hoisted_56),
-                  metricList.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_60, [
+                    _createElementVNode$1("span", _hoisted_58, _toDisplayString(single.value.media_id || "—"), 1),
+                    single.value.douban_id ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_59, " · 豆瓣 " + _toDisplayString(single.value.douban_id), 1)) : _createCommentVNode$1("", true),
+                    single.value.tmdb_id ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_60, " · TMDB " + _toDisplayString(single.value.tmdb_id), 1)) : _createCommentVNode$1("", true)
+                  ], 8, _hoisted_57),
+                  metricList.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_61, [
                     (_openBlock$1(true), _createElementBlock$1(_Fragment, null, _renderList(metricList.value, (metric) => {
                       return _openBlock$1(), _createElementBlock$1("span", {
                         key: metric.key,
@@ -2437,10 +2768,10 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                           icon: metric.icon
                         }, null, 8, ["icon"]),
                         _createTextVNode$1(_toDisplayString(metric.label) + " " + _toDisplayString(metric.value), 1)
-                      ], 8, _hoisted_61);
+                      ], 8, _hoisted_62);
                     }), 128))
                   ])) : _createCommentVNode$1("", true),
-                  genreList.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_62, [
+                  genreList.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_63, [
                     (_openBlock$1(true), _createElementBlock$1(_Fragment, null, _renderList(genreList.value, (genre) => {
                       return _openBlock$1(), _createElementBlock$1("span", {
                         key: genre,
@@ -2448,8 +2779,8 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                       }, _toDisplayString(genre), 1);
                     }), 128))
                   ])) : _createCommentVNode$1("", true),
-                  single.value.overview ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_63, _toDisplayString(single.value.overview), 1)) : _createCommentVNode$1("", true),
-                  directorLinks.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_64, [
+                  single.value.overview ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_64, _toDisplayString(single.value.overview), 1)) : _createCommentVNode$1("", true),
+                  directorLinks.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_65, [
                     _cache[31] || (_cache[31] = _createElementVNode$1("span", { class: "sdbs-credit-label" }, "导演", -1)),
                     (_openBlock$1(true), _createElementBlock$1(_Fragment, null, _renderList(directorLinks.value, (credit, index) => {
                       return _openBlock$1(), _createElementBlock$1("span", {
@@ -2457,10 +2788,10 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                         class: _normalizeClass(["sdbs-credit", { "sdbs-credit-click": credit.mediaId }]),
                         title: credit.mediaId || "站点未给出人物页链接",
                         onClick: ($event) => openPerson(credit.mediaId)
-                      }, _toDisplayString(credit.label), 11, _hoisted_65);
+                      }, _toDisplayString(credit.label), 11, _hoisted_66);
                     }), 128))
                   ])) : _createCommentVNode$1("", true),
-                  actorLinks.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_66, [
+                  actorLinks.value.length ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_67, [
                     _cache[32] || (_cache[32] = _createElementVNode$1("span", { class: "sdbs-credit-label" }, "演员", -1)),
                     (_openBlock$1(true), _createElementBlock$1(_Fragment, null, _renderList(actorLinks.value, (credit, index) => {
                       return _openBlock$1(), _createElementBlock$1("span", {
@@ -2468,7 +2799,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                         class: _normalizeClass(["sdbs-credit", { "sdbs-credit-click": credit.mediaId }]),
                         title: credit.mediaId || "站点未给出人物页链接",
                         onClick: ($event) => openPerson(credit.mediaId)
-                      }, _toDisplayString(credit.label), 11, _hoisted_67);
+                      }, _toDisplayString(credit.label), 11, _hoisted_68);
                     }), 128))
                   ])) : _createCommentVNode$1("", true)
                 ])
@@ -2477,17 +2808,17 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
             _: 1
           })
         ], 64)) : list.value.length ? (_openBlock$1(), _createElementBlock$1(_Fragment, { key: 5 }, [
-          _createElementVNode$1("div", _hoisted_68, [
+          _createElementVNode$1("div", _hoisted_69, [
             _createVNode$1(_component_v_icon, {
               icon: "mdi-format-list-bulleted",
               size: "16"
             }),
             _cache[33] || (_cache[33] = _createElementVNode$1("span", null, "候选", -1)),
-            _createElementVNode$1("span", _hoisted_69, _toDisplayString(list.value.length), 1),
+            _createElementVNode$1("span", _hoisted_70, _toDisplayString(list.value.length), 1),
             _createVNode$1(_component_v_spacer),
             _cache[34] || (_cache[34] = _createElementVNode$1("span", { class: "text-caption sdbs-dim" }, "同名多条原样列出，识别时才按规则收敛", -1))
           ]),
-          _createElementVNode$1("div", _hoisted_70, [
+          _createElementVNode$1("div", _hoisted_71, [
             (_openBlock$1(true), _createElementBlock$1(_Fragment, null, _renderList(list.value, (item) => {
               return _openBlock$1(), _createElementBlock$1("div", {
                 key: item.media_id || item.title,
@@ -2500,22 +2831,22 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                   class: "sdbs-poster",
                   style: _normalizeStyle(item.poster_path ? { backgroundImage: `url(${_unref(proxyImage)(item.poster_path)})` } : void 0)
                 }, [
-                  item.vote_average ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_72, _toDisplayString(Number(item.vote_average).toFixed(1)), 1)) : _createCommentVNode$1("", true)
+                  item.vote_average ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_73, _toDisplayString(Number(item.vote_average).toFixed(1)), 1)) : _createCommentVNode$1("", true)
                 ], 4),
-                _createElementVNode$1("div", _hoisted_73, _toDisplayString(item.title || "（无标题）"), 1),
-                _createElementVNode$1("div", _hoisted_74, _toDisplayString([item.year, item.number_of_episodes ? `${item.number_of_episodes} 集` : ""].filter(Boolean).join(" · ") || "—"), 1),
-                _createElementVNode$1("div", _hoisted_75, _toDisplayString(item.media_id || ""), 1)
-              ], 8, _hoisted_71);
+                _createElementVNode$1("div", _hoisted_74, _toDisplayString(item.title || "（无标题）"), 1),
+                _createElementVNode$1("div", _hoisted_75, _toDisplayString([item.year, item.number_of_episodes ? `${item.number_of_episodes} 集` : ""].filter(Boolean).join(" · ") || "—"), 1),
+                _createElementVNode$1("div", _hoisted_76, _toDisplayString(item.media_id || ""), 1)
+              ], 8, _hoisted_72);
             }), 128))
           ])
-        ], 64)) : hasResult.value && !loading.value ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_76, [
+        ], 64)) : hasResult.value && !loading.value ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_77, [
           _createVNode$1(_component_v_icon, {
             size: "26",
             icon: "mdi-magnify-close"
           }),
           _createElementVNode$1("span", null, " 没有结果。按名搜索时：" + _toDisplayString(remote.value ? "本地 → 站内搜索 → 豆瓣都没命中" : "只查了本地库，把「联网补全」打开可再试站内搜索"), 1),
-          _createElementVNode$1("span", _hoisted_77, "接口返回：" + _toDisplayString(rawSummary.value), 1)
-        ])) : !hasResult.value ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_78, [
+          _createElementVNode$1("span", _hoisted_78, "接口返回：" + _toDisplayString(rawSummary.value), 1)
+        ])) : !hasResult.value ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_79, [
           _createVNode$1(_component_v_icon, {
             size: "26",
             icon: "mdi-magnify"
@@ -2538,7 +2869,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                 }),
                 _createVNode$1(_component_v_expansion_panel_text, null, {
                   default: _withCtx$1(() => [
-                    _createElementVNode$1("div", _hoisted_79, [
+                    _createElementVNode$1("div", _hoisted_80, [
                       _createVNode$1(_component_v_btn, {
                         size: "x-small",
                         variant: "text",
@@ -2562,7 +2893,7 @@ const _sfc_main$1 = /* @__PURE__ */ _defineComponent$1({
                         _: 1
                       })
                     ]),
-                    _createElementVNode$1("pre", _hoisted_80, _toDisplayString(rawText.value), 1)
+                    _createElementVNode$1("pre", _hoisted_81, _toDisplayString(rawText.value), 1)
                   ]),
                   _: 1
                 })
@@ -2583,7 +2914,7 @@ const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withC
 
 const _hoisted_1 = { class: "sdbs-tabs" };
 const _hoisted_2 = { class: "pa-3" };
-const {nextTick,ref,watch} = await importShared('vue');
+const {nextTick,onMounted,onUnmounted,ref,watch} = await importShared('vue');
 const _sfc_main = /* @__PURE__ */ _defineComponent({
   __name: "PanelTabs",
   props: {
@@ -2604,6 +2935,16 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       await nextTick();
       queryRef.value?.query(mediaId);
     }
+    function syncSite() {
+      void ensureSite(props.api, true);
+    }
+    onMounted(() => {
+      syncSite();
+      if (typeof window !== "undefined") window.addEventListener("focus", syncSite);
+    });
+    onUnmounted(() => {
+      if (typeof window !== "undefined") window.removeEventListener("focus", syncSite);
+    });
     return (_ctx, _cache) => {
       const _component_v_tab = _resolveComponent("v-tab");
       const _component_v_tabs = _resolveComponent("v-tabs");

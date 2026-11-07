@@ -25,7 +25,7 @@ const sharedVue = { requiredVersion: false, generate: false, singleton: true } a
  * 规则：**每次前端有实质改动就递增**（a1 → a2 → a3…），后端 `constants.frontend_dist()`
  * 会自动扫描 dist 下最大的 `a<数字>` 目录，不用改 Python。
  */
-const ASSETS_DIR = 'a14'
+const ASSETS_DIR = 'a41'
 
 /** @originjs 1.4.1 的类型缺 `format`，运行时确实读取，V3 要求 esm */
 const federationOptions = {

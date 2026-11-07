@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import Integer, String, UniqueConstraint, delete, select
@@ -78,6 +79,9 @@ if PluginBase is not None:
         completed: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
         # 身份是人工指定的（2026-10-23：重扫识别失败时不许被降级成「未识别」）
         manual: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
+        # 已被删除（Emby 里删掉该剧后置 1）：扫描与监控永久跳过，防止源目录被
+        # 重新整理回来（2026-10-24 用户「删了又重生成」）。清空该标记才恢复。
+        ignored: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
         # 识别/整理失败等原因（展示用）
         reason: Mapped[str] = mapped_column(String(255), nullable=False, default="")
         created_at: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -106,6 +110,7 @@ if PluginBase is not None:
                 "organized_episodes": self.organized_episodes,
                 "completed": bool(self.completed),
                 "manual": bool(self.manual),
+                "ignored": bool(self.ignored),
                 # 整理完成 = 手动标记过，或已整理集数与数据源集数对齐（都 >0）
                 "done": bool(self.completed)
                 or (
@@ -139,6 +144,7 @@ class RecordStore:
         ("organized_episodes", "INTEGER NOT NULL DEFAULT 0"),
         ("completed", "INTEGER NOT NULL DEFAULT 0"),
         ("manual", "INTEGER NOT NULL DEFAULT 0"),
+        ("ignored", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     def _session(self) -> Session:
@@ -283,6 +289,52 @@ class RecordStore:
             raise
         finally:
             session.close()
+
+    def mark_ignored(self, path: str, value: bool = True) -> bool:
+        """标记/取消「已删除」：扫描与监控永久跳过该源目录。
+
+        2026-10-24 用户「删了又重生成」：Emby 删除只清条目与库文件，源目录还在，
+        目录监控一看到文件变化就重新整理回来。这里落一条**墓碑**记录，让扫描和
+        监控都跳过；只有显式取消标记（面板/接口）才会恢复。
+        """
+        if not path or DramaRecord is None:
+            return False
+        now = int(time.time())
+        session = self._session()
+        try:
+            row = session.execute(
+                select(DramaRecord).where(DramaRecord.path == path)
+            ).scalars().first()
+            if row is None:
+                row = DramaRecord(path=path, drama=Path(path).name, state="recognized",
+                                  created_at=now, updated_at=now)
+                session.add(row)
+            row.ignored = 1 if value else 0
+            if value:
+                # 墓碑态不再算「已整理」，面板统计与筛选跟着变
+                row.transferred = 0
+                row.completed = 0
+            row.updated_at = now
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def ignored_paths(self) -> set:
+        """全部「已删除」的源目录 path 集合（扫描/监控跳过用）。"""
+        if DramaRecord is None:
+            return set()
+        session = self._session()
+        try:
+            rows = session.execute(
+                select(DramaRecord).where(DramaRecord.ignored == 1)
+            ).scalars().all()
+        finally:
+            session.close()
+        return {str(row.path) for row in rows}
 
     def done_paths(self) -> set:
         """全部「整理完成」的源目录 path 集合（扫描跳过用）。

@@ -29,18 +29,36 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from .constants import SCRAPE_IMAGE_EXTENSIONS
+from .constants import SCRAPE_IMAGE_EXTENSIONS, SCRAPE_MIN_IMAGE_BYTES
 
 logger = logging.getLogger(__name__)
 
 # 剧级 nfo 固定文件名（Kodi/Emby 惯例）
 NFO_FILENAME: str = "tvshow.nfo"
+
+#: 有效图片的最小字节数。百度 gimg 中转对未收录的图返回 4×8 占位 GIF（52 字节），
+#: 低阈值图片一律当作取图失败，避免把假海报写进剧目录（2026-10-25）。
+MIN_IMAGE_BYTES: int = SCRAPE_MIN_IMAGE_BYTES
 # 季级 nfo 固定文件名（放在 Season NN 目录里，Emby/Kodi 都认）
 SEASON_NFO_FILENAME: str = "season.nfo"
+
+
+def image_ok(path: Path | str) -> bool:
+    """该图片文件是否存在且**不是残图**（大小低于 :data:`MIN_IMAGE_BYTES` 视为缺失）。
+
+    图床故障期落过 52 字节占位图，那种文件既渲染不出封面，又会让「已存在就跳过」
+    的判定永远补不上（2026-11-06 用户「裂图时期整理的历史记录现在没封面」）。
+    """
+    try:
+        target = Path(path)
+        return target.is_file() and target.stat().st_size >= MIN_IMAGE_BYTES
+    except OSError:
+        return False
 
 
 def poster_url(mediainfo: Any) -> str:
@@ -155,11 +173,18 @@ def _download(url: str, target: Path) -> Optional[str]:
 
     取图只走宿主 ``ImageHelper``（见 :func:`_fetch_image_bytes`），不再回退。
 
+    **占位图拦截（2026-10-25）**：百度 gimg 中转对尚未收录的图片会返回
+    4×8 的占位 GIF（52 字节）。此前我们照单全收，把 52 字节假海报写进剧目录，
+    Emby 与整理历史都没封面。小于 :data:`MIN_IMAGE_BYTES` 的响应一律视为失败，
+    不覆盖已有文件。
+
     :return: 成功返回 ``None``，失败返回错误描述。
     """
     data, error = _fetch_image_bytes(url)
     if not data:
         return error or "取图失败（空响应）"
+    if len(data) < MIN_IMAGE_BYTES:
+        return f"图片过小（{len(data)} 字节），疑似占位图，已跳过"
     tmp_path = Path(f"{target}.part")
     try:
         with open(tmp_path, "wb") as handle:
@@ -216,7 +241,8 @@ def write_metadata(
     for name, url in (images or {}).items():
         filename = image_filename(name, url)
         target = dest / filename
-        if target.exists() and not overwrite:
+        # 已存在但**是残图**（图床故障期落的 52 字节占位图）不跳过，重新下载覆盖
+        if image_ok(target) and not overwrite:
             result["skipped"].append(filename)
             continue
         error = _download(url, target)
@@ -238,15 +264,52 @@ def season_dir_name(season: int) -> str:
 def _season_image_filename(season: int, name: str, url: str) -> str:
     """季图落盘名（Emby 剧集结构）：海报固定 ``season{N}-poster.<ext>``。
 
-    数据源给的 key 若是 ``poster.jpg`` 一类通用名，改写成季专属名，Emby 才会在
-    剧集页把这季的图认出来；其它类型（fanart / banner 等）保持原样落季目录。
-    季号同样**不补零**（``season2-poster.jpg``），与 Season 目录名同口径。
+    数据源给的 key 若是 ``poster.jpg`` 一类通用名，**或已是别的季号**的
+    ``season01-poster.jpg``（数据源按词条季号命名，手动指定季号时会与落盘季号
+    不一致），一律改写成当前季专属名，Emby 才会在剧集页把这季的图认出来；
+    其它类型（fanart / banner 等）保持原样落季目录。季号**不补零**，与 Season
+    目录名同口径。
     """
     filename = image_filename(name, url)
     stem = Path(filename).stem.lower()
-    if stem.startswith("poster"):
+    if stem.startswith("poster") or re.fullmatch(r"season\d+-poster", stem):
         return f"season{max(1, min(99, int(season or 1)))}-poster{image_extension(url)}"
     return filename
+
+
+_SEASON_NUMBER_RE = re.compile(r"<seasonnumber>\s*\d*\s*</seasonnumber>", re.IGNORECASE)
+
+
+def _force_season_number(nfo_text: str, season: int) -> str:
+    """把季 nfo 的 ``seasonnumber`` 改成**实际落盘季号**。
+
+    数据源的季 nfo 是**按词条季号**生成的（词条是第一季就给 1），手动整理指定
+    季号时落到了 ``Season N`` 却写着 ``seasonnumber=1``，Emby 会按 1 处理。
+    只在原文本已有该标签时替换，不做插入（不猜 XML 结构）。
+    """
+    if not nfo_text or not _SEASON_NUMBER_RE.search(nfo_text):
+        return nfo_text
+    value = max(1, min(99, int(season or 1)))
+    return _SEASON_NUMBER_RE.sub(f"<seasonnumber>{value}</seasonnumber>", nfo_text, count=1)
+
+
+def _season_poster_present(dest: Path, season: int, filename: str) -> bool:
+    """季海报是否已存在（**补零与不补零两种旧名都算**）。
+
+    数据源原始 key 是 ``season01-poster.jpg``（补零），本模块写入时统一改成
+    ``season1-poster.jpg``（不补零，见 :func:`_season_image_filename`）。库内两种
+    并存，只认自己这套名字会在同一季目录里再下一张同名不同补零的图（2026-11-06
+    补图实测：三百多个季目录各多出一张重复海报）。
+    """
+    if image_ok(dest / filename):
+        return True
+    stem = Path(filename).stem.lower()
+    if not stem.startswith(f"season{season}-poster"):
+        return False
+    for ext in SCRAPE_IMAGE_EXTENSIONS:
+        if image_ok(dest / f"season{season:02d}-poster{ext}"):
+            return True
+    return False
 
 
 def write_season_metadata(
@@ -283,7 +346,7 @@ def write_season_metadata(
         result["errors"].append(f"创建季目录失败：{err}")
         return result
 
-    # 1) 季级 nfo
+    # 1) 季级 nfo（seasonnumber 以**实际落盘季号**为准，数据源可能按词条季号给）
     if nfo_text:
         nfo_path = dest / SEASON_NFO_FILENAME
         if nfo_path.exists() and not overwrite:
@@ -291,7 +354,7 @@ def write_season_metadata(
         else:
             tmp = dest / f"{SEASON_NFO_FILENAME}.part"
             try:
-                tmp.write_text(nfo_text, encoding="utf-8")
+                tmp.write_text(_force_season_number(nfo_text, season), encoding="utf-8")
                 os.replace(str(tmp), str(nfo_path))
                 result["nfo"] = True
             except OSError as err:
@@ -305,7 +368,8 @@ def write_season_metadata(
     for name, url in (images or {}).items():
         filename = _season_image_filename(season, name, url)
         target = dest / filename
-        if target.exists() and not overwrite:
+        # 补零旧名（season01-poster.jpg）也算已有，避免同季下第二张重复海报
+        if _season_poster_present(dest, season, filename) and not overwrite:
             result["skipped"].append(filename)
             continue
         error = _download(url, target)

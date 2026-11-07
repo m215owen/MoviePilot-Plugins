@@ -24,6 +24,7 @@
             class="sdas-person-photo"
             :src="displaySrc"
             cover
+            referrerpolicy="no-referrer"
             @load="onAvatarLoad"
             @error="onAvatarError"
           />
@@ -91,7 +92,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { proxyImage, retryProxyImage } from './api'
+import { proxiedImage, proxyImage, retryProxyImage } from './api'
 import type { ActorCandidate } from './types'
 
 const props = defineProps<{
@@ -131,13 +132,41 @@ const emit = defineEmits<{
 /** 头像加载失败 → 退回占位（失败不留空框） */
 const imgFailed = ref(false)
 
-/** 头像代理地址 + 失败重试次数（宿主图片代理 DNS 偶发失败，见 `retryProxyImage`） */
+/** 头像首选地址（`proxyImage`：CDN 域名直连、其余走宿主代理）+ 失败重试次数 */
 const avatarSrc = computed(() =>
   props.item.profile ? proxyImage(props.item.profile) : '',
 )
 const retryCount = ref(0)
+const retryStamp = ref(Date.now())
 const retryTimer = ref<ReturnType<typeof setTimeout> | null>(null)
-const displaySrc = computed(() => retryProxyImage(avatarSrc.value, retryCount.value))
+
+/**
+ * 重试阶梯（2026-11-03 与 `WorkCard` 对齐）：0 = 首选链路 →
+ * 1 = 换另一条链路（直连 ↔ 代理）→ 2 = 备选链路 + 时间戳 → 3 = 占位。
+ *
+ * 为什么要「互换」而不是固定「代理 → 代理 → 直连」：`proxyImage` 现在对
+ * `cdn.duanjubaike.org` 直接给原图（Cloudflare + 一年强缓存，浏览器自己缓存，
+ * 翻回上一页零往返），首选就不是代理了。宿主代理对不在白名单里的域会回**空响应**
+ * （200 / 0 字节），所以两条链路必须都试到，不能假设哪一条一定通。
+ */
+const MAX_RETRY = 2
+/** 首选是不是直连图床（`proxyImage` 已放行 CDN 域名） */
+const preferDirect = computed(
+  () => Boolean(avatarSrc.value) && avatarSrc.value === String(props.item.profile || '').trim(),
+)
+const displaySrc = computed(() => {
+  const raw = String(props.item.profile || '').trim()
+  const preferred = avatarSrc.value
+  if (!raw || !preferred) return ''
+  const attempt = retryCount.value
+  if (attempt <= 0) return preferred
+  const fallback = preferDirect.value ? proxiedImage(raw) : raw
+  if (attempt === 1) return fallback
+  if (attempt === MAX_RETRY) {
+    return retryProxyImage(preferDirect.value ? fallback : preferred, retryStamp.value)
+  }
+  return fallback
+})
 
 function onAvatarLoad(): void {
   imgFailed.value = false
@@ -145,15 +174,17 @@ function onAvatarLoad(): void {
 }
 
 function onAvatarError(): void {
-  // 整墙同时加载时宿主的 DNS 校验可能瞬时失败：隔 700ms 换地址再试两次
-  if (retryCount.value < 2 && avatarSrc.value) {
+  // 立刻切占位：裂图不留 700ms 在卡面上（重试到点再把图挂回去）
+  imgFailed.value = true
+  if (retryCount.value < MAX_RETRY && avatarSrc.value) {
     if (retryTimer.value) clearTimeout(retryTimer.value)
     retryTimer.value = setTimeout(() => {
+      retryStamp.value = Date.now()
       retryCount.value += 1
+      imgFailed.value = false
     }, 700)
     return
   }
-  imgFailed.value = true
   emit('poster')
 }
 

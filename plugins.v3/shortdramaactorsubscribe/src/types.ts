@@ -45,9 +45,9 @@ export interface WorkItem {
   /** 首播年（数据源给不出时为空串） */
   year: string
   type: string
-  /** 媒体来源：短剧百科（规范标识 `duanju`） */
+  /** 媒体来源：短剧百科（规范标识 `djbaike`，数据源 ShortDramaBaikeScraper 声明） */
   media_source: string
-  /** 百科原生 ID（裸数字，形如 `34146`），与 media_source 一起构成系统订阅认的媒体身份 */
+  /** 百科复合 ID（`drama:40106` / `duanju:34146` 等，前缀=站点分类），与 media_source 一起构成系统订阅认的媒体身份 */
   media_id: string
   poster: string
   vote: number
@@ -73,15 +73,33 @@ export interface WorkItem {
   /** 真人短剧 / AI 短剧 */
   kind: string
   /**
+   * 状态角标（`爆火` / `新剧` / `完结` / `预约`…）：数据源卡片封面左上角的彩色
+   * chip，多值、站点原样文本，作品卡按它印标签。跟快照走，每轮刷新自然更新；
+   * 数据源没给（.net 老站 / 老快照）就是空数组。
+   */
+  badges?: string[]
+  /**
    * 在库状态（与宿主媒体详情页同一套判定）：
    * true 已入库 / false 不在库 / 缺省未知（查库失败或数据没查成，不显示标记）
    */
   in_library?: boolean
+  /**
+   * 是否已在**本插件订阅清单**里（卡片红心状态的权威来源）。
+   *
+   * 2026-11-02 起由后端逐行标注（`/works`、`/actors/detail`）；搜索结果的作品行
+   * 来自数据源 `/lookup`，由 `lookupSite` 拿轻量订阅快照就地打标。
+   * 前端集合（`subscribed`）只在「刚订阅 / 刚取消」这种即时反馈里兜底。
+   */
+  subscribed?: boolean
   release_date: string
   /** 参演演员（多位时形如「A / B」） */
   actor: string
   actor_key: string
   first_seen: string
+  /**
+   * 是否「新剧」：作品卡带站点「新剧」角标（2026-11-02 起代替「本轮比上轮多出来」，
+   * 卡片上由左上那枚绿色标签呈现，右上的 NEW 已下线）
+   */
   is_new: boolean
   /**
    * 自建订阅搜索状态（订阅引擎 = self 时后端附带，来自台账；未处理的行没有这些字段）：
@@ -128,6 +146,26 @@ export interface WorkDetailActor {
 }
 
 /**
+ * 站点「热评」一行（后端 `WorkDetailComment`，来自 `.org` 作品页的
+ * `<section id="comments">`）。
+ *
+ * ⚠️ 站点只给这几项：**没有**时间、**没有**评论 ID、**没有**分页（最多 9 条），
+ * 所以这里不假造 —— 列表 key 用数组下标。
+ */
+export interface SiteComment {
+  /** 昵称（站点原文，可能为空） */
+  author: string
+  /** 头像（站点 CDN 绝对地址，走宿主 system/img 代理） */
+  avatar: string
+  /** 正文（站点原文，可能很长，前端折叠） */
+  content: string
+  /** 评分：站点 **10 分制**原值，展示时折成 5 星 */
+  rating: number
+  /** 点赞数（站点当「有用」用；0 = 站点没印） */
+  votes: number
+}
+
+/**
  * 作品详情（后端 ``WorkDetailData``，``GET /works/detail``）—— **自绘详情页**的数据源。
  *
  * 字段分两拨：百科详情页侧的（简介 / 题材 / 时长 / 演员表…）与**墙上快照侧**的
@@ -171,6 +209,10 @@ export interface WorkDetailPayload {
   /** 豆瓣条目地址（来源区「豆瓣」chip 用它） */
   douban_url?: string
   actors: WorkDetailActor[]
+  /** 站点「热评」（`.org` 作品页自带，最多 9 条；无时间无 ID） */
+  site_comments?: SiteComment[]
+  /** 当前站点有没有评论区（`.net` 老站 = false） */
+  comments_supported?: boolean
   /** 真人短剧 / AI 短剧（站点角标） */
   kind: string
   first_seen: string
@@ -221,6 +263,8 @@ export interface WorksQuery {
   platform?: string
   /** 'date' 首播日期（默认）/ 'heat' 热度 / 'play' 播放 / 'rating' 评分 */
   sort?: string
+  /** 只看新剧（带站点「新剧」角标，与卡片左上那枚绿色标签同口径） */
+  only_new?: boolean
   /** 只看未入库（后端只排除明确已在库的；未知作品保留） */
   only_not_in_library?: boolean
   /** 只看未订阅（后端按订阅清单排除，与卡片红心同一份） */
@@ -242,7 +286,6 @@ export interface WorksPayload {
   works: WorkItem[]
   actor_filters: ActorFilter[]
   facets: WorksFacets
-  new_window_days: number
   summary: {
     /** 全集作品数（不受筛选影响） */
     total: number
@@ -302,6 +345,8 @@ export interface PeopleRow extends ActorCandidate {
 /** 人物目录的一页（后端 ``PeopleListData``）。``message`` 只在数据源缺能力时非空 */
 export interface PeopleListPayload {
   kind: string
+  /** 这一页的性别档位：`男` / `女` / 空串（全部） */
+  gender?: string
   page: number
   has_more: boolean
   message: string
@@ -337,6 +382,11 @@ export interface RankMediaItem {
   url: string
   /** 在库判定（true 在库 / false 不在库 / null 未知）—— 卡片「入库」图标 */
   in_library?: boolean | null
+  /** 是否已在订阅台账里（后端权威判定，与作品墙同一套；卡片红心） */
+  subscribed?: boolean
+  /** 自建订阅搜索状态（downloaded / history / in_library / noresult / failed） */
+  sub_state?: string
+  sub_detail?: string
   [extra: string]: unknown
 }
 
@@ -450,9 +500,6 @@ export interface ActorDetailPayload {
  */
 export type SubscribeMode = 'follow' | 'normal' | 'best'
 export type SubscribePrefer = 'seeders' | 'size_desc' | 'size_asc'
-/** 订阅引擎：host = 宿主订阅链（默认）/ self = 插件自建订阅搜索（全分类补搜） */
-export type SubscribeEngine = 'host' | 'self'
-
 /** 插件配置 */
 export interface PluginConfig {
   enabled: boolean
@@ -483,8 +530,18 @@ export interface PluginConfig {
   auto_subscribe_max_per_run: number
   /** 已在媒体库的作品是否跳过 */
   auto_subscribe_skip_library: boolean
-  /** 订阅引擎：host = 宿主订阅链 / self = 自建订阅搜索（绕开站点分类错位） */
-  subscribe_engine: SubscribeEngine
+  /**
+   * 发现页展示哪些列表 / 榜单（原数据源「探索页」配置，2026-11-02 迁到本插件）。
+   *
+   * 空数组 = 不筛选（数据源目录里有什么就显示什么）；值域由数据源站点决定
+   * （切站后 key 整批换），所以这里不存默认清单。
+   */
+  discover_tabs: string[]
+  /**
+   * 发现页「站点 RSS」看哪些站点：逗号分隔的站点 ID
+   * （空 = 回落订阅站点集合，老配置不用重新勾）。
+   */
+  rss_sites: string
   /** 自建订阅搜索运行间隔（小时） */
   self_interval_hours: number
   /** 自建订阅搜索单轮最多搜索几部（1..30） */
@@ -521,7 +578,6 @@ export interface StatusPayload {
   works: number
   new_works: number
   last_refresh: string
-  new_window_days: number
   states: ActorItem[]
   /** 自动订阅开关（关着时下面两个字段仍给，方便展示历史条数） */
   auto_subscribe?: boolean
@@ -529,8 +585,6 @@ export interface StatusPayload {
   auto_subscribed?: number
   /** 最近几条自动订阅记录（新的在前，最多 5 条） */
   auto_subscribe_recent?: AutoSubscribeRecord[]
-  /** 自建订阅搜索引擎（host / self；host 时下面计数恒为 0） */
-  sub_engine?: 'host' | 'self'
   /** 自建订阅：已提交下载 */
   sub_downloaded?: number
   /** 自建订阅：无结果（冷却重试中） */

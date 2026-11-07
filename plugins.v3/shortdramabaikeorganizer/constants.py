@@ -38,7 +38,7 @@ PLUGIN_DESC = (
     "由插件直接按宿主短剧处理器命名规则搬运入库，并把整理历史写入系统 TransferHistoryOper。"
 )
 PLUGIN_ICON = "ShortDramaBaikeOrganizer.png"
-PLUGIN_VERSION = "0.1.5"
+PLUGIN_VERSION = "0.1.6"
 PLUGIN_AUTHOR = "m215owen"
 PLUGIN_CONFIG_PREFIX = "shortdramabaikeorganizer_"
 PLUGIN_ORDER = 50
@@ -66,7 +66,7 @@ MEDIA_TYPE_TV: Final[str] = "电视剧"
 # Service Worker 会一直复用旧 remoteEntry（表现：改了前端界面不变或直接
 # 「无法加载组件」）。所以把**目录名当缓存键**：前端有实质改动就把
 # ``vite.config.ts`` 的 ``ASSETS_DIR`` 递增（a1 → a2），URL 随之变化。
-FRONTEND_DIST: Final[str] = "dist/a20/assets"
+FRONTEND_DIST: Final[str] = "dist/a28/assets"
 _BUILD_DIR_RE = re.compile(r"a(\d+)")
 
 
@@ -112,6 +112,17 @@ CONF_MONITOR_MODE: Final[str] = "monitor_mode"
 CONF_MONITOR_INTERVAL: Final[str] = "monitor_interval"
 CONF_FORCE_REORGANIZE: Final[str] = "force_reorganize"
 
+# ---- 反向联动：Emby 删除媒体 → 级联清理（2026-10-24 用户口径）----
+#
+# 触发只有 Emby Webhook 的媒体移除事件（用户明确「触发设计不需要兜底」）。
+# 「删插件整理历史」「取消作品订阅」是链路固有环节，不单独给开关。
+CONF_SYNCDEL_ENABLED: Final[str] = "syncdel_enabled"
+CONF_SYNCDEL_MP_HISTORY: Final[str] = "syncdel_mp_history"
+CONF_SYNCDEL_DELETE_MEDIA: Final[str] = "syncdel_delete_media"
+CONF_SYNCDEL_DOWNLOADERS: Final[str] = "syncdel_downloaders"
+CONF_SYNCDEL_EXCLUDE_PATH: Final[str] = "syncdel_exclude_path"
+CONF_SYNCDEL_LIBRARY_PATH: Final[str] = "syncdel_library_path"
+
 DEFAULT_CONFIG: Final[dict] = {
     CONF_ENABLED: False,
     # 待整理短剧所在的根目录，每行一个（通常是下载器完成目录下的某层）
@@ -143,6 +154,19 @@ DEFAULT_CONFIG: Final[dict] = {
     CONF_MONITOR_INTERVAL: 60,
     # 历史里已有同一 src 的成功记录时仍强制重新整理（默认关：已在库就跳过）
     CONF_FORCE_REORGANIZE: False,
+    # 反向联动总开关（默认关：破坏性链路，必须显式开启）
+    CONF_SYNCDEL_ENABLED: False,
+    # 删 MP 整理历史（宿主的整理记录；关掉只清插件自己的记录）
+    CONF_SYNCDEL_MP_HISTORY: True,
+    # 删种子时同步删除媒体（开：种子连带文件一起删 + 清媒体库目录；
+    # 关：只删种子注册项，媒体与源文件全部保留）
+    CONF_SYNCDEL_DELETE_MEDIA: False,
+    # 指定下载器（名称列表）；空 = 遍历全部已启用下载器按保存路径定位
+    CONF_SYNCDEL_DOWNLOADERS: [],
+    # 排除路径前缀（逗号分隔），命中直接忽略事件
+    CONF_SYNCDEL_EXCLUDE_PATH: "",
+    # Emby 路径 → 本地路径映射，每行一条 ``/emby/库路径:/本地路径``
+    CONF_SYNCDEL_LIBRARY_PATH: "",
 }
 
 # ------------------------------------------------------------ 目录监控
@@ -172,6 +196,11 @@ MAX_CONSECUTIVE_ERRORS: Final[int] = 20
 SCRAPE_IMAGE_EXTENSIONS: Final[tuple[str, ...]] = (
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
 )
+
+# 有效图片的最小字节数。百度 gimg 中转对未收录的图返回 4×8 占位 GIF（52 字节）；
+# 图床故障期（2026-11 上旬）也会落这种残图。小于此值的图片一律视为**没有图**：
+# 既不算「已刮削」（否则重扫会跳过它、永远补不上），也允许被后续下载覆盖。
+SCRAPE_MIN_IMAGE_BYTES: Final[int] = 2048
 
 # 整理进度快照里保留的「每部剧详情」条数上限（面板「整理详情」窗口用）
 MAX_DETAIL_ITEMS: Final[int] = 500
@@ -204,6 +233,17 @@ RECORD_PENDING: Final[str] = "pending"        # 已识别，待整理
 RECORD_DONE: Final[str] = "done"              # 整理成功（已写入系统历史）
 RECORD_SKIPPED: Final[str] = "skipped"        # 已在历史中，跳过
 RECORD_UNRECOGNIZED: Final[str] = "unrecognized"  # 百科无候选
+
+# ---- 反向联动（syncdel.py）----
+#
+# Emby 官方 Webhook 的媒体移除事件：``library.deleted``（2026-10-24 经 Emby
+# 官方社区与第三方实现双向核实）；``ItemDeleted`` 兼容其他上报口径。
+SYNCDEL_EVENTS: Final[tuple[str, ...]] = ("library.deleted", "ItemDeleted")
+# 演员订阅插件：取消**作品订阅**的跨插件动作（由该插件 PluginAction 分支处理）
+ACTOR_SUBSCRIBE_PLUGIN_ID: Final[str] = "ShortDramaActorSubscribe"
+ACTOR_UNSUB_ACTION: Final[str] = "shortdramaactorsubscribe_unsubscribe"
+# 整理历史里的媒体类型（与 history.record_transfer 写入时一致）
+SYNCDEL_MTYPE_TV: Final[str] = MEDIA_TYPE_TV
 
 # 集号提取正则源（naming.py 使用，放在常量便于集中维护）。
 #

@@ -72,7 +72,7 @@ const backend = {
   organizeStart: (api, force = false) => postJson(api, "/organize/start", { force: force ? "1" : "0" }),
   /** 停止后台整理 */
   organizeStop: (api) => postJson(api, "/organize/stop"),
-  /** 整理预演：按指定身份/目标库列出将整理哪些文件（media_id 用于从源数据取季号） */
+  /** 整理预演：按指定身份/目标库/季号列出将整理哪些文件 */
   preview: (api, params) => getJson(api, "/preview", params),
   /**
    * 整理详情：传 `path`/`dest` 拿单剧文件级记录；都不传拿本次整理运行详情。
@@ -82,6 +82,10 @@ const backend = {
   search: (api, keyword, limit = 10) => getJson(api, "/search", { keyword, limit }),
   /** 记录库：统计 + 全部剧记录（整理中 / 整理完成分开数） */
   store: (api) => getJson(api, "/store"),
+  /** 删除任务台账 */
+  deleteHistory: (api) => getJson(api, "/delete/history"),
+  /** 恢复一条删除任务（清墓碑标记） */
+  deleteRestore: (api, time) => postJson(api, "/delete/restore", { time }),
   /** 手动标记 / 取消「整理完成」（value=0 取消） */
   storeComplete: (api, path, value = "1") => postJson(api, "/store/complete", { path, value }),
   /** 立即刮削（传源目录 path，或直接传目标目录 dest） */
@@ -90,12 +94,23 @@ const backend = {
     "/scrape",
     params
   ),
+  /** 补图进度快照（缺失 / 残图封面补齐，后台任务） */
+  repairProgress: (api) => getJson(api, "/repair"),
+  /** 启动补封面（留空 library_dir 用配置的目标库） */
+  repairStart: (api, libraryDir = "") => postJson(
+    api,
+    "/repair/start",
+    libraryDir ? { library_dir: libraryDir } : {}
+  ),
   /** 删除一条记录库记录 */
   storeDelete: (api, path) => postJson(api, "/store/delete", { path }),
   /** 清空记录库 */
   storeClear: (api) => postJson(api, "/store/clear"),
   browse: (api, path = "") => getJson(api, "/dirs/browse", { path }),
-  dirOptions: (api) => getJson(api, "/dirs/options")
+  dirOptions: (api) => getJson(
+    api,
+    "/dirs/options"
+  )
 };
 
 const _export_sfc = (sfc, props) => {

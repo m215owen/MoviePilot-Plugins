@@ -39,6 +39,14 @@
         <v-btn variant="tonal" prepend-icon="mdi-folder-move" :loading="orgStarting" :disabled="running || organizeRunning" @click="organizeAll">整理</v-btn>
         <v-btn v-if="organizeRunning" variant="tonal" color="warning" prepend-icon="mdi-stop" @click="stopOrganize">停止整理</v-btn>
         <v-btn variant="text" prepend-icon="mdi-clipboard-text" @click="openRunDetails">整理详情</v-btn>
+        <v-btn
+          variant="text"
+          prepend-icon="mdi-image-plus"
+          :loading="repairing"
+          :disabled="running || organizeRunning"
+          title="补齐媒体库里缺失或残图（占位图）的剧 / 季封面"
+          @click="repairPosters"
+        >补封面</v-btn>
         <v-chip size="small" variant="tonal" :color="stateColor">扫描 · {{ stateLabel }}</v-chip>
         <v-chip size="small" variant="tonal" :color="orgStateColor">整理 · {{ orgStateLabel }}</v-chip>
       </div>
@@ -76,6 +84,9 @@
           <span> ｜ {{ orgPhaseLabel }} {{ org.done }}/{{ org.total || '?' }}</span>
           <span v-if="org.current"> ｜ {{ org.current }}</span>
         </template>
+      </div>
+      <div v-if="repairMessage" class="text-caption text-medium-emphasis">
+        {{ repairMessage }}
       </div>
 
       <!-- 五类统计（记录库，重启不丢）；点卡片筛选下方「整理记录」 -->
@@ -157,16 +168,26 @@
         记录库不可用（宿主未提供插件数据库），统计与记录仅在本次会话内有效。
       </div>
 
-      <!-- 记录列表（记录库，卡片下方唯一列表；四张统计卡即它的筛选器） -->
+      <!-- 记录列表（记录库，卡片下方唯一列表；统计卡筛选 + 关键词搜索） -->
       <div class="sdbo-section">
         <div class="sdbo-counts">
           <span class="text-body-2">记录</span>
           <v-chip size="x-small" variant="tonal">
-            {{ storeRecords.length }}<template v-if="statFilter"> / {{ storeTotal }} 条</template><template v-else> 条</template>
+            {{ storeRecords.length }}<template v-if="statFilter || storeKeyword"> / {{ storeTotal }} 条</template><template v-else> 条</template>
           </v-chip>
           <v-spacer></v-spacer>
           <v-btn size="x-small" variant="text" :disabled="!storeRecords.length" @click="clearStore">清空</v-btn>
         </div>
+        <v-text-field
+          v-model="storeKeyword"
+          density="compact"
+          variant="outlined"
+          hide-details
+          clearable
+          prepend-inner-icon="mdi-magnify"
+          label="搜索记录（剧名 / 目录 / 媒体ID，空格分隔多个关键词）"
+          class="mt-2"
+        ></v-text-field>
         <div class="sdbo-list">
           <div v-for="rec in storeRecords" :key="rec.path" class="sdbo-item">
             <div class="sdbo-item-main">
@@ -257,9 +278,47 @@
             </div>
           </div>
           <div v-if="!storeRecords.length" class="text-caption text-medium-emphasis sdbo-empty">
-            <template v-if="statFilter">「{{ statFilterLabel }}」分类下暂无记录</template>
+            <template v-if="storeKeyword">没有匹配「{{ storeKeyword }}」的记录</template>
+            <template v-else-if="statFilter">「{{ statFilterLabel }}」分类下暂无记录</template>
             <template v-else>暂无记录（点「扫描」后自动入库；整理、刮削结果也会写回这里）</template>
           </div>
+        </div>
+      </div>
+
+      <!-- 删除任务：Emby 删除联动执行过的清理台账 -->
+      <div class="sdbo-section mt-4">
+        <div class="sdbo-section-head">
+          <span class="text-body-2">删除任务</span>
+          <v-chip size="x-small" variant="tonal">{{ deleteTasks.length }} 条</v-chip>
+          <v-spacer></v-spacer>
+          <v-btn size="x-small" variant="text" :loading="deleteLoading" @click="loadDeleteTasks">刷新</v-btn>
+        </div>
+        <div v-if="deleteTasks.length" class="sdbo-list">
+          <div v-for="task in deleteTasks" :key="task.time" class="sdbo-item">
+            <div class="sdbo-item-main">
+              <span class="sdbo-item-title">{{ task.title }}</span>
+              <v-chip size="x-small" variant="tonal" :color="task.ok ? 'success' : 'warning'">
+                {{ task.ok ? '已完成' : '有失败项' }}
+              </v-chip>
+              <span class="sdbo-item-meta">{{ task.time }}</span>
+            </div>
+            <div class="sdbo-item-sub">
+              <span>整理历史 {{ task.mp_rows }} 行</span>
+              <span>种子 {{ task.torrents }} 个</span>
+              <span>{{ task.delete_media ? '媒体已删（含源文件）' : '仅删种子' }}</span>
+            </div>
+            <div class="sdbo-actions">
+              <v-btn
+                size="x-small"
+                variant="text"
+                title="从台账移除，并让该剧重新纳入扫描/监控"
+                @click="restoreDeleteTask(task.time)"
+              >恢复</v-btn>
+            </div>
+          </div>
+        </div>
+        <div v-else class="text-caption text-medium-emphasis sdbo-empty">
+          暂无删除任务（Emby 里删除本插件整理过的短剧后，清理动作会记录在这里）
         </div>
       </div>
     </v-card-text>
@@ -300,11 +359,57 @@
               <div class="sdbo-item-sub">{{ cand.media_id }}</div>
             </div>
           </div>
+
+          <div class="sdbo-actions mt-2">
+            <v-select
+              v-model="fixSeason"
+              :items="seasonItems"
+              density="compact"
+              variant="outlined"
+              hide-details
+              clearable
+              label="季号（留空 = 默认 Season 1）"
+              title="指定后按 Season N / S0NE0X 落盘"
+              class="sdbo-transfer"
+            ></v-select>
+          </div>
+
+          <div class="sdbo-field-label mt-3">百科上没有这部剧？</div>
+          <div class="sdbo-actions">
+            <v-text-field
+              v-model="fixManualTitle"
+              density="compact"
+              variant="outlined"
+              hide-details
+              clearable
+              label="手动指定剧名（不依赖识别，直接按此名整理）"
+              class="sdbo-grow"
+            ></v-text-field>
+            <v-text-field
+              v-model="fixManualYear"
+              density="compact"
+              variant="outlined"
+              hide-details
+              clearable
+              type="number"
+              label="年份（可选）"
+              class="sdbo-transfer"
+            ></v-text-field>
+          </div>
+          <div class="text-caption text-medium-emphasis mt-1">
+            填了剧名就不再使用上面选中的候选：搬运 / 命名照常，但没有百科素材来源，自动刮削会跳过。
+          </div>
         </v-card-text>
         <v-card-actions>
           <v-btn variant="text" @click="fixOpen = false">取消</v-btn>
           <v-spacer></v-spacer>
-          <v-btn color="primary" variant="flat" :disabled="!fixSelected" :loading="fixApplying" @click="applyFix">
+          <v-btn
+            color="primary"
+            variant="flat"
+            :disabled="!fixSelected && !fixManualTitle.trim()"
+            :loading="fixApplying"
+            @click="applyFix"
+          >
             按此身份整理
           </v-btn>
         </v-card-actions>
@@ -451,6 +556,21 @@
               label="搬运方式"
               class="sdbo-transfer"
             ></v-select>
+            <v-select
+              v-model="reSeason"
+              :items="seasonItems"
+              density="compact"
+              variant="outlined"
+              hide-details
+              clearable
+              label="季号"
+              title="留空 = 沿用默认口径（一季一个剧目录、内部 Season 1）"
+              class="sdbo-transfer"
+              @update:modelValue="() => void runPreview()"
+            ></v-select>
+          </div>
+          <div class="text-caption text-medium-emphasis">
+            指定季号后按 <code>Season N / S0NE0X</code> 落盘，季级刮削也写到这一层；留空则沿用「一季一个独立剧目录、内部恒 Season 1」。
           </div>
           <v-switch
             v-model="reForce"
@@ -519,6 +639,7 @@ import {
   type ScanSnapshot,
   type SearchCandidate,
   type StoreRecord,
+  type DeleteTaskItem,
   type StoreSnapshot,
 } from './api'
 
@@ -545,6 +666,8 @@ const transferItems = [
   { title: '硬链接', value: 'link' },
   { title: '软链接', value: 'softlink' },
 ]
+/** 季号下拉（手动整理指定季号用；清空 = 沿用默认口径 Season 1） */
+const seasonItems = Array.from({ length: 20 }, (_, i) => i + 1)
 
 const props = defineProps<{
   api?: HostApi
@@ -608,6 +731,8 @@ const scan = ref<ScanSnapshot>(emptyScan())
 /** 整理任务快照（后台任务；扫描与整理各自独立） */
 const org = ref<OrganizeSnapshot>(emptyOrganize())
 const storeData = ref<StoreSnapshot>(emptyStore())
+const deleteTasks = ref<DeleteTaskItem[]>([])
+const deleteLoading = ref(false)
 /** 统计卡筛选：'' 不过滤（显示全部记录）；命中时下方列表只显示该分类 */
 const statFilter = ref<'' | 'recognized' | 'pending' | 'transferred' | 'completed' | 'unrecognized' | 'unscraped'>('')
 const errorText = ref('')
@@ -623,6 +748,9 @@ const reorganizingPath = ref('')
 const organizingPath = ref('')
 /** 正在标记（取消）整理完成的源目录 path（按钮 loading 用） */
 const completingPath = ref('')
+/** 补封面（缺失 / 残图海报）按钮状态与提示 */
+const repairing = ref(false)
+const repairMessage = ref('')
 
 /** 整理详情窗口 */
 const detailOpen = ref(false)
@@ -647,6 +775,8 @@ const reCandidates = ref<SearchCandidate[]>([])
 const reSelected = ref<SearchCandidate | null>(null)
 const reLibrary = ref('')
 const reTransfer = ref('move')
+/** 手动指定季号（null/空 = 沿用默认口径：一季一个剧目录、内部 Season 1） */
+const reSeason = ref<number | null>(null)
 const reForce = ref(false)
 const rePreviewing = ref(false)
 const reApplying = ref(false)
@@ -663,6 +793,11 @@ const fixApplying = ref(false)
 const fixMessage = ref('')
 const fixCandidates = ref<SearchCandidate[]>([])
 const fixSelected = ref<SearchCandidate | null>(null)
+/** 人工处理时指定的季号（null/空 = 默认 Season 1） */
+const fixSeason = ref<number | null>(null)
+/** 人工处理时手动命名的剧名 / 年份（百科上没有的剧，不依赖识别） */
+const fixManualTitle = ref('')
+const fixManualYear = ref('')
 
 let timer = 0
 /** 点过扫描后的强制轮询窗口（即使快照解析失败也能持续拉，30 秒足够 136 部跑完） */
@@ -711,11 +846,26 @@ const statFilterLabel = computed<string>(() => {
   return map[statFilter.value] || ''
 })
 const storeTotal = computed<number>(() => (storeData.value.items || []).length)
+/** 记录搜索关键词（空格分隔多个，全部命中才显示；匹配剧名/目录名/源路径/媒体ID） */
+const storeKeyword = ref('')
 /** 记录列表：按统计卡筛选；口径与后端 stats 一致 */
 const storeRecords = computed<StoreRecord[]>(() => {
   const items = storeData.value.items || []
   const key = statFilter.value
-  if (!key) return items
+  // clearable 的 v-text-field 点 × 时写入的是 null 而不是空串，这里必须兜底
+  const words = String(storeKeyword.value ?? '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+  const matched = (rec: StoreRecord): boolean => {
+    if (!words.length) return true
+    const haystack = [rec.title, rec.drama, rec.path, rec.media_id]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    return words.every((word) => haystack.indexOf(word) >= 0)
+  }
+  if (!key) return items.filter(matched)
   return items.filter((rec) => {
     if (key === 'recognized') return rec.state === 'recognized'
     if (key === 'pending') return rec.state === 'recognized' && !rec.transferred
@@ -724,7 +874,7 @@ const storeRecords = computed<StoreRecord[]>(() => {
     if (key === 'unrecognized') return rec.state !== 'recognized'
     if (key === 'unscraped') return rec.dest_exists && !rec.scraped
     return true
-  })
+  }).filter(matched)
 })
 
 /** 集数是否对齐（自动判定整理完成的口径，与后端一致） */
@@ -786,6 +936,33 @@ async function loadStore(): Promise<void> {
   }
 }
 
+async function loadDeleteTasks(): Promise<void> {
+  const api = apiOrNull()
+  if (!api) return
+  deleteLoading.value = true
+  try {
+    const data = await backend.deleteHistory(api)
+    deleteTasks.value = data?.items || []
+  } catch (err) {
+    errorText.value = `读取删除任务失败：${(err as Error)?.message || String(err)}`
+  } finally {
+    deleteLoading.value = false
+  }
+}
+
+async function restoreDeleteTask(time: string): Promise<void> {
+  const api = apiOrNull()
+  if (!api) return
+  try {
+    const res = await backend.deleteRestore(api, time)
+    if (!res?.success) errorText.value = res?.message || '恢复失败'
+    await loadDeleteTasks()
+    await loadStore()
+  } catch (err) {
+    errorText.value = `恢复失败：${(err as Error)?.message || String(err)}`
+  }
+}
+
 async function refresh(): Promise<void> {
   const api = apiOrNull()
   if (!api) return
@@ -796,6 +973,7 @@ async function refresh(): Promise<void> {
     const snapshot = pickScan(await backend.scan(api))
     if (snapshot) scan.value = { ...emptyScan(), ...snapshot }
     await loadStore()
+    await loadDeleteTasks()
   } catch (err) {
     errorText.value = `读取状态失败：${(err as Error)?.message || String(err)}`
   } finally {
@@ -920,9 +1098,46 @@ async function stopOrganize(): Promise<void> {
   }
 }
 
-/** 打开「整理详情」：本次整理运行的逐部结果 */
-async function openRunDetails(): Promise<void> {
+/**
+ * 补封面：把媒体库里缺失或只剩残图（图床故障期的 52 字节占位图）的剧 / 季封面补齐。
+ *
+ * 后端是**后台任务**（逐部取素材可能几十秒），这里只轮询快照到终止态。
+ * 只补图，不动集文件与已有正常产物（2026-11-06 用户「裂图时期整理的历史记录没封面」）。
+ */
+async function repairPosters(): Promise<void> {
   const api = apiOrNull()
+  if (!api) {
+    errorText.value = '宿主 api 实例不可用，请刷新页面重试'
+    return
+  }
+  repairing.value = true
+  repairMessage.value = '正在补封面…'
+  try {
+    const started = await backend.repairStart(api)
+    if (started && started.started === false) {
+      repairMessage.value = started.message || '补封面未启动'
+      return
+    }
+    // 最多等 5 分钟（150 × 2s），超过就交回快照状态，不无限轮询
+    for (let i = 0; i < 150; i += 1) {
+      await new Promise<void>((resolve) => { window.setTimeout(resolve, 2000) })
+      const snapshot = await backend.repairProgress(api)
+      if (!snapshot) continue
+      repairMessage.value = snapshot.total
+        ? `${snapshot.message}（${snapshot.done}/${snapshot.total}）`
+        : snapshot.message
+      if (snapshot.state !== 'running' && snapshot.state !== 'stopping') break
+    }
+    await loadStore()
+  } catch (err) {
+    repairMessage.value = `补封面失败：${(err as Error)?.message || String(err)}`
+  } finally {
+    repairing.value = false
+  }
+}
+
+/** 打开「整理详情」：本次整理运行的逐部结果 */
+async function openRunDetails(): Promise<void> {  const api = apiOrNull()
   if (!api) return
   detailScope.value = 'run'
   detailDramaName.value = ''
@@ -961,6 +1176,7 @@ function openReorganize(rec: StoreRecord): void {
   reSelected.value = null
   reLibrary.value = ''
   reTransfer.value = status.value.transfer_type || 'move'
+  reSeason.value = null
   reForce.value = false
   reMessage.value = ''
   rePreviewText.value = ''
@@ -1024,6 +1240,7 @@ async function runPreview(): Promise<void> {
       ...((picked?.media_id || rec.media_id)
         ? { media_id: picked?.media_id || rec.media_id }
         : {}),
+      ...(reSeason.value ? { season: String(reSeason.value) } : {}),
     })
     if (!data.exists) {
       rePreviewText.value = '源目录已不存在，无法整理（移动方式搬完源目录就空了）'
@@ -1031,7 +1248,7 @@ async function runPreview(): Promise<void> {
       return
     }
     rePreviewText.value = data.count
-      ? `将整理 ${data.count} 个文件 → ${data.library_dir}`
+      ? `将整理 ${data.count} 个文件 → ${data.library_dir}（Season ${data.season || 1}）`
       : '源目录里没有可整理的视频文件'
     rePreviewItems.value = data.items || []
   } catch (err) {
@@ -1062,6 +1279,7 @@ async function applyReorganize(): Promise<void> {
     if (year !== null && year !== undefined && year !== 0) params.year = String(year)
     if (reLibrary.value) params.library_dir = reLibrary.value
     if (reTransfer.value) params.transfer_type = reTransfer.value
+    if (reSeason.value) params.season = String(reSeason.value)
     const result = await backend.organize(api, params)
     reOpen.value = false
     await loadStore()
@@ -1186,6 +1404,9 @@ function openFix(rec: StoreRecord): void {
   fixKeyword.value = rec.drama || ''
   fixCandidates.value = []
   fixSelected.value = null
+  fixSeason.value = null
+  fixManualTitle.value = ''
+  fixManualYear.value = ''
   fixMessage.value = ''
   fixOpen.value = true
   void runSearch()
@@ -1219,26 +1440,35 @@ async function runSearch(): Promise<void> {
   }
 }
 
-/** 用选中的候选身份直接整理该目录，并刷新记录库 */
+/** 用选中的候选身份（或手动命名的剧名）直接整理该目录，并刷新记录库 */
 async function applyFix(): Promise<void> {
   const api = apiOrNull()
   const rec = fixItem.value
   const candidate = fixSelected.value
-  if (!api || !rec || !candidate) return
+  const manualName = fixManualTitle.value.trim()
+  if (!api || !rec) return
+  if (!candidate && !manualName) return
   fixApplying.value = true
   fixMessage.value = ''
   try {
-    const params: OrganizeParams = {
-      path: rec.path,
-      media_id: candidate.media_id,
-      title: candidate.title || rec.drama,
+    const params: OrganizeParams = { path: rec.path }
+    if (manualName) {
+      // 百科上没有的剧：手动命名，不依赖识别（后端跳过刮削）
+      params.manual = '1'
+      params.title = manualName
+      const manualYear = Number(fixManualYear.value)
+      if (manualYear > 0) params.year = String(manualYear)
+    } else if (candidate) {
+      params.media_id = candidate.media_id
+      params.title = candidate.title || rec.drama
+      if (candidate.year !== null && candidate.year !== undefined) {
+        params.year = String(candidate.year)
+      }
+      if (candidate.episode_count !== null && candidate.episode_count !== undefined) {
+        params.episode_count = String(candidate.episode_count)
+      }
     }
-    if (candidate.year !== null && candidate.year !== undefined) {
-      params.year = String(candidate.year)
-    }
-    if (candidate.episode_count !== null && candidate.episode_count !== undefined) {
-      params.episode_count = String(candidate.episode_count)
-    }
+    if (fixSeason.value) params.season = String(fixSeason.value)
     const result = await backend.organize(api, params)
     if (result && result.error) {
       fixMessage.value = `整理失败：${result.error}`
@@ -1247,9 +1477,14 @@ async function applyFix(): Promise<void> {
     fixOpen.value = false
     // 后端整理成功即写库（含自动刮削），拉一次最新记录
     await loadStore()
+    const note = result?.note
     scan.value = {
       ...scan.value,
-      message: `已按「${candidate.title || candidate.media_id}」整理 ${rec.drama}`,
+      message: note
+        ? `${rec.drama}：${note}`
+        : manualName
+          ? `已按手动命名「${manualName}」整理 ${rec.drama}`
+          : `已按「${candidate?.title || candidate?.media_id}」整理 ${rec.drama}`,
     }
   } catch (err) {
     fixMessage.value = `整理失败：${(err as Error)?.message || String(err)}`
@@ -1352,6 +1587,12 @@ onBeforeUnmount(() => {
 
 .sdbo-section {
   margin-top: 16px;
+}
+
+.sdbo-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .sdbo-list {

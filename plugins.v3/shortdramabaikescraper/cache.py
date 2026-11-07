@@ -159,21 +159,50 @@ class CacheFacade:
     def counts(self) -> dict[str, int]:
         """各 region 的**当前条数**（管理面板「缓存分布」饼图用）。
 
-        走的是契约方法 ``keys()`` —— Redis 后端是 SCAN + 逐条取值，所以是 O(n)。
-        只在面板打开 / 点刷新时调一次；本插件 5 个 region 合计在百~千级，可接受。
-        读失败的 region 记 0（不让统计问题挡住整个状态接口）。
+        ⚠️ 不能走 ``cache.keys()``：宿主后端基类的 ``keys()`` 是
+        ``for _, v in items()`` —— 逐条 GET 并**反序列化整个缓存值**，而详情值
+        （作品清单、演员表）动辄几百 KB，40 条就要 1.5s，5 个 region 合计把
+        ``/status`` 拖到 6s+（2026-11-04 实测，面板每次打开都卡在这）。
+
+        快路径：Redis 后端按 ``region:<name>:key:*`` 只 SCAN 键名、不读值，
+        4 万键的库上每个 region 约 0.2s。拿不到 Redis 客户端（后端变更 /
+        未连接）就退回旧的 ``keys()`` 慢路径，宁可慢也不报错。
         """
-        out: dict[str, int] = {}
-        for name in constants.ALL_REGIONS:
-            cache = self.region(name)
-            if cache is None:
-                out[name] = 0
-                continue
-            try:
-                out[name] = sum(1 for _ in cache.keys())
-            except Exception:  # pragma: no cover - 后端差异
-                out[name] = 0
-        return out
+        return {name: self._count_region(name) for name in constants.ALL_REGIONS}
+
+    def _count_region(self, name: str) -> int:
+        """单个 region 的条数：快路径失败自动退回慢路径。"""
+        cache = self.region(name)
+        if cache is None:
+            return 0
+        fast = self._redis_scan_count(cache, name)
+        if fast is not None:
+            return fast
+        try:
+            return sum(1 for _ in cache.keys())
+        except Exception:  # pragma: no cover - 后端差异
+            return 0
+
+    @staticmethod
+    def _redis_scan_count(cache: Any, name: str) -> Optional[int]:
+        """只数 Redis 键名不读值；拿不到客户端返回 ``None``（交回慢路径）。
+
+        键名格式来自宿主 ``RedisHelper``：``region:<region>:key:<quote(key)>``。
+        这里只读宿主对象上的公开引用（``_cache_backend.redis_helper.client``），
+        不自己建连接 —— 连接没起来 / 后端不是 Redis 时一律退回。
+        """
+        backend = getattr(cache, "_cache_backend", None)
+        helper = getattr(backend, "redis_helper", None)
+        client = getattr(helper, "client", None) if helper is not None else None
+        if client is None:
+            return None
+        try:
+            count = 0
+            for _ in client.scan_iter(match=f"region:{name}:key:*", count=500):
+                count += 1
+            return count
+        except Exception:  # pragma: no cover - Redis 抖动时退回慢路径
+            return None
 
     def delete(self, name: str, key: str) -> bool:
         """删单条缓存。"""

@@ -23,6 +23,7 @@ from typing import Optional
 
 from .constants import (
     SCRAPE_IMAGE_NAMES,
+    SCRAPE_MIN_IMAGE_BYTES,
     SCRAPE_NFO_NAMES,
     VIDEO_EXTENSIONS,
 )
@@ -136,6 +137,10 @@ def is_scraped(drama_dir: Path | str) -> bool:
 
     判定范围：剧目录本身 + 它的一级子目录（短剧只有 ``Season 1`` 一层）。
     只看元数据文件，不看视频 —— 判断的是「刮削过没有」，不是「有没有文件」。
+
+    **残图不算数**：小于 :data:`SCRAPE_MIN_IMAGE_BYTES` 的图片（图床故障期落的
+    52 字节占位图）视同没图，否则会导致「已刮削」误判 —— 重扫直接跳过，封面永远
+    补不上（2026-11-06）。
     """
     try:
         root = Path(drama_dir)
@@ -151,10 +156,16 @@ def is_scraped(drama_dir: Path | str) -> bool:
                 return False
             for entry in entries:
                 name = entry.name.lower()
-                if entry.is_file() and (name in nfo_names or name in image_names):
+                if not entry.is_file():
+                    continue
+                if name in nfo_names or name.endswith(".nfo"):
                     return True
-                if entry.is_file() and name.endswith(".nfo"):
-                    return True
+                if name in image_names:
+                    try:
+                        if entry.stat().st_size >= SCRAPE_MIN_IMAGE_BYTES:
+                            return True
+                    except OSError:
+                        continue
             return False
 
         if _has_meta(root):

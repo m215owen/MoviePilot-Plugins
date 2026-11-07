@@ -94,6 +94,7 @@
             <v-icon size="14" :icon="opened === item.key ? 'mdi-chevron-down' : 'mdi-chevron-right'" />
             <span class="sdbs-row-main">
               <span class="sdbs-row-title">{{ summary(item) }}</span>
+              <span v-if="entityTag(item)" class="sdbs-tag">{{ entityTag(item) }}</span>
               <span v-if="kindTag(item)" class="sdbs-tag">{{ kindTag(item) }}</span>
             </span>
           </button>
@@ -169,7 +170,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { clearCache, deleteCacheItem, fetchCacheItems, fetchStatus } from './api'
-import { REGION_LABELS, regionLabel } from './constants'
+import { REGION_LABELS, entityLabel, entityOf, isKnownEntity, regionLabel } from './constants'
 import type { CacheItem, PluginApi } from './types'
 
 const props = defineProps<{
@@ -244,6 +245,18 @@ function kindTag(item: CacheItem): string {
   const value = item.value
   if (!isPlainObject(value)) return ''
   return String(value.kind || value.type || value.media_source || '')
+}
+
+/**
+ * 这一条的**分类**：缓存键本身就是 `media_id`（详情 / 人物），前缀即实体。
+ *
+ * 分类跟着主站走是前缀自带的性质，不是另立一张表：新站的键是 `drama:` / `actor:`，
+ * 老站的是 `duanju:` / `yanyuan:` —— 换站后这里显示的自然是新站那一套。
+ * 键不是 media_id（`search:…`、榜单键等）就不显示，绝不按值猜。
+ */
+function entityTag(item: CacheItem): string {
+  const entity = entityOf(item.parent || item.key)
+  return isKnownEntity(entity) ? entityLabel(entity) : ''
 }
 
 /** 原始 JSON 文本（`undefined` 也要能打印出来，不能抛） */

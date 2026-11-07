@@ -10,7 +10,7 @@
 
     <v-card-title class="text-body-1 pb-1">
       短剧百科整理 · 配置
-      <span class="text-caption text-medium-emphasis">（前端 build a9）</span>
+      <span class="text-caption text-medium-emphasis">（前端 build a25）</span>
     </v-card-title>
 
     <v-card-text>
@@ -96,6 +96,51 @@
         </v-col>
         <v-col cols="12" md="4">
           <v-switch v-model="conf.force_reorganize" label="强制重整理" color="warning" density="compact" hide-details></v-switch>
+        </v-col>
+      </v-row>
+
+      <!-- 反向联动：Emby 删除媒体 → 级联清理 -->
+      <div class="text-caption text-medium-emphasis mt-4">
+        Emby 删除联动（Emby 里删掉整部短剧后：删插件记录 → 删宿主整理历史 → 取消作品订阅 → 删种子）
+      </div>
+      <v-row dense class="mt-1">
+        <v-col cols="12" md="3">
+          <v-switch v-model="conf.syncdel_enabled" label="启用联动删除" color="primary" density="compact" hide-details></v-switch>
+        </v-col>
+        <v-col cols="12" md="3">
+          <v-switch v-model="conf.syncdel_mp_history" label="删宿主整理历史" color="primary" density="compact" hide-details></v-switch>
+        </v-col>
+        <v-col cols="12" md="3">
+          <v-switch v-model="conf.syncdel_delete_media" label="删种子时同步删除媒体" color="warning" density="compact" hide-details></v-switch>
+        </v-col>
+        <v-col cols="12" md="3">
+          <v-select
+            v-model="conf.syncdel_downloaders"
+            :items="downloaderItems"
+            multiple
+            chips
+            density="compact"
+            hide-details
+            label="指定下载器（空=自动）"
+          ></v-select>
+        </v-col>
+        <v-col cols="12" md="6">
+          <v-text-field
+            v-model="conf.syncdel_exclude_path"
+            density="compact"
+            hide-details
+            label="排除路径前缀（逗号分隔）"
+            placeholder="/media/短剧/不参与清理的目录"
+          ></v-text-field>
+        </v-col>
+        <v-col cols="12" md="6">
+          <v-text-field
+            v-model="conf.syncdel_library_path"
+            density="compact"
+            hide-details
+            label="Emby 路径→本地路径映射（每行 源:目标）"
+            placeholder="/emby/短剧:/media/短剧"
+          ></v-text-field>
         </v-col>
       </v-row>
     </v-card-text>
@@ -200,6 +245,12 @@ const DEFAULTS: OrganizerConfig = {
   monitor_mode: 'watch',
   monitor_interval: 60,
   force_reorganize: false,
+  syncdel_enabled: false,
+  syncdel_mp_history: true,
+  syncdel_delete_media: false,
+  syncdel_downloaders: [],
+  syncdel_exclude_path: '',
+  syncdel_library_path: '',
 }
 
 const transferItems: DirOption[] = [
@@ -248,6 +299,7 @@ const conf = reactive<OrganizerConfig>({
   ...incoming,
   source_dirs: toList(incoming.source_dirs),
   library_dir: toOne(incoming.library_dir),
+  syncdel_downloaders: toList(incoming.syncdel_downloaders),
 } as OrganizerConfig)
 
 const errorText = ref('')
@@ -256,6 +308,7 @@ const manualPath = ref('')
 
 const sourceItems = ref<DirOption[]>([])
 const libraryItems = ref<DirOption[]>([])
+const downloaderItems = ref<DirOption[]>([])
 
 const browseOpen = ref(false)
 const browseTarget = ref<'source' | 'library'>('source')
@@ -282,6 +335,7 @@ async function loadDirOptions(): Promise<void> {
     const data = await backend.dirOptions(api)
     sourceItems.value = data?.sources || []
     libraryItems.value = data?.libraries || []
+    downloaderItems.value = data?.downloaders || []
   } catch (err) {
     errorText.value = `读取系统目录失败：${(err as Error)?.message || String(err)}`
   }
@@ -358,6 +412,7 @@ function saveConfig(): void {
     ...conf,
     source_dirs: toList(conf.source_dirs),
     library_dir: toOne(conf.library_dir),
+    syncdel_downloaders: toList(conf.syncdel_downloaders),
   })
   window.setTimeout(() => {
     saving.value = false

@@ -35,6 +35,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
 import threading
 import time
 import traceback
@@ -42,12 +45,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.sdk.media import MetaInfo
-from app.sdk.events import Event
+from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
 from app.schemas.types import EventType, NotificationType
 
-from . import constants, dirs, history, matcher, naming, organize, scrape, store
+from . import constants, dirs, history, matcher, naming, organize, scrape, store, syncdel
 from .constants import (
     BAIKE_MEDIA_SOURCE,
     BAIKE_SOURCE_PLUGIN_ID,
@@ -64,6 +67,7 @@ from .constants import (
     CONF_SCAN_DEPTH,
     CONF_SCRAPE_ENABLED,
     CONF_SOURCE_DIRS,
+    CONF_SYNCDEL_ENABLED,
     CONF_TRANSFER_TYPE,
     CATEGORY_SHORT_DRAMA,
     DEFAULT_CONFIG,
@@ -79,6 +83,14 @@ from .constants import (
 )
 from .matcher import MatchDecision
 from .serialize import safe_int, safe_str
+
+# tvshow.nfo 里的三样东西：身份（uniqueid type=djbaike）、标题、年份。
+# 补图链路靠它们还原「这部库内的剧是谁」，不依赖记录库（老记录可能早已被清）。
+_NFO_ID_RE = re.compile(
+    r'<uniqueid[^>]*type="djbaike"[^>]*>\s*([^<\s]+)\s*</uniqueid>', re.IGNORECASE
+)
+_NFO_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_NFO_YEAR_RE = re.compile(r"<year>\s*(\d{4})\s*</year>", re.IGNORECASE)
 
 
 class ShortDramaBaikeOrganizer(_PluginBase):
@@ -117,7 +129,6 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         "items": [],
     }
     # 整理（后台线程 + 进度快照 + 每部剧详情，面板「整理」按钮用）
-    #
     # ⚠️ 为什么必须是后台任务：整理 = 逐部识别（每部一次百科网络请求）+ 逐文件搬运，
     # 130 部剧跑几分钟是常态。同步挂在 HTTP 请求上会被反代掐断 → 前端只看到
     # 「Request failed with status code 502」（2026-10-23 实测）。
@@ -138,6 +149,24 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         "finished_at": None,
         "counts": {"dramas": 0, "done": 0, "skipped": 0, "failed": 0, "unrecognized": 0},
         "details": [],
+    }
+    # 补图（补齐缺失/残图封面，后台线程 + 进度快照，2026-11-06）
+    #
+    # 场景：图床故障期（2026-11 上旬）整理入库的剧，海报要么没落盘、要么是 52 字节
+    # 占位图。正常重扫不会碰它们（已刮削判定为「有产物」），所以要一条独立链路。
+    _repair_thread: Optional[threading.Thread] = None
+    _repair_stop: Optional[threading.Event] = None
+    _repair_lock = threading.Lock()
+    _repair_state: dict = {
+        "state": "idle",
+        "total": 0,
+        "done": 0,
+        "current": "",
+        "message": "",
+        "started_at": None,
+        "finished_at": None,
+        "counts": {"repaired": 0, "failed": 0},
+        "items": [],
     }
 
     # ── 生命周期 ─────────────────────────────────────────────────────
@@ -255,6 +284,25 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         )
         self.post_message(mtype=NotificationType.Organize, title="【短剧百科整理】", text=text)
 
+    # ── 反向联动（Emby 删除媒体 → 级联清理） ───────────────────────
+    _syncdel: Optional[syncdel.SyncDeleter] = None
+
+    @property
+    def _syncdel_runner(self) -> syncdel.SyncDeleter:
+        """懒加载联动删除执行器（每个插件实例一份）。"""
+        if self._syncdel is None:
+            self._syncdel = syncdel.SyncDeleter(self)
+        return self._syncdel
+
+    @eventmanager.register(EventType.WebhookMessage)
+    def on_webhook_message(self, event: Event) -> None:
+        """Emby 媒体移除事件入口。
+
+        只处理 ``library.deleted`` 且命中记录库白名单的短剧；触发方式仅此一种，
+        不做定时兜底扫描（用户 2026-10-24 明确）。
+        """
+        self._syncdel_runner.on_webhook(event)
+
     # ── HTTP API ───────────────────────────────────────────────────
     def get_api(self) -> list[dict]:
         # 刻意不按 enabled 早退：面板要在「未启用」时也能显示状态并提示去配置页启用
@@ -293,8 +341,18 @@ class ShortDramaBaikeOrganizer(_PluginBase):
              "summary": "按源目录删除一条记录库记录"},
             {"path": "/store/clear", "endpoint": self.api_store_clear, "methods": ["POST"], "auth": "bear",
              "summary": "清空记录库"},
+            {"path": "/delete/history", "endpoint": self.api_delete_history, "methods": ["GET"], "auth": "bear",
+             "summary": "删除任务台账（Emby 删除联动执行过的清理记录）"},
+            {"path": "/delete/restore", "endpoint": self.api_delete_restore, "methods": ["POST"], "auth": "bear",
+             "summary": "恢复一条删除任务（清墓碑标记，扫描/监控重新纳入该剧）"},
             {"path": "/scrape", "endpoint": self.api_scrape, "methods": ["POST"], "auth": "bear",
              "summary": "立即刮削：取 djbaike 素材写入目标目录（tvshow.nfo + 海报）"},
+            {"path": "/repair", "endpoint": self.api_repair, "methods": ["GET"], "auth": "bear",
+             "summary": "补图进度快照（缺失/残图封面补齐）"},
+            {"path": "/repair/start", "endpoint": self.api_repair_start, "methods": ["POST"], "auth": "bear",
+             "summary": "启动补图：补齐媒体库里缺失或残图的剧/季封面（后台线程）"},
+            {"path": "/repair/stop", "endpoint": self.api_repair_stop, "methods": ["POST"], "auth": "bear",
+             "summary": "停止正在进行的补图"},
             {"path": "/stop", "endpoint": self.api_stop, "methods": ["POST"], "auth": "bear",
              "summary": "停止目录监控"},
             {"path": "/dirs/browse", "endpoint": self.api_dirs_browse, "methods": ["GET"], "auth": "bear",
@@ -542,6 +600,7 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         # 「整理完成」的目录直接跳过（2026-10-23 用户「扫描按钮重按跳过整理
         # 完成的目录」）：既不识别也不覆盖记录，重复扫描不再折腾已收齐的剧
         done_paths: set = set()
+        ignored_paths: set = set()
         prior: dict = {}
         records = self._record_store()
         if records is not None:
@@ -549,6 +608,11 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                 done_paths = records.done_paths()
             except Exception:  # pragma: no cover - 跳过逻辑失败不该拖垮扫描
                 done_paths = set()
+            try:
+                # 「已删除」的剧永久跳过：Emby 删了但源目录还在，不能重新整理回来
+                ignored_paths = records.ignored_paths()
+            except Exception:  # pragma: no cover
+                ignored_paths = set()
             try:
                 prior = {
                     str(r.get("path") or ""): r
@@ -561,7 +625,7 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         for index, d in enumerate(dramas, start=1):
             if stop is not None and stop.is_set():
                 break
-            if str(d) in done_paths:
+            if str(d) in done_paths or str(d) in ignored_paths:
                 continue
             decision = self.recognize_drama(d.name)
             if decision.adopted and decision.candidate:
@@ -771,6 +835,7 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         library_dir: Optional[str] = None,
         transfer_type: Optional[str] = None,
         ignore_force: bool = False,
+        season: Optional[int] = None,
     ) -> dict:
         """整理一部剧（自包含搬运 + 写系统整理历史）。
 
@@ -780,6 +845,11 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         :param ignore_force: True = 无视「强制整理历史」等强制开关，恒尊重整理
             历史（目录监控专用：监控只处理新增/变化的文件，与强制整理无关，
             2026-10-23 用户明确）。
+        :param season: **手动指定季号**（1~99，2026-11-03 用户要求「手动整理时
+            支持指定季号」）。指定后库内按 ``Season N`` + ``S0NE0X`` 落盘与命名，
+            同时 ``Season N/season.nfo`` 写该季号；不指定（None/0）沿用定稿口径
+            「一季一个独立剧目录、内部恒 Season 1」。后台整理全部与目录监控
+            不传，行为不变。
         """
         library_dir = (library_dir or "").strip() or self._library_dir()
         if not library_dir:
@@ -787,6 +857,13 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         if not decision.adopted or not decision.candidate:
             return {"success": False, "error": "未识别到短剧百科身份，无法整理"}
         cand = decision.candidate
+        # 「人工指定名称」（百科上没有的剧，2026-11-04 用户要求）：候选没有
+        # media_id 也能整理 —— 搬运 / 命名 / 整理历史全照常，只是刮削没有素材
+        # 来源，直接跳过。只有人工链路（reason=人工指定名称）允许无 id 候选，
+        # 识别链路给不出 id 一律视为异常拒绝。
+        manual_named = not (cand.media_id or "").strip()
+        if manual_named and decision.reason != "人工指定名称":
+            return {"success": False, "error": "候选缺少媒体 id，无法整理"}
         title = cand.title or Path(drama_path).name
         year = cand.year
         width = safe_int(self._cfg(CONF_EPISODE_WIDTH, 2), 2) or 2
@@ -814,10 +891,13 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         # 源侧季号：词条本身是第几季，只用于向数据源**按季取素材**
         src_season = safe_int(getattr(info, "season", None), 0) or title_season or 1
         src_season = max(1, min(99, src_season))
-        # 库内季号：一季一个独立剧目录（2026-10-23 用户定稿「第二季就按第二季
-        # 剧名整理」，目录内 Season 1 + S01Exx）—— 目录本身就是那一季，里面
-        # 统一 Season 1 / S01Exx，不再出现 Season 2 子目录
-        season_no = 1
+        # 库内季号：默认 **1** —— 一季一个独立剧目录（2026-10-23 用户定稿
+        # 「第二季就按第二季剧名整理」，目录内 Season 1 + S01Exx）。
+        # 手动整理可**显式指定季号**（2026-11-03 用户要求）：指定后按
+        # ``Season N`` + ``S0NE0X`` 落盘与命名 —— 用途是源目录名推不出季、
+        # 或要让同一部剧的多季并进同一剧目录（各占一个 Season 子目录）。
+        manual_season = safe_int(season, 0)
+        season_no = max(1, min(99, manual_season)) if manual_season else 1
 
         plans = organize.plan_files(
             Path(drama_path),
@@ -841,13 +921,38 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             "_poster_url": scrape.poster_url(info),
         }
 
+        # 重新整理（强制）前：收集这部剧此前的目标目录，并**一次性**清掉它的
+        # 全部旧整理记录。2026-10-27 用户「重新整理没有把老记录和老的媒体删除」：
+        # 原先只逐 src 删记录，换标题/年份后旧目录与旧行都会残留。
+        old_dests: list[str] = []
+        if force_all:
+            prev: dict = {}
+            store_obj = self._record_store()
+            if store_obj is not None:
+                try:
+                    prev = next(
+                        (
+                            row for row in store_obj.all(limit=MAX_STORE_SCAN)
+                            if str(row.get("path") or "") == drama_path
+                        ),
+                        {},
+                    ) or {}
+                except Exception:  # noqa: BLE001
+                    prev = {}
+            if prev.get("dest_dir"):
+                old_dests.append(str(prev["dest_dir"]))
+            for row in history.list_records_by_src_dir(drama_path):
+                guess = history.drama_dir_of(str(row.get("dest") or ""))
+                if guess:
+                    old_dests.append(guess)
+            removed = history.delete_by_src_dir(drama_path)
+            logger.info(f"[整理] 重新整理前清理旧整理记录 {removed} 条")
+
         done = skipped = failed = 0
         for src, target, episode in plans:
             if not force_all and history.is_transferred(str(src)):
                 skipped += 1
                 continue
-            if force_all:
-                history.delete_by_src(str(src))
             if organize.transfer_file(src, target, transfer_type):
                 history.record_transfer(
                     str(src), str(target),
@@ -857,6 +962,15 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                 done += 1
             else:
                 failed += 1
+
+        # 目标目录变了：旧媒体目录（软链/副本）与它的旧记录一并清掉
+        if force_all and done > 0 and old_dests:
+            for old in dict.fromkeys(old_dests):
+                if not old or self._same_dir(old, str(dest_drama_dir)):
+                    continue
+                self._cleanup_old_media(
+                    old, library_dir, drama_path, transfer_type, title
+                )
 
         # 整理成果入库（面板统计与记录列表的数据源）。done=0（文件全命中历史
         # 被跳过）时**人工指定身份也要落库**：手动处理重跑才能把集数/年份刷新
@@ -889,7 +1003,8 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                 "reason": "",
             }
             # 人工指定身份打标：后续重识别失败时靠它保住身份，不被判成「未识别」
-            if decision.reason == "人工指定身份":
+            # 「人工指定名称」（无百科身份）同样打标 —— 名字就是用户给的，不存在降级
+            if decision.reason in ("人工指定身份", "人工指定名称"):
                 record_patch["manual"] = 1
             # 已整理集数：按目标剧目录的整理历史去重统计（谁写的都算）
             organized_eps = history.count_distinct_episodes(str(dest_drama_dir))
@@ -897,8 +1012,10 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                 record_patch["organized_episodes"] = organized_eps
             self._save_record(record_patch)
             # 自动刮削（默认开）。scrape_drama 内部会跳过已刮的剧级、只补缺的
-            # 季级；season 传**源侧季号**（按季取素材），目录内布局恒为 Season 1
-            if scrape_enabled:
+            # 季级；``season`` 传**源侧季号**（是否取季素材），``lib_season`` 传
+            # 库内季号（季产物落到哪一层，手动指定季号时就是它）。
+            # 「人工指定名称」没有百科词条可问（media_id 为空），刮削整体跳过。
+            if scrape_enabled and not manual_named:
                 self.scrape_drama(
                     dest_drama_dir,
                     title=title,
@@ -907,7 +1024,10 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                     source_path=drama_path,
                     info=info,
                     season=src_season,
+                    lib_season=season_no,
                 )
+            elif manual_named:
+                logger.info(f"[整理] {title} 为人工指定名称（无百科身份），跳过自动刮削")
 
         return {
             "success": True,
@@ -916,7 +1036,74 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             "skipped": skipped,
             "failed": failed,
             "dest_dir": str(dest_drama_dir),
+            **({"note": "已按手动命名整理（百科无此剧，未刮削）"} if manual_named else {}),
         }
+
+    @staticmethod
+    def _same_dir(left: str, right: str) -> bool:
+        """两个目录路径是否指向同一处（归一后比较，跨平台分隔符）。"""
+        return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
+            os.path.normpath(str(right))
+        )
+
+    def _cleanup_old_media(
+        self,
+        old_dir: str,
+        library_dir: str,
+        drama_path: str,
+        transfer_type: str,
+        title: str = "",
+    ) -> bool:
+        """删除重新整理前的旧媒体目录（软链/副本）与其整理记录。
+
+        安全闸（缺一不可）：
+        1. 搬运方式不是 ``move`` —— move 模式下源文件已搬进旧目录，删了就没副本；
+        2. 旧目录必须位于**目标库根**之下（防止误删库外路径）；
+        3. 不是新目标目录（调用方已比对）；
+        4. 没有**其它**记录仍指向该目录（防止两部剧共用目录时误删）。
+        """
+        if (transfer_type or "").strip().lower() == "move":
+            logger.info(f"[整理] 搬运方式是 move，保留旧目录：{old_dir}")
+            return False
+        target = Path(old_dir)
+        if not old_dir or not (target.exists() or target.is_symlink()):
+            return False
+        try:
+            target.resolve().relative_to(Path(library_dir).resolve())
+        except Exception:  # noqa: BLE001 - 不在库根下就不动
+            logger.warning(f"[整理] 旧目录不在目标库下，跳过清理：{old_dir}")
+            return False
+        store_obj = self._record_store()
+        if store_obj is not None:
+            try:
+                others = [
+                    row
+                    for row in store_obj.all(limit=MAX_STORE_SCAN)
+                    if self._same_dir(str(row.get("dest_dir") or ""), old_dir)
+                    and str(row.get("path") or "") != drama_path
+                ]
+                if others:
+                    logger.info(f"[整理] 旧目录仍被其它记录使用，跳过清理：{old_dir}")
+                    return False
+            except Exception:  # noqa: BLE001
+                pass
+        # 先登记抑制：删掉旧目录会让 Emby 发出「条目被移除」，不能让联动删除
+        # 把这部剧的源文件和种子一起清掉（2026-10-27 事故）
+        try:
+            self._syncdel_runner.suppress(old_dir, drama_path, title)
+        except Exception:  # noqa: BLE001
+            pass
+        removed = history.delete_by_dest_dir(old_dir)
+        try:
+            if target.is_symlink():
+                target.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(target, ignore_errors=True)
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[整理] 删除旧目录失败 {old_dir}：{err}")
+            return False
+        logger.info(f"[整理] 已清理旧媒体目录：{old_dir}（旧记录 {removed} 条）")
+        return True
 
     def _resolve_media(self, *, title: str = "", media_id: str = "") -> Any:
         """取剧级 MediaInfo：有 id 直取（数据源的 id 分支不联网），否则按名识别。
@@ -956,13 +1143,17 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         source_path: str = "",
         info: Any = None,
         season: int = 0,
+        lib_season: int = 0,
+        repair: bool = False,
     ) -> dict:
         """对目标剧目录刮削（自包含：素材直取 djbaike 出口，落盘自己写）。
 
         :param info: 已取到的 MediaInfo（整理时先取过一次，这里直接复用，省一次识别）
-        :param season: 季号（整理链传入；0 时回落 MediaInfo.season）。有季号就向
-            数据源**按季**取一次素材，落到 ``Season NN`` 目录（2026-10-23 用户
-            「季的刮削要存到季的目录下」）
+        :param season: **源侧**季号（整理链传入；0 时回落 MediaInfo.season）。有季号
+            就向数据源按季取一次素材（2026-10-23 用户「季的刮削要存到季的目录下」）
+        :param lib_season: **库内**季号（季产物落到哪一层，0/缺省 = 1）。手动整理
+            指定季号时传该值，``season.nfo`` 的 seasonnumber 与 ``Season N`` 目录
+            一起跟随（2026-11-03 用户要求）
 
         **不发 ``MetadataScrape`` 事件、不进宿主刮削链**（2026-10-23 改，与
         「整理自包含」对齐）：素材仍来自 djbaike 数据源的 ``metadata_nfo`` /
@@ -978,6 +1169,9 @@ class ShortDramaBaikeOrganizer(_PluginBase):
 
         :param media_id: 已知身份时**优先按 id 直取**（零搜索且精确）；为空才回落按名
         :param source_path: 源目录（传入时刮削结果回写记录库）
+        :param repair: True = **补图模式**：即使剧级已刮过也重新取材，只补缺失/残图
+            文件（已有的正常产物照旧跳过）。图床故障期的存量记录靠它补封面
+            （2026-11-06）
         """
         dest = Path(dest_dir)
         if not dest.is_dir():
@@ -1000,15 +1194,15 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             return {"success": False, "error": "短剧百科未识别，无法刮削"}
 
         # 季号分两个口径：``season`` 是**源侧季号**（词条本身第几季，按季取素材
-        # 用）；落盘布局恒为 **Season 1** —— 一季一个独立剧目录（2026-10-23 用户
-        # 定稿），目录本身就是那一季，里面不再出现 Season 2 子目录
+        # 用）；``lib_season`` 是**落盘布局季号** —— 默认 1（一季一个独立剧目录，
+        # 2026-10-23 用户定稿），手动指定季号时跟随指定值（2026-11-03）
         season_no = safe_int(season, 0) or safe_int(getattr(info, "season", None), 0) or 0
-        lib_season = 1
+        lib_season = max(1, min(99, safe_int(lib_season, 0) or 1))
         # 一季一个独立剧目录（2026-10-23 用户改回「第二季就按第二季剧名整理」）：
         # 剧层（tvshow.nfo / 海报）由**本目录自己的词条**负责，不再有「只许第一季
         # 刮剧层」的限制 —— 那是多季并入同一目录时代的口径。剧级已刮仍不重写。
-        drama_write = not drama_done
-        if drama_done and not season_no:
+        drama_write = not drama_done or repair
+        if drama_done and not season_no and not repair:
             return {"success": True, "skipped": True, "message": "目标已刮削，无需重复刮削"}
 
         # 2) 取素材（自包含：直调数据源两个出口，不发 MetadataScrape 事件）；
@@ -1022,10 +1216,20 @@ class ShortDramaBaikeOrganizer(_PluginBase):
 
         # 2.5) 季级素材：有季号就向数据源**按季**再取一次（数据源按季给图的，
         #      一季一条词条）。取不到不报错 —— 数据源没上季出口时静默跳过。
+        #
+        # ⚠️ 请求季号必须用**数据源视角的词条季号**（``info.season``，缺省 1），
+        # 不能用标题推导的 ``season_no``：数据源 2026-10-24 起出口不再携带季号
+        # （``hostmedia.to_host_media`` 恒 None，标题季号只在识别入口用），而它的
+        # 季图出口按 ``mediainfo.season == 请求季号`` 把关 —— 传标题推导的季号
+        # （``隐身侍卫第二季`` → 2）会被判「词条不是这一季」而拿空（2026-11-02
+        # 对照数据源 scrape.build_images 实证）。本插件的库内布局是「一季一个
+        # 独立剧目录、内部恒 Season 1」，词条自己的详情就是这一季的素材，按词条
+        # 季号（现恒 1）请求正好命中，且 season.nfo 的 seasonnumber 与目录一致。
+        entry_season = safe_int(getattr(info, "season", None), 0) or 1
         season_material: tuple[str, dict[str, str]] = ("", {})
         if season_no:
             season_material = scrape.fetch_material(
-                nfo_func, img_func, info, season=season_no
+                nfo_func, img_func, info, season=entry_season
             )
 
         if not drama_write and not nfo_text and not images and not season_material[0] and not season_material[1]:
@@ -1095,6 +1299,302 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             result["season_nfo"] = bool(season_written.get("nfo"))
             result["season_images"] = season_written.get("images") or []
         return result
+
+    # ── 补图（图床故障期缺失 / 残图封面） ──────────────────────────
+    #
+    # 背景（2026-11-06 用户）：图床故障那段时间整理入库的剧，海报要么根本没落盘，
+    # 要么落成 52 字节占位图。它们的 tvshow.nfo 是好的，于是「已刮削」判定成立，
+    # 常规重扫/重新整理都不会再去取图 —— 需要一条独立的「只补图、不动其它产物」
+    # 链路，按库内目录逐个补，且不覆盖已有正常产物。
+    #
+    # 身份来源：优先 tvshow.nfo 的 uniqueid(djbaike)（零搜索、精确），缺失时按
+    # nfo 标题 / 目录名回落按名识别。
+
+    _COVER_NAMES: tuple = ("poster.jpg", "poster.jpeg", "poster.png", "poster.webp",
+                           "folder.jpg", "folder.png")
+
+    @staticmethod
+    def _read_nfo_identity(dest: Path) -> tuple[str, str, Optional[int]]:
+        """从 ``tvshow.nfo`` 读 ``(media_id, 标题, 年份)``；读不到用目录名兜底。"""
+        media_id, title, year = "", "", None
+        try:
+            text = (dest / scrape.NFO_FILENAME).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            text = ""
+        if text:
+            matched = _NFO_ID_RE.search(text)
+            if matched:
+                media_id = matched.group(1).strip()
+            matched = _NFO_TITLE_RE.search(text)
+            if matched:
+                title = matched.group(1).strip()
+            matched = _NFO_YEAR_RE.search(text)
+            if matched:
+                year = safe_int(matched.group(1))
+        if not title:
+            # 库内目录名口径是「剧名 (年份)」，剥掉尾巴当年份线索
+            title = re.sub(r"\s*\(\d{4}\)\s*$", "", dest.name).strip()
+        return media_id, title, year
+
+    @classmethod
+    def _drama_cover_ok(cls, dest: Path) -> bool:
+        return any(scrape.image_ok(dest / name) for name in cls._COVER_NAMES)
+
+    @staticmethod
+    def _season_cover_ok(season_dir: Path, season: int) -> bool:
+        """季目录里是否已有**有效**季海报。
+
+        ⚠️ 命名有**两套并存**：数据源原始 key 是补零的 ``season01-poster.jpg``
+        （2026-11-03 之前的产物），之后写入统一改成不补零的 ``season1-poster.jpg``。
+        两种都算「已有」，否则补图会把全库三百多部判定成缺季图、重新下一遍
+        （2026-11-06 实测踩过）。同目录还常见 ``.jpg``（占位残图）与 ``.webp``
+        （真图）并存，所以按「季号 + 有效大小」判，不按扩展名。
+        """
+        pattern = re.compile(r"season0*(\d+)-poster\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE)
+        try:
+            for entry in season_dir.iterdir():
+                matched = pattern.match(entry.name)
+                if matched and int(matched.group(1)) == int(season) and scrape.image_ok(entry):
+                    return True
+        except OSError:
+            return False
+        return False
+
+    @staticmethod
+    def _season_dir_numbers(dest: Path) -> list[int]:
+        """剧目录下的一级 ``Season N`` 季号（短剧只有一层，多季并列也算）。"""
+        numbers: list[int] = []
+        try:
+            for sub in dest.iterdir():
+                if not sub.is_dir():
+                    continue
+                matched = re.fullmatch(r"Season\s*(\d+)", sub.name, re.IGNORECASE)
+                if matched:
+                    numbers.append(int(matched.group(1)))
+        except OSError:
+            return []
+        return sorted(numbers)
+
+    def _repair_plan(self, root: Path) -> list[dict]:
+        """列出媒体库里「缺封面」的剧：``{dest, poster, seasons}``。
+
+        只认**封面类**文件（poster/folder）当封面；``fanart`` 不算 —— Emby 的
+        封面位取的是 poster，光有 fanart 照样显示空白。
+        """
+        plan: list[dict] = []
+        try:
+            children = sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+        except OSError as err:
+            logger.warning(f"[补图] 枚举媒体库失败：{err}")
+            return plan
+        for dest in children:
+            seasons = self._season_dir_numbers(dest)
+            if not seasons and not (dest / scrape.NFO_FILENAME).exists():
+                continue  # 既不是季结构也没有 nfo，不像短剧目录，跳过
+            missing_poster = not self._drama_cover_ok(dest)
+            missing_seasons = [
+                number for number in seasons
+                if not self._season_cover_ok(dest / scrape.season_dir_name(number), number)
+            ]
+            if missing_poster or missing_seasons:
+                plan.append({"dest": dest, "poster": missing_poster, "seasons": missing_seasons})
+        return plan
+
+    def repair_drama_assets(
+        self,
+        dest: Path,
+        *,
+        poster: bool = True,
+        seasons: Optional[list[int]] = None,
+    ) -> dict:
+        """补一部剧的封面：剧级 poster + 指定季的季海报（已有的正常文件不动）。
+
+        :return: ``{"ok": 是否补到东西, "written": [...], "errors": [...], "media_id": str}``
+        """
+        media_id, title, _year = self._read_nfo_identity(dest)
+        info = self._resolve_media(title=title, media_id=media_id)
+        if not info:
+            return {"ok": False, "written": [], "errors": [f"短剧百科未识别（{title or dest.name}）"]}
+        img_func = self._source_method("metadata_img")
+        if img_func is None:
+            return {"ok": False, "written": [], "errors": ["数据源不可用（未提供 metadata_img）"]}
+
+        written: list[str] = []
+        errors: list[str] = []
+        resolved_id = str(getattr(info, "media_id", "") or "")
+
+        if poster:
+            _nfo, images = scrape.fetch_material(None, img_func, info)
+            if not images:
+                errors.append("数据源未提供剧级图片")
+            else:
+                # nfo_text 传空 = 不碰已有 tvshow.nfo，这条链路只补图
+                result = scrape.write_metadata(dest, nfo_text="", images=images)
+                written.extend(result.get("images") or [])
+                errors.extend(result.get("errors") or [])
+
+        season_list = [n for n in (seasons or []) if n >= 1]
+        if season_list:
+            # 季素材请求季号用**数据源视角**的词条季号（与 scrape_drama 同一口径）
+            entry_season = safe_int(getattr(info, "season", None), 0) or 1
+            _nfo, season_images = scrape.fetch_material(
+                None, img_func, info, season=entry_season
+            )
+            if not season_images:
+                errors.append("数据源未提供季级图片")
+            else:
+                for number in season_list:
+                    result = scrape.write_season_metadata(
+                        dest, number, nfo_text="", images=season_images
+                    )
+                    written.extend(
+                        f"{scrape.season_dir_name(number)}/{name}"
+                        for name in (result.get("images") or [])
+                    )
+                    errors.extend(result.get("errors") or [])
+
+        return {
+            "ok": bool(written),
+            "written": written,
+            "errors": errors,
+            "media_id": resolved_id,
+        }
+
+    def _repair_state_reset(self) -> None:
+        with self._repair_lock:
+            self._repair_state = {
+                "state": "idle",
+                "total": 0,
+                "done": 0,
+                "current": "",
+                "message": "",
+                "started_at": None,
+                "finished_at": None,
+                "counts": {"repaired": 0, "failed": 0},
+                "items": [],
+            }
+
+    def repair_snapshot(self) -> dict:
+        """补图进度快照（前端轮询）。"""
+        with self._repair_lock:
+            snapshot = dict(self._repair_state)
+            snapshot["counts"] = dict(self._repair_state.get("counts") or {})
+            snapshot["items"] = list(self._repair_state.get("items") or [])
+            return snapshot
+
+    def repair_running(self) -> bool:
+        thread = self._repair_thread
+        return bool(thread and thread.is_alive())
+
+    def start_repair(self, library_dir: str = "") -> dict:
+        """启动一次后台补图（只补缺失/残图封面，不动集文件与已有产物）。"""
+        if self.repair_running():
+            return {"started": False, "message": "补图已在进行中", "repair": self.repair_snapshot()}
+        root_text = (library_dir or "").strip() or self._library_dir()
+        if not root_text:
+            return {"started": False, "message": "未配置目标库目录", "repair": self.repair_snapshot()}
+        root = Path(root_text)
+        if not root.is_dir():
+            return {"started": False, "message": f"目标库目录不存在：{root_text}", "repair": self.repair_snapshot()}
+        if self._source_method("metadata_img") is None:
+            return {
+                "started": False,
+                "message": f"短剧百科数据源不可用（{BAIKE_SOURCE_PLUGIN_ID} 未启用或未提供 metadata_img）",
+                "repair": self.repair_snapshot(),
+            }
+        self._repair_stop = threading.Event()
+        with self._repair_lock:
+            self._repair_state = {
+                "state": "running",
+                "total": 0,
+                "done": 0,
+                "current": "",
+                "message": "正在枚举媒体库目录…",
+                "started_at": time.time(),
+                "finished_at": None,
+                "counts": {"repaired": 0, "failed": 0},
+                "items": [],
+            }
+        self._repair_thread = threading.Thread(
+            target=self._repair_worker, args=(root,), daemon=True, name="SdbkoRepair"
+        )
+        self._repair_thread.start()
+        return {"started": True, "message": "补图已启动", "repair": self.repair_snapshot()}
+
+    def stop_repair(self) -> dict:
+        if self._repair_stop is not None:
+            self._repair_stop.set()
+        with self._repair_lock:
+            if self._repair_state.get("state") == "running":
+                self._repair_state["state"] = "stopping"
+                self._repair_state["message"] = "正在停止…"
+        return {"stopped": True, "repair": self.repair_snapshot()}
+
+    def _repair_worker(self, root: Path) -> None:
+        """补图线程主体：逐部取素材补缺失封面，实时更新快照。"""
+        try:
+            plan = self._repair_plan(root)
+            with self._repair_lock:
+                self._repair_state["total"] = len(plan)
+                self._repair_state["message"] = (
+                    f"待补 {len(plan)} 部，正在取素材…" if plan else "库内没有缺封面的剧"
+                )
+            if not plan:
+                with self._repair_lock:
+                    self._repair_state["state"] = "done"
+                    self._repair_state["finished_at"] = time.time()
+                return
+
+            for index, target in enumerate(plan, start=1):
+                if self._repair_stop is not None and self._repair_stop.is_set():
+                    break
+                dest = target["dest"]
+                with self._repair_lock:
+                    self._repair_state["current"] = dest.name
+                    self._repair_state["done"] = index - 1
+                    self._repair_state["message"] = f"正在补图（{index}/{len(plan)}）：{dest.name}"
+                try:
+                    item = self.repair_drama_assets(
+                        dest, poster=target["poster"], seasons=target["seasons"]
+                    )
+                except Exception as err:  # noqa: BLE001 - 单部失败不该中断整批
+                    item = {"ok": False, "written": [], "errors": [str(err)], "media_id": ""}
+                success = bool(item.pop("ok", False))
+                item.update({
+                    "drama": dest.name,
+                    "path": str(dest),
+                    "seasons": target["seasons"],
+                    "state": "repaired" if success else "failed",
+                })
+                with self._repair_lock:
+                    self._repair_state["done"] = index
+                    counts = self._repair_state.setdefault("counts", {"repaired": 0, "failed": 0})
+                    counts[item["state"]] = int(counts.get(item["state"], 0)) + 1
+                    items = self._repair_state.setdefault("items", [])
+                    items.append(item)
+                    if len(items) > MAX_SCAN_ITEMS:
+                        del items[0]
+
+            with self._repair_lock:
+                stopped = self._repair_stop is not None and self._repair_stop.is_set()
+                counts = self._repair_state.get("counts") or {}
+                self._repair_state["state"] = "stopped" if stopped else "done"
+                self._repair_state["current"] = ""
+                self._repair_state["finished_at"] = time.time()
+                summary = (
+                    f"补图完成：{counts.get('repaired', 0)} 部已补，"
+                    f"{counts.get('failed', 0)} 部失败"
+                )
+                self._repair_state["message"] = (
+                    f"已手动停止（{summary}）" if stopped else summary
+                )
+            logger.info(f"[补图] {self.repair_snapshot().get('message')}")
+        except Exception as err:  # pragma: no cover
+            logger.error(f"[补图] 线程异常：{err}\n{traceback.format_exc()}")
+            with self._repair_lock:
+                self._repair_state["state"] = "error"
+                self._repair_state["message"] = f"补图失败：{err}"
+                self._repair_state["finished_at"] = time.time()
 
     def _items_from_records(self) -> Optional[list[dict]]:
         """从记录库取剧清单（整理全部「免重识别」模式的数据源）。
@@ -1505,6 +2005,7 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         records = self._record_store()
         prior: dict = {}
         done_paths: set = set()
+        ignored_paths: set = set()
         if records is not None:
             try:
                 prior = {
@@ -1517,8 +2018,15 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                 done_paths = records.done_paths()
             except Exception:  # noqa: BLE001
                 done_paths = set()
+            try:
+                ignored_paths = records.ignored_paths()
+            except Exception:  # noqa: BLE001
+                ignored_paths = set()
         organized = 0
         for p in paths:
+            if p in ignored_paths:
+                results[p] = "ok"  # 已删除：永久跳过（同扫描口径）
+                continue
             if p in done_paths:
                 results[p] = "ok"  # 整理完成：跳过（同扫描口径）
                 continue
@@ -1853,13 +2361,19 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         episode_count: str = "",
         library_dir: str = "",
         transfer_type: str = "",
+        season: str = "",
+        manual: str = "",
     ) -> dict:
         """整理入口（一个接口两种形态）。
 
         * **传了 ``path``**：整理单剧，同步返回（一部剧够快，撑不到反代超时）。
           ``media_id`` / ``title`` / ``year`` 表示**人工指定身份**（面板「重新整理」
           与「人工处理」用），``library_dir`` / ``transfer_type`` 表示**指定目标库
-          与搬运方式**（留空则用配置值）。
+          与搬运方式**（留空则用配置值），``season`` 表示**手动指定季号**（留空
+          沿用「一季一个剧目录、内部恒 Season 1」，2026-11-03 用户要求）。
+          ``manual=1`` 表示**人工指定名称**（2026-11-04 用户要求）：百科上没有的
+          剧，只按用户给的 ``title``（+ ``year`` / ``season``）整理，不依赖识别、
+          不刮削 —— 此时必须带 ``title``。
         * **不传 ``path``**：启动后台整理全部，立刻返回（真正的结果去 GET /organize 拿）。
           ⚠️ 这里曾经是同步 ``organize_all`` —— 130 部剧跑几分钟，反代先超时，
           前端只看到 502（2026-10-23 实测），故改为后台任务。
@@ -1869,6 +2383,7 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             target = (path or "").strip()
             if target:
                 media = (media_id or "").strip()
+                manual_named = str(manual).lower() in ("1", "true", "yes")
                 if media:
                     decision = MatchDecision(
                         matcher.ACTION_ADOPT,
@@ -1883,6 +2398,19 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                         ),
                         reason="人工指定身份",
                     )
+                elif manual_named and (title or "").strip():
+                    # 人工指定名称：无百科身份，media_id 留空（organize_drama
+                    # 对该 reason 的无 id 候选放行，刮削跳过）
+                    decision = MatchDecision(
+                        matcher.ACTION_ADOPT,
+                        candidate=matcher.Candidate(
+                            media_id="",
+                            title=(title or "").strip(),
+                            year=safe_int(year) or None,
+                            episode_count=safe_int(episode_count) or None,
+                        ),
+                        reason="人工指定名称",
+                    )
                 else:
                     decision = self.recognize_drama(Path(target).name)
                 res = self.organize_drama(
@@ -1891,6 +2419,7 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                     force=force_flag,
                     library_dir=(library_dir or "").strip() or None,
                     transfer_type=(transfer_type or "").strip() or None,
+                    season=safe_int(season, 0) or None,
                 )
                 if not res.get("success"):
                     # 信封里带上原因：前端直接把 message 显示出来（「整理失败：未配置…」）
@@ -1934,11 +2463,12 @@ class ShortDramaBaikeOrganizer(_PluginBase):
         year: str = "",
         library_dir: str = "",
         media_id: str = "",
+        season: str = "",
     ) -> dict:
         """按指定身份/目标库**预演**整理计划：将搬哪些文件、搬到哪、集号多少。
 
         面板「重新整理」在真正动手前调它 —— 「可指定」的意义在于**先看清楚再执行**：
-        换目标库 / 换身份后目标路径与集号会变，先列出来给用户确认。
+        换目标库 / 换身份 / 换季号后目标路径与集号会变，先列出来给用户确认。
         """
         try:
             source = (path or "").strip()
@@ -1964,9 +2494,10 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             plan_title, title_season, title_year = naming.parse_title_identity(plan_title)
             if not drama_year:
                 drama_year = safe_int(getattr(info, "year", None), 0) or title_year or None
-            # 库内季号：一季一个独立剧目录（2026-10-23 用户定稿），目录内统一
-            # Season 1 / S01Exx；源侧季号只影响素材查询，与预演路径无关
-            season_no = 1
+            # 库内季号：默认 1（一季一个独立剧目录，2026-10-23 用户定稿，目录内
+            # 统一 Season 1 / S01Exx）；手动指定季号时按指定值预演，路径随之变
+            manual_season = safe_int(season, 0)
+            season_no = max(1, min(99, manual_season)) if manual_season else 1
             exists = Path(source).is_dir()
             plans = organize.plan_files(
                 Path(source),
@@ -2184,7 +2715,10 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                 "unrecognized": 0, "unscraped": 0,
             }, "items": []}}
         try:
-            items = records.all(limit=500)
+            items = [
+                row for row in records.all(limit=500)
+                if not row.get("ignored")
+            ]
             self._heal_flags(items)
             # 统计直接用**补过标志的** items，别再读一次 DB 拿旧值。
             # done 口径与 store.as_dict 一致：手动标记过，或已整理集数对齐数据源集数。
@@ -2229,6 +2763,47 @@ class ShortDramaBaikeOrganizer(_PluginBase):
                 return {"success": False, "message": "缺少 path 参数"}
             ok = records.delete(key)
             return {"success": ok, "message": "已删除" if ok else "未找到记录"}
+        except Exception as err:  # pragma: no cover
+            return {"success": False, "message": str(err)}
+
+    def api_delete_history(self) -> dict:
+        """删除任务台账：Emby 删除联动执行过的清理记录（最新在前）。"""
+        try:
+            history = self.get_data("delete_history") or []
+            if not isinstance(history, list):
+                history = []
+            return {"success": True, "data": {"items": history[:100]}}
+        except Exception as err:  # pragma: no cover
+            return {"success": False, "message": str(err)}
+
+    def api_delete_restore(self, time: str = "") -> dict:
+        """恢复一条删除任务：从台账移除并清掉该剧的墓碑标记。"""
+        key = (time or "").strip()
+        if not key:
+            return {"success": False, "message": "缺少 time 参数"}
+        try:
+            history = self.get_data("delete_history") or []
+            if not isinstance(history, list):
+                history = []
+            target = next((item for item in history if str(item.get("time") or "") == key), None)
+            if target is None:
+                return {"success": False, "message": "未找到该删除任务"}
+            records = self._record_store()
+            restored = False
+            if records is not None:
+                # 按剧名找回墓碑记录（记录主键是源目录，台账里没存 path 时按标题匹配）
+                for row in records.all(limit=500):
+                    if not row.get("ignored"):
+                        continue
+                    if str(row.get("title") or "") == str(target.get("title") or ""):
+                        records.mark_ignored(str(row.get("path") or ""), value=False)
+                        restored = True
+            remaining = [item for item in history if str(item.get("time") or "") != key]
+            self.save_data("delete_history", remaining)
+            return {
+                "success": True,
+                "message": "已恢复（该剧重新纳入扫描）" if restored else "已从台账移除",
+            }
         except Exception as err:  # pragma: no cover
             return {"success": False, "message": str(err)}
 
@@ -2282,6 +2857,25 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             logger.error(f"[API] scrape 异常：{err}\n{traceback.format_exc()}")
             return {"success": False, "message": str(err)}
 
+    def api_repair(self) -> dict:
+        """补图进度快照（面板「补封面」按钮轮询）。"""
+        return {"success": True, "data": self.repair_snapshot()}
+
+    def api_repair_start(self, library_dir: str = "") -> dict:
+        """启动后台补图：补齐媒体库里缺失 / 残图（52 字节占位图）的封面。
+
+        只补图，不动集文件、不重写已有 tvshow.nfo / season.nfo；已正常的产物跳过。
+        2026-11-06 用户「裂图时期整理的历史记录现在没封面」。
+        """
+        try:
+            return {"success": True, "data": self.start_repair(library_dir=(library_dir or "").strip())}
+        except Exception as err:  # pragma: no cover
+            logger.error(f"[API] repair 异常：{err}\n{traceback.format_exc()}")
+            return {"success": False, "message": str(err)}
+
+    def api_repair_stop(self) -> dict:
+        return {"success": True, "data": self.stop_repair()}
+
     def api_stop(self) -> dict:
         self._stop_monitor()
         return {"success": True, "message": "目录监控已停止"}
@@ -2294,14 +2888,26 @@ class ShortDramaBaikeOrganizer(_PluginBase):
             return {"success": False, "message": str(err)}
 
     def api_dirs_options(self) -> dict:
-        """配置页下拉候选：系统配置里的下载目录与媒体库目录（短剧条目优先，只列根）。"""
+        """配置页下拉候选：系统配置里的下载目录、媒体库目录与下载器。"""
         try:
             return {
                 "success": True,
                 "data": {
                     "sources": self._source_dir_options(),
                     "libraries": self._library_dir_options(),
+                    "downloaders": self._downloader_options(),
                 },
             }
         except Exception as err:  # pragma: no cover
             return {"success": False, "message": str(err)}
+
+    def _downloader_options(self) -> list[dict]:
+        """下载器候选（联动删除的「指定下载器」用）。"""
+        try:
+            from app.sdk.services import DownloaderHelper
+
+            services = DownloaderHelper().get_services() or {}
+            return [{"title": str(name), "value": str(name)} for name in services]
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"[下载器] 读取下载器候选失败：{err}")
+            return []

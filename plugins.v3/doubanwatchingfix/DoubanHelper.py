@@ -97,7 +97,14 @@ class DoubanHelper:
             title = meta.title
             year = meta.year
         url = f"https://www.douban.com/search?cat=1002&q={title}"
-        response = RequestUtils(headers=self.headers).get_res(url)
+        # RequestUtils 在网络异常/超时时会返回 None（不会抛异常），偶发无响应时重试一次
+        response = RequestUtils(headers=self.headers).get_res(url, timeout=15)
+        if response is None:
+            logger.warn(f"搜索 {title} 无响应，重试一次")
+            response = RequestUtils(headers=self.headers).get_res(url, timeout=15)
+        if response is None:
+            logger.error(f"搜索 {title} 失败：豆瓣无响应（网络异常/超时），请检查网络与 MoviePilot 代理设置")
+            return None, None
         if not response.status_code == 200:
             logger.error(f"搜索 {title} 失败 状态码：{response.status_code}")
             return None
@@ -107,31 +114,28 @@ class DoubanHelper:
         subject_items: List = []
         # 遍历所有找到的div标签
         for div in title_divs:
-            item = {}
+            a_tags = div.find_all("a")
+            if not a_tags:
+                continue
+            a_tag = a_tags[0]
 
-            # title
-            a_tag = div.find_all("a")[0]
-            item["title"] = a_tag.string
-            item["title"] = item["title"].strip()
+            # title（搜索结果里存在无文字/无链接条目，直接跳过）
+            item_title = (a_tag.string or "").strip()
+            if not item_title:
+                continue
 
-            # year 原名:피라미드 게임 / 朴昭妍 / 金知妍 / 2024
-            # span_tag = div.find_all(class_="subject-cast")[0]
-            # year: str = span_tag.string[-4:]
-            # if year.isdigit():
-            #     item["year"] = year
+            # subject_id：只保留真正指向 subject 的条目，避免 KeyError
+            link = unquote(a_tag.get("href", "") or "")
+            pattern = r"subject/(\d+)/"
+            match = re.search(pattern, link)
+            if not match:
+                continue
 
-            # subject_id
-            link = unquote(a_tag["href"])
-            if link.count("subject/"):
-                pattern = r"subject/(\d+)/"
-                match = re.search(pattern, link)
-                if match:
-                    subject_id = match.group(1)
-                    item["subject_id"] = subject_id
-            subject_items.append(item)
+            subject_items.append({"title": item_title, "subject_id": match.group(1)})
 
         if not subject_items:
-            logger.error(f"找不到 {title} 相关条目 搜索结果html:{response.text.encode('utf-8')}")
+            logger.error(f"找不到 {title} 相关条目 搜索结果html:{(response.text or '')[:500]}")
+            return None, None
         for subject_item in subject_items:
             logger.debug(f"{subject_item['title']} {subject_item['subject_id']}")
             return subject_item["title"], subject_item["subject_id"]
@@ -172,7 +176,11 @@ class DoubanHelper:
 
         if response.status_code == 403:
             # 豆瓣常见场景：ck 过期或风控导致拒绝，刷新后再重试一次
-            logger.error(f"豆瓣返回403，尝试刷新ck后重试: {response.text}")
+            logger.error(
+                f"豆瓣返回403，尝试刷新ck后重试: {response.text}"
+                "（若持续失败，多为豆瓣登录态已失效或被风控：请在浏览器重新登录豆瓣、同步到 CookieCloud，"
+                "或在插件配置里手动填写豆瓣 cookie）"
+            )
             self.set_ck()
             self.ck = self.cookies.get("ck")
             self.headers["Cookie"] = ";".join([f"{key}={value}" for key, value in self.cookies.items()])

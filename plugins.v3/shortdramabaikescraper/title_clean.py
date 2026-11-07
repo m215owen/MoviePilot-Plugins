@@ -19,9 +19,10 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-# 季集号：S01E07 / EP07 / E07 / 第70集
+# 季集号：S01E07 / EP07 / E07 / 第70集 / 全71集（发布组副标题常见写法）
 _EPISODE_RE = re.compile(
-    r"(?:[Ss]\d{1,3}\s*[Ee]\d{1,4}|[Ee][Pp]?\s?\d{1,4}|第\s*\d{1,4}\s*[集话期])"
+    r"(?:[Ss]\d{1,3}\s*[Ee]\d{1,4}|[Ee][Pp]?\s?\d{1,4}"
+    r"|全\s*\d{1,4}\s*[集话期]|第\s*\d{1,4}\s*[集话期])"
 )
 # 纯季号（无集号）：第二季 / S2 → 剥掉才能命中站点存的基名
 _SEASON_RE = re.compile(

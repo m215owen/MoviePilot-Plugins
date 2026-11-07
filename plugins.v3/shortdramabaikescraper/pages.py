@@ -49,14 +49,35 @@ async def fetch_people_list_html(
     )
 
 
-def parse_people_page(html: str, kind: str) -> tuple[list[tuple[str, str]], int]:
-    """人物目录页 → ``([(media_id, name)], total_pages)``。
+def parse_people_page(html: str, kind: str) -> tuple[list[tuple[str, str, str]], int]:
+    """人物目录页 → ``([(media_id, name, poster)], total_pages)``。
 
     卡片解析用 ``scan_ids`` + ``name_near_link``，只留本分类条目、按页面顺序去重；
     总页数取分页导航里本分类的最大页码，没有导航按 1 页算。
+
+    ``poster`` 只有 ``.org`` 给得出（新站卡片的头像是 CDN 绝对地址、不能按身份
+    反推）；``.net`` 侧恒为空串，调用方仍按 ``media_id`` 走图床模板反推。
+
+    ``.org`` 主站换 :mod:`orgsite` 的目录解析（新站只有演员一档，卡片是
+    Alpine 模板、没有 ``info-`` 链接，``scan_ids`` 认不出）。
     """
+    if constants.is_org_site():
+        from . import orgsite
+
+        data = orgsite.parse_people_list(html, kind)
+        rows = [
+            (
+                str(item.get("media_id") or ""),
+                str(item.get("name") or "").strip(),
+                str(item.get("poster") or "").strip(),
+            )
+            for item in (data.get("people") or [])
+            if item.get("media_id")
+        ]
+        return rows, max(1, int(data.get("last_page") or 1))
+
     kind_key = str(kind or "").strip().lower()
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for entity, native_id in scan_ids(html):
         if entity != kind_key:
@@ -65,7 +86,9 @@ def parse_people_page(html: str, kind: str) -> tuple[list[tuple[str, str]], int]
         if not media_id or media_id in seen:
             continue
         seen.add(media_id)
-        rows.append((media_id, str(name_near_link(html, native_id) or "").strip()))
+        rows.append(
+            (media_id, str(name_near_link(html, native_id) or "").strip(), "")
+        )
     total = 1
     for num in re.findall(rf"/{re.escape(kind_key)}/list\.html\?page=(\d+)", html):
         total = max(total, int(num))
@@ -222,6 +245,63 @@ def parse_tuijian_cards(html: str) -> list[dict]:
             }
         )
     return rows
+
+
+def parse_org_rank_cards(html: str, key: str = "") -> list[dict]:
+    """``.org`` 榜单页（``/zh-Hans/top*``）HTML → 卡行（2026-11-03 接入）。
+
+    新站的排行榜卡与搜索 / 列表卡**同一套结构**，所以直接复用
+    :func:`orgsite.parse_cards`（它给的是完整卡：``media_id`` / ``title`` /
+    ``badge`` / ``badges`` / ``episodes`` / ``release_date`` / ``poster`` …），
+    这里只挑榜单契约要的几个键，并把**形态角标**补上：
+
+    * 分榜（真人 / AI / 漫剧）按榜给（站点卡片上那枚 chip 是标题行里的
+      ``title="真人短剧"``，``_card_of`` 不落进 ``badge``）；
+    * 综合榜没有固定形态，按卡片 ``is_ai`` 判「AI短剧」，其余算「短剧」。
+
+    ``poster`` 是 .org 的 CDN 绝对地址（含 UUID，**不能按身份反推**），必须随卡行
+    带出去；``.net`` 那边海报是调用方按 ``media_id`` 现拼的，两者不冲突。
+    """
+    from . import orgsite
+
+    cards = orgsite.parse_cards(html, constants.SITE_DOMAINS[constants.SITE_ORG])
+    fixed = _ORG_RANK_BADGE.get(str(key or "").strip().lower(), "")
+    rows: list[dict] = []
+    for card in cards:
+        media_id = str(card.get("media_id") or "")
+        if not media_id:
+            continue
+        rows.append(
+            {
+                "media_id": media_id,
+                "title": str(card.get("title") or ""),
+                "badge": fixed or ("AI短剧" if card.get("is_ai") else "短剧"),
+                "badges": list(card.get("badges") or []),
+                "episodes": int(card.get("episodes") or 0),
+                "date": str(card.get("release_date") or ""),
+                "actors_text": "",
+                # .org 海报只能随卡拿，不给下游留「按身份反推」的错觉
+                "poster": str(card.get("poster") or ""),
+            }
+        )
+    return rows
+
+
+#: .org 分榜的**形态角标**（站点 chip 文本；综合榜不在此表，按卡片判）
+_ORG_RANK_BADGE = {
+    "top-real": "真人短剧",
+    "top-ai": "AI短剧",
+    "top-comic": "漫剧",
+    # 爽剧分类页：站点卡片上没有形态 chip，按榜固定给
+    "top-feel-good": "爽剧",
+}
+
+
+def rank_parser(key: str):
+    """榜单 key → 解析函数（**按主站分流**：.org 一套，.net 一套）。"""
+    if constants.is_org_site():
+        return lambda html: parse_org_rank_cards(html, key)
+    return RANK_PARSERS.get(key, DEFAULT_RANK_PARSER)
 
 
 #: 榜单 key → 解析器（每本榜按实际页面各写各的；推荐页结构与排行榜页不同）

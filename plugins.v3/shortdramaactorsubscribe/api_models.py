@@ -103,6 +103,8 @@ class ConfigData(BaseModel):
     subscribe_downloader: str = ""
     #: 订阅站点（逗号分隔的站点 ID；空 = 跟随宿主订阅默认）
     subscribe_sites: str = ""
+    #: 发现页 RSS 站点（逗号分隔的站点 ID；空 = 跟随订阅站点集合）
+    rss_sites: str = ""
     #: 订阅下载目录（宿主 `/download/paths` 的 save_path；空 = 跟随宿主订阅默认）
     subscribe_save_path: str = ""
     #: 自动订阅：关注演员的作品直接交给宿主订阅链
@@ -113,8 +115,9 @@ class ConfigData(BaseModel):
     auto_subscribe_max_per_run: int = 5
     #: 已在媒体库的作品是否跳过
     auto_subscribe_skip_library: bool = True
-    #: 订阅引擎：`host` = 宿主订阅链（默认）/ `self` = 插件自建订阅搜索（全分类补搜）
-    subscribe_engine: str = "host"
+    #: 发现页展示哪些列表 / 榜单（原数据源「探索页」配置，2026-11-02 迁到本插件）。
+    #: 空列表 = 不筛选（数据源目录里有什么就显示什么）；值域由数据源站点决定。
+    discover_tabs: List[str] = []
     #: 自建订阅搜索的运行间隔（小时）
     self_interval_hours: int = 6
     #: 自建订阅搜索单轮最多搜索几部（1..30）
@@ -163,8 +166,9 @@ class AutoSubscribeRow(BaseModel):
 class SubscriptionRow(BaseModel):
     """一条订阅（作品墙左侧「订阅作品」面板的行，``GET /subscriptions``）。
 
-    ``sub_state/sub_detail/sub_time`` 是订阅搜索的处理状态（引擎 = ``self`` 才有
-    搜索行为；空 = 还没轮到 / 引擎是宿主）。
+    ``sub_state/sub_detail/sub_time`` 是订阅搜索的处理状态（空 = 还没轮到）。
+    ``site`` / ``stale`` 是身份归属：换过数据源站点后，旧身份的订阅还没换过来时
+    ``stale=True``，前端拿它的标题做「同名桥」，卡片才不会全变成未订阅。
     """
 
     media_id: str = ""
@@ -173,6 +177,10 @@ class SubscriptionRow(BaseModel):
     actor: str = ""
     #: 海报（订阅面板用作品墙同款海报卡展示）
     poster: str = ""
+    #: 身份属于哪一站（``org`` / ``net``；空 = 融合身份或数据源没给画像）
+    site: str = ""
+    #: 这条是不是「别的站点身份」（= 数据源换过站、还没迁移过来）
+    stale: bool = False
     #: 在库三态（探针现查）：True 已入库 / False 未入库 / None 未知（探针不可用）
     in_library: Optional[bool] = None
     sub_state: str = ""
@@ -188,15 +196,39 @@ class SubscriptionRow(BaseModel):
 
 
 class SubscriptionsData(BaseModel):
-    """订阅清单（``GET /subscriptions``）。"""
+    """订阅清单（``GET /subscriptions``）—— 只有插件订阅清单这一个来源。"""
 
-    #: 当前订阅引擎（self = 自建订阅搜索；host = 宿主订阅链）
-    engine: str = "self"
     items: List[SubscriptionRow] = []
+    #: 数据源当前站点（空 = 没提供站点画像，前端不做同名桥）
+    site: str = ""
+    #: 还有几条是「别的站点身份」（换过站、作品墙里又没对上的）
+    stale_count: int = 0
     #: 配置页里的默认落点（订阅设置里「留空即用默认」提示这几项）
     default_sites: str = ""
     default_downloader: str = ""
     default_save_path: str = ""
+
+
+class SubscribedIdsData(BaseModel):
+    """订阅身份的**轻量快照**（``GET /subscribed_ids``）。
+
+    只给作品卡判「已订阅 / 未订阅」用 —— 面板和作品墙拿的是整份订阅清单
+    （上百条、上百 KB），而卡片只需要一串 ID。搜索结果里的作品来自**数据源**
+    ``/lookup``（不经过本插件），后端没机会逐行标注，前端就把这一份小载荷
+    按 ``media_id`` 打回卡片上。
+    """
+
+    #: 订阅清单里的全部身份（当前站 + 别的站旧身份都在），前端按 ID 精确匹配
+    ids: List[str] = []
+    #: 数据源当前站点（空 = 没有站点画像，同名桥不启用）
+    site: str = ""
+    #: 「身份属于别的站点」那些订阅的剧名（换过站：ID 对不上、名字对得上）
+    stale_titles: List[str] = []
+    #: 订阅条数（= ``len(ids)``，前端提示用）
+    count: int = 0
+    #: **已关注演员**的身份（``actor:12`` 这种），搜索结果的演员卡据此点亮红心。
+    #: 关注名单只有百来条、几十 KB，跟订阅快照一起回比单独再拉一份划算。
+    actor_ids: List[str] = []
 
 
 class RandomSubscribeWork(BaseModel):
@@ -226,9 +258,9 @@ class StatusData(BaseModel):
     configured: bool = False
     actors: int = 0
     works: int = 0
+    #: 带站点「新剧」角标的作品数（口径 = 作品卡上的「新剧」标签）
     new_works: int = 0
     last_refresh: str = ""
-    new_window_days: int = 7
     states: List[ActorRow] = []
     #: 自动订阅是否打开（关着时下面三个字段仍返回，方便面板说明「有多少条历史」）
     auto_subscribe: bool = False
@@ -236,9 +268,7 @@ class StatusData(BaseModel):
     auto_subscribed: int = 0
     #: 最近几条自动订阅记录（新的在前，最多 5 条）
     auto_subscribe_recent: List[AutoSubscribeRow] = []
-    #: 自建订阅搜索引擎（host / self；host 时下面五个计数恒为 0）
-    sub_engine: str = "host"
-    #: 已提交下载
+    #: 已提交下载（订阅搜索只有自建这一条，2026-11-02 起宿主订阅完全去除）
     sub_downloaded: int = 0
     #: 无结果（冷却中，会自动重试）
     sub_noresult: int = 0
@@ -277,13 +307,21 @@ class WorkRow(BaseModel):
     #: ``在<平台>平台上`` 抠出来；站点没印就是空串（不显示该筛选项）
     platform: str = ""
     kind: str = ""
+    #: 状态角标（``爆火`` / ``新剧`` / ``完结`` / ``预约``…）：数据源作品卡封面左上角
+    #: 那列彩色 chip 的原文，多值；作品卡按它印标签，``is_new`` 也由其中的「新剧」决定
+    badges: List[str] = []
     release_date: str = ""
     actor: str = ""
     actor_key: str = ""
     first_seen: str = ""
+    #: 是否「新剧」：作品带站点「新剧」角标（2026-11-02 起代替旧的「本轮比上轮多出来」）
     is_new: bool = False
     #: 三态：True 在库 / False 不在库 / None 未知（查库失败或未查）
     in_library: Optional[bool] = None
+    #: 是否**已在本插件订阅清单**里（后端按 ``media_id`` 判定，2026-11-02）：
+    #: 卡片红心用它当权威来源 —— 前端不必为了一个布尔值先拉整份订阅清单
+    #: （那份 response 上百 KB，拉失败/解析失败时整面墙会错标成「未订阅」）
+    subscribed: bool = False
     overview: str = ""
     #: 自建订阅搜索台账：处理状态 / 说明 / 时间 / 种子页面 / 种子标题
     sub_state: str = ""
@@ -314,6 +352,31 @@ class WorkDetailActorRow(BaseModel):
     url: str = ""
     #: 是否已在本插件的关注列表里（详情页据此显示「已关注 / 关注」）
     subscribed: bool = False
+
+
+class WorkDetailComment(BaseModel):
+    """作品详情里的**站点热评**行（``GET /works/detail`` 的 ``site_comments[]``）。
+
+    数据来自短剧百科 ``.org`` 作品页的「热评」区块（``<section id="comments">``），
+    2026-11-02 用户口径「作品详情支持网站的评论」。
+
+    ⚠️ 站点只给这几项：**没有**评论时间、**没有**评论 ID、**没有**分页/全部评论入口
+    （实测最多 9 条）。所以这里不造 ``time`` / ``id``，前端按数组下标做 key。
+    ``.net`` 老站详情页压根没有评论区 ⇒ 数据源 ``work_comments`` 回空 + ``supported=False``。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    #: 昵称（站点原文，可能为空）
+    author: str = ""
+    #: 头像（站点 CDN 绝对地址，前端统一走宿主 ``system/img`` 代理）
+    avatar: str = ""
+    #: 正文（站点原文，可能很长；前端折叠显示）
+    content: str = ""
+    #: 评分：**站点 10 分制原值**（由星星宽度换算），展示时折成 5 星
+    rating: float = 0
+    #: 点赞数（站点把它当「有用」用；0 = 站点没印）
+    votes: int = 0
 
 
 class WorkDetailData(BaseModel):
@@ -377,11 +440,20 @@ class WorkDetailData(BaseModel):
     douban_id: str = ""
     douban_url: str = ""
     actors: List[WorkDetailActorRow] = []
+    #: 站点「热评」（2026-11-02）：``.org`` 作品页自带，最多 9 条、无时间无 ID。
+    #: 数据源没有 ``work_comments`` 模块方法（老版本）或站点没评论区时是空数组。
+    site_comments: List[WorkDetailComment] = []
+    #: 当前站点有没有评论区（``.net`` 老站 = False）：前端据此区分
+    #: 「这部剧没有热评」与「当前站点不支持评论」两种空态
+    comments_supported: bool = False
     # ── 墙上快照侧的字段（MediaInfo 里没有） ──
     # 热度 / 播放量 / 收藏**不在这里**：数据源给的是站点原文（「380.14万」），
     # 由前端从 ``/lookup`` 原样显示（2026-10-23 用户口径：不要折算数值）
     #: 真人短剧 / AI 短剧（站点角标）
     kind: str = ""
+    #: 状态角标（``爆火`` / ``新剧`` / ``完结`` / ``预约``…）：与作品卡同一份数据，
+    #: 详情页顶部按它印标签（``is_new`` 就是其中的「新剧」）
+    badges: List[str] = []
     #: 这部作品在本插件里首次被发现的时间
     first_seen: str = ""
     is_new: bool = False
@@ -434,7 +506,6 @@ class WorksData(BaseModel):
     page_size: int = 0
     has_more: bool = False
     sort: str = "heat"
-    new_window_days: int = 7
     works: List[WorkRow] = []
     actor_filters: List[ActorFilterRow] = []
     facets: FacetsData = FacetsData()
@@ -547,6 +618,8 @@ class PeopleListData(BaseModel):
     """
 
     kind: str = ""
+    #: 这一页的性别档位：``男`` / ``女`` / 空串（全部）
+    gender: str = ""
     page: int = 1
     has_more: bool = False
     message: str = ""
@@ -692,6 +765,8 @@ class RankRow(BaseModel):
 
     key: str = ""
     name: str = ""
+    #: 能不能一直往下翻：分类列表 = True（站点 ``?page=N``）；榜单 = False（整页一榜）
+    paged: bool = True
     #: 该榜当前抓不抓得到带 media_id 的卡（False = 站点整页未收录详情，前端隐藏）
     has_detail: bool = True
 
@@ -776,4 +851,5 @@ RankWorksResponse = schemas.Response[RankWorksData]
 LogsResponse = schemas.Response[LogsData]
 ConfigResponse = schemas.Response[ConfigData]
 SubscriptionsResponse = schemas.Response[SubscriptionsData]
+SubscribedIdsResponse = schemas.Response[SubscribedIdsData]
 SubscribeResponse = schemas.Response[None]

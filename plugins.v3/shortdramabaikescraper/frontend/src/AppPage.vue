@@ -11,7 +11,15 @@
       <v-icon icon="mdi-television-classic" class="mr-1" />
       <h2 class="text-h6 ma-0">短剧百科刮削源</h2>
       <v-chip size="small" variant="tonal" color="primary">djbaike</v-chip>
-      <v-chip size="small" variant="tonal">duanjubaike.net</v-chip>
+      <!-- 站点 chip 跟随配置里的主站（以前写死 duanjubaike.net，切到新站后看不到变化） -->
+      <v-chip
+        size="small"
+        variant="tonal"
+        :color="siteKey === 'org' ? 'teal' : undefined"
+        :href="siteInfo.base"
+        target="_blank"
+        rel="noreferrer noopener"
+      >{{ siteInfo.host }}{{ siteKey === 'org' ? '（新站）' : '（老站）' }}</v-chip>
       <v-spacer />
       <span class="text-caption sdbs-dim">
         ID 库与缓存是来源级全局数据（不按虚拟分身隔离）
@@ -23,7 +31,9 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import PanelTabs from './PanelTabs.vue'
+import { ensureSite, siteInfo, siteKey } from './site'
 import type { PluginApi } from './types'
 
 const props = defineProps<{
@@ -34,4 +44,9 @@ const props = defineProps<{
   /** 侧栏入口 key（本插件无侧栏，恒为 main） */
   navKey?: string
 }>()
+
+// 主站只从后端读（唯一真源），chip 与各面板文案共享同一份状态
+onMounted(() => {
+  void ensureSite(props.api, true)
+})
 </script>

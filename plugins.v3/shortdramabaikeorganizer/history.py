@@ -163,8 +163,10 @@ def record_transfer(
         episodes = f"E{max(1, int(episode or 1)):02d}"
 
         media_source, media_id = _resolve_media_identity(drama_info)
-        # 识别源是短剧百科；若候选本身带了更具体的 media_source 也采用
-        if not media_source:
+        # 识别源是短剧百科；若候选本身带了更具体的 media_source 也采用。
+        # 「人工指定名称」没有 media_id（2026-11-04）：V3 要求 source/id 成对，
+        # 半套身份不写 —— 历史行只留标题/年份/路径
+        if media_id and not media_source:
             media_source = BAIKE_MEDIA_SOURCE
 
         payload: dict[str, Any] = {
@@ -251,9 +253,97 @@ def delete_by_title(title: str, library_dir: str, category: str = CATEGORY_SHORT
     return 0
 
 
+def _norm_dir(path: str) -> str:
+    """目录路径归一（去尾斜杠、normcase）——批量匹配用。"""
+    text = str(path or "").strip().replace("\\", "/").rstrip("/")
+    return os.path.normcase(text)
+
+
+def list_records_by_src_dir(src_dir: str, limit: int = 2000) -> list[dict]:
+    """列出源文件位于该剧源目录下的整理历史。
+
+    重新整理前用它收集「这部剧此前写过哪些目标目录」（2026-10-27 用户
+    「重新整理没有把老记录和老的媒体删除」）。
+    """
+    root = _norm_dir(src_dir)
+    if not root:
+        return []
+    rows: list[dict] = []
+    try:
+        # ⚠️ `_iter_records()` 不带任何过滤条件时查不出数据（2026-10-27 实测：
+        # 返回空导致「重新整理清旧记录」一条都没删，随后写新记录撞唯一约束）。
+        # 统一用目录名做 text 预筛，再在本地按路径前缀精确过滤。
+        for record in _iter_records(text=Path(src_dir).name, limit=limit):
+            src = _norm_dir(getattr(record, "src", "") or "")
+            if src and (src == root or src.startswith(root + "/")):
+                rows.append(_to_dict(record))
+    except Exception as err:  # pragma: no cover
+        import logging
+
+        logging.getLogger("ShortDramaBaikeOrganizer").warning(f"[历史] 按源目录查询失败：{err}")
+    return rows
+
+
+def drama_dir_of(dest_file: str) -> str:
+    """目标文件路径 → 所属剧目录（``.../剧 (2026)/Season 1/x.mp4`` → ``.../剧 (2026)``）。"""
+    text = str(dest_file or "").strip()
+    if not text:
+        return ""
+    path = Path(text.replace("\\", "/"))
+    parent = path.parent
+    if parent.name.lower().startswith("season"):
+        return str(parent.parent)
+    return str(parent)
+
+
+def delete_by_src_dir(src_dir: str) -> int:
+    """删除该剧源目录下的**全部**整理历史（重新整理前清旧记录）。"""
+    root = _norm_dir(src_dir)
+    if not root:
+        return 0
+    try:
+        from app.db.oper.transferhistory import TransferHistoryOper
+
+        oper = TransferHistoryOper()
+        count = 0
+        for record in _iter_records(text=Path(src_dir).name, limit=2000):
+            src = _norm_dir(getattr(record, "src", "") or "")
+            if src and (src == root or src.startswith(root + "/")):
+                oper.delete(record.id)
+                count += 1
+        return count
+    except Exception as err:  # pragma: no cover
+        import logging
+
+        logging.getLogger("ShortDramaBaikeOrganizer").error(f"[历史] 按源目录删除失败：{err}")
+    return 0
+
+
+def delete_by_dest_dir(dest_dir: str) -> int:
+    """删除目标剧目录下的全部整理历史（换目标目录后清旧记录）。"""
+    root = _norm_dir(dest_dir)
+    if not root:
+        return 0
+    try:
+        from app.db.oper.transferhistory import TransferHistoryOper
+
+        oper = TransferHistoryOper()
+        count = 0
+        for record in _iter_records(text=Path(dest_dir).name, limit=2000):
+            dest = _norm_dir(getattr(record, "dest", "") or "")
+            if dest and (dest == root or dest.startswith(root + "/")):
+                oper.delete(record.id)
+                count += 1
+        return count
+    except Exception as err:  # pragma: no cover
+        import logging
+
+        logging.getLogger("ShortDramaBaikeOrganizer").error(f"[历史] 按目标目录删除失败：{err}")
+    return 0
+
+
 def _to_dict(rec: Any) -> dict:
     """整理历史 ORM 对象 → 面板可直接渲染的 dict。
-
     额外解出 ``src_name`` / ``dest_name``：前端「整理详情」按集号排序展示
     「源文件名 → 目标文件名」，不想让前端自己再切一次路径（跨平台分隔符）。
     """

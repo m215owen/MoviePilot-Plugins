@@ -20,24 +20,55 @@ export interface StatusPayload {
   enabled: boolean
   version: string
   media_source: string
+  /**
+   * 当前主站：`net` = duanjubaike.net（老站）/ `org` = duanjubaike.org（新站）。
+   * 面板的站点 chip、示例 media_id、排除口径文案都读这一项。
+   */
+  site: 'net' | 'org'
+  /** 「排除」开关当前是否打开（老站排漫剧 / 新站排 AI 剧） */
+  exclude_manju: boolean
   /** ID 库总条数 */
   total: number
   /** 可检索条数（`name` 非空） */
   searchable: number
   /** 按实体前缀计数：duanju / manju / hema / huolong / xiaoshuo / 人物三类 / douban / doubanp */
   by_entity: Record<string, number>
+  /** 外部 id 表（`baike_ext`）条数：站点行之外的独立记录数 */
+  ext_total: number
+  /** 外部 id 表里有豆瓣 id 的条数（面板「豆瓣 id」分类的计数） */
+  ext_douban: number
+  /** 外部 id 表里有 TMDB id 的条数（面板「TMDB id」分类的计数） */
+  ext_tmdb: number
   /** 缓存 region 清单（`constants.ALL_REGIONS`） */
   regions: string[]
   /** 各缓存 region 的当前条数（概览页「缓存分布」饼图；随 TTL 过期而变） */
   by_region: Record<string, number>
 }
 
-/** `GET /baike/list` 的一行：**原始 4 列**，不作任何翻译或清洗。 */
+/** `GET /baike/list` 的一行：站点行**自己的原始值**（`media_id` + `name`）。 */
 export interface BaikeRow {
   media_id: string
   name: string
+}
+
+/**
+ * `GET /baike/extlist` 的一行：外部 id 表的原始值。
+ *
+ * 外部 id 与站点库是两张独立的表：这里一条记录对应一部作品 / 一个人，
+ * 不分站，也不依赖站点库里有没有对应的行。
+ */
+export interface BaikeExtRow {
+  name: string
   douban: string
   tmdb: string
+}
+
+/** `GET /baike/extlist` 的 `data`（= `api_models.BaikeExtPageData`）。 */
+export interface BaikeExtPage {
+  total: number
+  offset: number
+  limit: number
+  items: BaikeExtRow[]
 }
 
 /** `GET /baike/list` 的 `data`（= `api_models.BaikePageData`）。 */
@@ -46,6 +77,23 @@ export interface BaikePage {
   offset: number
   limit: number
   items: BaikeRow[]
+}
+
+/** `POST /baike/extids` 的 `data`（= `api_models.BackfillData`）。 */
+export interface BackfillResult {
+  entity: string
+  /** 本轮扫过的行数 */
+  scanned: number
+  /** 本轮补上豆瓣 id 的条数 */
+  douban: number
+  /** 本轮补上 TMDB id 的条数 */
+  tmdb: number
+  /** 库里仍缺外部 id 的剩余条数 */
+  remaining: number
+  /** 本批最后一条 media_id（下一批的 after 游标） */
+  cursor: string
+  /** 豆瓣搜索限流熔断中（true = 这轮提前收工） */
+  throttled: boolean
 }
 
 /** 缓存枚举的一行：键 + **缓存里存的原始值**（就是写进 region 的那份 JSON）。 */
@@ -146,6 +194,21 @@ export type PanelTab = 'overview' | 'baike' | 'cache' | 'query'
  */
 export interface PluginConfig {
   enabled: boolean
+  /**
+   * 主站：`net` = duanjubaike.net（老站）/ `org` = duanjubaike.org（新站）。
+   * 只决定检索 / 人物目录 / 榜单走哪个站；详情与图片按 media_id 前缀自动路由。
+   */
+  site: 'net' | 'org'
+  /**
+   * 保留使用百度图床代理（站点原始出图形态）；false = 直连站点自家图床。
+   * **只对老站（.net）生效**：新站（.org）海报是页面自带的 CDN 绝对地址。
+   */
+  use_baidu_image_proxy: boolean
+  /**
+   * 排除开关（**按主站口径**）：老站排「漫剧」（卡片角标）、新站排 AI 剧
+   * （标题行「AI短剧」标）。识别候选 / 面板检索 / 榜单 / 演员作品都生效。
+   */
+  exclude_manju: boolean
 }
 
 /** 人物页的一张作品卡（`/person` 的 `works[]`）。 */
@@ -185,6 +248,8 @@ export interface PersonPayload {
   detail_url: string
   /** 豆瓣影人 id（doubanp:{pid}，绑定成功才有） */
   douban_id?: string
+  /** TMDB 影人 id（tmdbp:{pid}，按作品交集绑定成功才有） */
+  tmdb_id?: string
   /** 豆瓣补充信息（性别 / 生日 / 出生地等，绑定成功才有） */
   douban_info?: string[]
 }

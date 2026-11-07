@@ -48,14 +48,15 @@
     "name": "短剧演员订阅",
     "description": "跟着喜欢的演员追短剧（只做发现，不下载不整理）：演员与作品数据唯一来源是短剧百科数据源（ShortDramaBaikeScraper，按插件 ID 精确获取其模块方法），关注演员后定时刷新作品快照、发现新作品自动推送通知；点「订阅」直接调起宿主订阅系统（自动携带季/集信息），搜索、下载、整理全部由宿主负责。演员档案可看豆瓣短评/影评，「改编自」可查看原著详情页。侧栏在「订阅」分组里提供一个「短剧」入口，与 电影订阅 / 电视剧订阅 同形。",
     "labels": "订阅,短剧,演员",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/ShortDramaActorSubscribe.png",
     "author": "m215owen",
     "level": 1,
     "release": true,
     "system_version": ">=3.0.0",
     "history": {
-      "v1.0.0": "首次发布：配置演员（在短剧百科数据源内按名查找并只认同名精确命中，也可直接填百科演员 ID）→ 定时取回该演员的全部作品并落快照（12 小时全量刷新 + 20 分钟失败重试，逐演员增量落盘，防重载丢进度）→ 作品以与「探索」页同形的海报墙展示，新作品自动标「新」并推送通知→ 点「订阅」调起宿主系统订阅对话框（自动携带季/起始集/总集数，避免宿主重识别失败），下载与整理全交宿主；演员档案聚合简介与作品履历，支持豆瓣短评/影评展示与「改编自」原著详情页。侧栏在「订阅」分组里提供一个「短剧」入口，与 电影订阅 / 电视剧订阅 同形（同组、同权限、同族图标）。"
+      "v1.0.0": "首次发布：配置演员（在短剧百科数据源内按名查找并只认同名精确命中，也可直接填百科演员 ID）→ 定时取回该演员的全部作品并落快照（12 小时全量刷新 + 20 分钟失败重试，逐演员增量落盘，防重载丢进度）→ 作品以与「探索」页同形的海报墙展示，新作品自动标「新」并推送通知→ 点「订阅」调起宿主系统订阅对话框（自动携带季/起始集/总集数，避免宿主重识别失败），下载与整理全交宿主；演员档案聚合简介与作品履历，支持豆瓣短评/影评展示与「改编自」原著详情页。侧栏在「订阅」分组里提供一个「短剧」入口，与 电影订阅 / 电视剧订阅 同形（同组、同权限、同族图标）。",
+      "v1.0.1": "换站自动迁移演员 ID：同一插件且站点一致才算同一身份，换站时清掉旧号、按名字到当前站重检索（重检索结果按当前站过滤，避免从本地 ID 库里把刚清掉的旧号取回），快照落 site、到期判定加站点门，基线与 first_seen 只在同站继承；站点一律以 baike_id 前缀为硬事实，落盘 site 只作兜底。net 站全站没有「新剧」角标数据 → 改为按首播日期自算（0~7 天内算新剧，未来/缺日期不标，org 真角标优先不重复），全部收口 state_badges 一个漏斗。数据源新增模块级清缓存，作品墙加「刷新作品」按钮（POST /refresh?clear_cache=1，先清 djbaike 缓存再强刷）。"
     }
   },
   "SubscribeBatchEditor": {
@@ -79,7 +80,7 @@
     "name": "短剧百科刮削源",
     "description": "把短剧百科（duanjubaike.net）注册为独立媒体来源 djbaike（短剧 / 漫剧 / 原著与人物）：ID 注册表 + 缓存优先的六层按名识别（剧名清洗 → 本地精确 → 站内搜索 → 豆瓣兜底，季号按「第N季」独立词条精确命中），并提供 metadata_nfo / metadata_img 刮削出口（剧级 tvshow.nfo + poster.jpg）；人物与榜单经跨插件模块方法（search_actors / actor_profile / actor_works / list_ranks / rank_medias）供「短剧演员订阅」消费。自带 Vue 管理面板（概览 / ID 库 / 缓存 / 查询，不注册侧栏）。",
     "labels": "媒体数据源,短剧,刮削",
-    "version": "0.1.6",
+    "version": "0.1.8",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/Moviepilot_A.png",
     "author": "m216owen",
     "level": 1,
@@ -87,21 +88,23 @@
     "history": {
       "v0.1.6": "解析正则加固：页面标题/简介/作品卡等处的无界 .*? 全部改为有界量词（保留 re.S 语义），避免畸形页面触发正则回溯拖慢进程；行为与输出不变。",
       "v0.1.5": "P1 详情管线（media_id → 详情页 → MediaInfo，缓存优先、软 404 负缓存、抓页顺带登记）+ P2 六层识别（剧名清洗 / 本地精确 / 站内 /so.html 搜索 / 豆瓣 tv_search·tv_detail 兜底，recognize_media 收敛唯一一条）+ P2.5 Vue 管理面板（概览 / ID 库 / 缓存 / 查询四区，不注册侧栏）+ 刮削出口 metadata_nfo / metadata_img（剧级 tvshow.nfo + poster.jpg，复用宿主 MediaScraperHelper）+ 季号识别（站点一季一条独立词条，按「{基名}第N季」精确命中）+ 人物档案与豆瓣融合（演员作品去重合并、豆瓣独有作品登记自映射）+ 跨插件契约（search_actors / actor_profile / actor_works / list_people / list_ranks / rank_medias，供短剧演员订阅按插件 ID 精确取用）+ 缓存面板（region 检索 / 单条删除 / 统一 TTL 读宿主 META_CACHE_EXPIRE）+ /status 缓存分布统计（by_region）。前端产物目录名当缓存键（a<N> 递增），版本号冻结不升。",
-      "v0.1.0": "P0 骨架：插件生命周期、来源声明、baike 注册表建表与仓储、缓存门面、media_id 解析/反推、/status、/explore 榜单端点、DiscoverSource 注入、配置页榜单多选。"
+      "v0.1.0": "P0 骨架：插件生命周期、来源声明、baike 注册表建表与仓储、缓存门面、media_id 解析/反推、/status、/explore 榜单端点、DiscoverSource 注入、配置页榜单多选。",
+      "v0.1.8": "站点二选一扩展：新增 .org（duanjubaike.org）解析（orgsite / dom / orgadapt / orgident / siteutil），详情与图片按 media_id 前缀路由（drama:/actor: = org，其余 = net），换站不废已有身份；人物与作品缓存改双表——baike 存站点 id 作缓存键，baike_ext 按名存 douban/tmdb 外部 id，缓存内不再存外部 id 副本（读取时就地清洗，返回前按名现查）；新增 /cache/clear 与模块级 clear_cache，供其它插件一键清缓存后强刷；豆瓣兜底识别与标题清洗加固。"
     }
   },
   "ShortDramaBaikeOrganizer": {
     "name": "短剧百科整理",
     "description": "扫描待整理短剧目录（目录名即剧名），用短剧百科数据源（djbaike / ShortDramaBaikeScraper）识别媒体身份，由插件自包含直接搬运入库（移动/复制/硬链/软链，完全不走宿主整理链与整理队列），命名沿用宿主「短剧处理器」TV 惯例（{剧名} ({年})/Season 1/{剧名} - S01E{NN}.ext）；整理历史统一写入系统 TransferHistoryOper。扫描与整理都是后台任务（面板带进度条），整理结果可在「整理详情」窗口逐部查看；已整理的记录可指定身份 / 目标库 / 搬运方式重新整理（动手前有预演）。刮削同样自包含：直取 djbaike 数据源的 metadata_nfo / metadata_img 素材，自己写 tvshow.nfo 与海报到剧目录，不进宿主刮削链。",
     "labels": "文件整理,短剧,刮削",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/ShortDramaBaikeOrganizer.png",
     "author": "m215owen",
     "level": 1,
     "release": false,
     "system_version": ">=3.1.5",
     "history": {
-      "v0.1.5": "重写：识别切到短剧百科数据源 djbaike（ShortDramaBaikeScraper）；整理完全自包含（shutil/os.link/os.symlink 直接搬运，不走 TransferChain 与宿主整理队列）；整理历史读写改走系统 TransferHistoryOper；目录名即剧名；命名沿用宿主短剧处理器 TV 惯例。｜扫描与整理改为后台任务（同步跑会被反代掐断 → 前端只报 502）；新增「整理详情」窗口（本次整理逐部结果 或 单剧文件级整理记录）；已整理记录支持指定身份 / 目标库 / 搬运方式重新整理，执行前可预演将搬哪些文件；修复 TransferHistoryFilter 非空 tuple 契约（传 None 直接校验失败）导致「已整理」统计与整理详情恒为 0 的问题。｜刮削改为自包含（与「整理自包含」对齐）：不再发 MetadataScrape 事件、不进宿主刮削链，直调数据源 metadata_nfo / metadata_img 取素材后自己落盘。绕开宿主链的三点实测理由：广播事件异步派发（返回时产物还没落盘，只能轮询等）；file_list 语义强耦合（为空拿不到 tvshow.nfo/poster，非空又逐文件刮削，为拿 2 个想要的文件得先塞 1 个无关文件骗分支）；djbaike 只做剧级，逐文件刮削注定产出 262 字节空壳 NFO。效果：分集空壳 NFO 42→0，单剧刮削 42s→0.3s，整理+刮削 77 集 1.4s，产物只有 tvshow.nfo + poster.jpg。"
+      "v0.1.5": "重写：识别切到短剧百科数据源 djbaike（ShortDramaBaikeScraper）；整理完全自包含（shutil/os.link/os.symlink 直接搬运，不走 TransferChain 与宿主整理队列）；整理历史读写改走系统 TransferHistoryOper；目录名即剧名；命名沿用宿主短剧处理器 TV 惯例。｜扫描与整理改为后台任务（同步跑会被反代掐断 → 前端只报 502）；新增「整理详情」窗口（本次整理逐部结果 或 单剧文件级整理记录）；已整理记录支持指定身份 / 目标库 / 搬运方式重新整理，执行前可预演将搬哪些文件；修复 TransferHistoryFilter 非空 tuple 契约（传 None 直接校验失败）导致「已整理」统计与整理详情恒为 0 的问题。｜刮削改为自包含（与「整理自包含」对齐）：不再发 MetadataScrape 事件、不进宿主刮削链，直调数据源 metadata_nfo / metadata_img 取素材后自己落盘。绕开宿主链的三点实测理由：广播事件异步派发（返回时产物还没落盘，只能轮询等）；file_list 语义强耦合（为空拿不到 tvshow.nfo/poster，非空又逐文件刮削，为拿 2 个想要的文件得先塞 1 个无关文件骗分支）；djbaike 只做剧级，逐文件刮削注定产出 262 字节空壳 NFO。效果：分集空壳 NFO 42→0，单剧刮削 42s→0.3s，整理+刮削 77 集 1.4s，产物只有 tvshow.nfo + poster.jpg。",
+      "v0.1.6": "新增反向联动（syncdel）：Emby 删除媒体（library.deleted）后按固定链路级联清理——① 删插件整理历史 ② 删宿主 TransferHistory 对应行 ③ 取消短剧演员订阅里的作品订阅 ④ 可选删种子；白名单是插件自己的整理记录（只处理本插件整理过的），匹配只靠路径与剧名，每步独立容错。整理历史与 store 读写加固。"
     }
   },
   "OpenWrtBackup": {
@@ -147,14 +150,15 @@
     "name": "豆瓣书影音档案-修复版",
     "description": "将剧集电影的在看、看完状态同步到豆瓣书影音档案。修改自 honue 的 DouBanWatching：适配 MoviePilot v3.1.x 媒体识别接口（改用 media_source + media_id 身份，原版每次播放事件都抛 TypeError 而完全无法同步），并对缺少季/集编号的事件做容错。插件 ID 已改为 DouBanWatchingFix 以免与原版冲突，首次运行会从原版继承配置与已同步记录；安装后请停用原版，避免重复同步。",
     "labels": "豆瓣,媒体库",
-    "version": "1.9.7",
+    "version": "1.9.8",
     "icon": "https://raw.githubusercontent.com/m215owen/MoviePilot-Plugins/main/icons/DouBanWatchingFix.png",
     "author": "honue",
     "level": 1,
     "release": true,
     "system_version": ">=3.0.0",
     "history": {
-      "v1.9.7": "修改版首发：① recognize_media 改用 media_source + media_id 成对身份（v3.1.x 已移除 tmdbid 关键字）；② 事件侧改读 WebhookEventInfo.media_source / media_id，不再依赖已删除的 tmdb_id；③ 媒体服务器未上报季/集编号、或标题缺少 SxxExx 时打印告警并跳过，不再 int(None) / index 崩溃；④ 插件ID 改为 DouBanWatchingFix、名称改为「豆瓣书影音档案-修复版」，首次运行自动继承原版配置与 data/wait 记录。"
+      "v1.9.7": "修改版首发：① recognize_media 改用 media_source + media_id 成对身份（v3.1.x 已移除 tmdbid 关键字）；② 事件侧改读 WebhookEventInfo.media_source / media_id，不再依赖已删除的 tmdb_id；③ 媒体服务器未上报季/集编号、或标题缺少 SxxExx 时打印告警并跳过，不再 int(None) / index 崩溃；④ 插件ID 改为 DouBanWatchingFix、名称改为「豆瓣书影音档案-修复版」，首次运行自动继承原版配置与 data/wait 记录。",
+      "v1.9.8": "get_subject_id 异常路径下可能返回 None，统一兜底成空结果，避免同步链抛 TypeError；其余行为不变。"
     }
   },
   "VuePTMonitor": {

@@ -31,7 +31,7 @@ const sharedVue = { requiredVersion: false, generate: false, singleton: true } a
  * 失效，不需要用户手动注销 SW。后端 `get_render_mode()` 会扫描 `dist/` 下序号最大且
  * 含 `remoteEntry.js` 的 `a<N>` 目录，Python 侧不用改。
  */
-const ASSETS_DIR = 'a51'
+const ASSETS_DIR = 'a100'
 
 /**
  * 联邦插件选项。

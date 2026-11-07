@@ -46,9 +46,6 @@ export const API_BASE = `plugin/${PLUGIN_ID}`
 /** 宿主「下载客户端」列表接口（订阅下载器的选项来源） */
 export const HOST_DOWNLOAD_CLIENTS = 'download/clients'
 
-/** 宿主订阅接口：配置页指定了下载器时，作品墙直接提交（不弹系统订阅对话框） */
-const HOST_SUBSCRIBE = 'subscribe/'
-
 /** 最近一次可用的宿主 axios 实例 */
 let lastApi: PluginApi | null = null
 
@@ -115,17 +112,44 @@ export function retryProxyImage(url: string, attempt: number): string {
 }
 
 /**
- * 把图片地址转换为宿主图片代理地址。
+ * 走宿主 `system/img` 代理的地址（不管域名，强制走代理）。
  *
- * 短剧百科的图片 CDN 有防盗链与 Referer 校验，浏览器无法伪造，必须经宿主
- * `system/img` 代理取图。契约与宿主前端一致：`system/img/0?imgurl=<urlencoded>&cache=true`。
+ * 契约与宿主前端一致：`system/img/0?imgurl=<urlencoded>&cache=true`
+ * （`cache=true` 时宿主会落磁盘，第二次起不再回源）。
+ */
+export function proxiedImage(url?: string | null): string {
+  const raw = String(url || '').trim()
+  if (!raw) return ''
+  if (!/^https?:\/\//i.test(raw)) return raw
+  if (raw.includes('/system/img/')) return raw
+  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`
+}
+
+/**
+ * 可以直接连的图床。
+ *
+ * 2026-11-04 曾把 `cdn.duanjubaike.org` 放进来做「直连优先」（Cloudflare 一年强缓存，
+ * 直连省一遍代理往返），**次日实测翻车**：用户浏览器直连该 CDN 失败（NAS 侧 curl 正常，
+ * 浏览器侧过不去 —— 大概率是上网分流规则没放行），org 来源的作品海报与演员头像整墙
+ * 空白，且卡片重试阶梯退回代理 URL 时可能撞上浏览器 7 天强缓存的旧坏响应，雪上加霜。
+ * 现在清空：**所有外域图统一走宿主 `system/img` 代理**（服务端直连 CDN 是通的，
+ * 代理链路今早日志全 200），直连只保留为卡片重试阶梯里的备选链路。
+ */
+const DIRECT_IMAGE_HOSTS: string[] = []
+
+/**
+ * 图片地址 → 实际用的 `src`（一律走宿主代理；`DIRECT_IMAGE_HOSTS` 为空保留机制）。
+ *
+ * 其它域名按老口径经宿主代理（跨域防盗链在那边是真实存在的；服务端直连
+ * 图床没问题，用户浏览器直连不一定通 —— 2026-11-04 的教训）。
  */
 export function proxyImage(url?: string | null): string {
   const raw = String(url || '').trim()
   if (!raw) return ''
   if (!/^https?:\/\//i.test(raw)) return raw
   if (raw.includes('/system/img/')) return raw
-  return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`
+  if (DIRECT_IMAGE_HOSTS.some((host) => raw.includes(`//${host}/`))) return raw
+  return proxiedImage(raw)
 }
 
 /**
@@ -267,88 +291,6 @@ function extractErrorMessage(err: unknown): string {
   return anyErr?.message || '请求失败'
 }
 
-/**
- * 直接向宿主提交订阅（携带订阅偏好）。
- *
- * 系统订阅弹窗没有下载器选项 —— 配置页指定了下载器时走这里，把偏好一并带上。
- * 返回 ``ok`` = 宿主已受理；``message`` 为宿主返回的说明（成功或失败原因）。
- */
-export async function submitSubscribe(
-  props: { api?: PluginApi },
-  work: Pick<
-    WorkItem,
-    'title' | 'year' | 'media_source' | 'media_id' | 'type' | 'episode_count'
-  >,
-  downloader: string,
-  prefs?: { sites?: number[]; savePath?: string; mode?: string },
-): Promise<{ ok: boolean; message: string }> {
-  const api = resolveApi(props)
-  if (!api?.post) return { ok: false, message: '缺少可用的 api 实例' }
-  const isMovie = String(work.type || '') === '电影'
-  const episodes = Math.max(0, Number(work.episode_count || 0))
-  const payload: Record<string, unknown> = {
-    name: work.title,
-    year: work.year || '',
-    media_source: work.media_source,
-    media_id: work.media_id,
-    type: work.type || '电视剧',
-  }
-  // 电视剧必须带季集信息（宿主 `subscribe/create.py`：`total_episode` 为空会重新识别
-  // 媒体，而插件来源识别结果没有 seasons ⇒ 直接失败「媒体信息中没有季集信息」）。
-  if (!isMovie) {
-    payload.season = 1
-    payload.start_episode = 1
-    payload.total_episode = episodes || 1
-  }
-  if (downloader) payload.downloader = downloader
-  // 订阅站点（只在勾选的站搜；宿主订阅接口的 `sites` 是 int 列表）
-  if (prefs?.sites?.length) payload.sites = prefs.sites
-  // 订阅下载目录（宿主 `/download/paths` 的 save_path）
-  const savePath = String(prefs?.savePath || '').trim()
-  if (savePath) payload.save_path = savePath
-  // 订阅类型：宿主 `best_version`，只在显式配置时下发（follow = 交给宿主订阅设置）
-  if (prefs?.mode === 'normal') payload.best_version = 0
-  else if (prefs?.mode === 'best') payload.best_version = 1
-  try {
-    const res = unwrap<{ success?: boolean; message?: string }>(
-      await api.post(HOST_SUBSCRIBE, payload, { ...SILENT }),
-    )
-    if (res && res.success === false) {
-      return { ok: false, message: String(res.message || '订阅失败') }
-    }
-    return { ok: true, message: String(res?.message || `已提交订阅：${work.title}`) }
-  } catch (err) {
-    return { ok: false, message: extractErrorMessage(err) }
-  }
-}
-
-/**
- * 取消一部剧的订阅（**按身份删**，与系统详情页 `removeSubscribe` 同一个接口）。
- *
- * `DELETE subscribe/media/{media_id}?media_source=&season=` —— 不需要先查订阅 id，
- * 身份就是我们手里的 `media_source` + 复合 `media_id`。系统的取消流程走的也是它
- * （`useMediaSubscribe.ts: removeSubscribe` → `api.delete('subscribe/media/…')`），
- * 所以从插件里取消掉的订阅，与在系统详情页取消是同一件事。
- *
- * 不存在（已取消 / 从没订阅过）时宿主同样返回成功（幂等），调用方按成功处理。
- */
-export async function cancelSubscribe(
-  props: { api?: PluginApi },
-  info: { mediaSource: string; mediaId: string; season?: number },
-): Promise<void> {
-  const api = resolveApi(props)
-  const mediaId = String(info.mediaId || '').trim()
-  const mediaSource = String(info.mediaSource || '').trim()
-  if (!mediaId || !mediaSource) throw new Error('缺少媒体身份，无法取消订阅')
-  if (!api?.delete) throw new Error('当前宿主未提供删除接口，请到系统订阅页取消')
-  const params: Record<string, unknown> = { media_source: mediaSource }
-  if (Number(info.season || 0) > 0) params.season = Number(info.season)
-  await api.delete(`subscribe/media/${encodeURIComponent(mediaId)}`, {
-    ...SILENT,
-    params,
-  })
-}
-
 /** 一条订阅（作品墙左侧「订阅作品」面板的行）。 */
 export interface SubscriptionRow {
   media_id: string
@@ -371,45 +313,123 @@ export interface SubscriptionRow {
   sites?: string
   downloader?: string
   save_path?: string
+  /** 身份属于哪一站（org / net；空 = 融合身份或数据源没给站点画像） */
+  site?: string
+  /** 旧站点身份（数据源换过站、这条还没换过来）：前端拿标题做「同名桥」 */
+  stale?: boolean
+  /** 这一行是否已订阅（能出现在订阅清单里就是 true；与作品行同名字段对齐） */
+  subscribed?: boolean
 }
 
 /**
  * 拉当前订阅清单（作品墙左侧「订阅作品」面板的数据源）。
  *
- * 与后端 ``/subscriptions`` 同口径：插件订阅清单 ∪ 宿主 ``djbaike`` 未暂停订阅。
- * 失败返回空列表（面板不出就行，不打扰作品墙）；``engine`` 一并带回 —— 面板的
- * 显隐判断用它（比等配置页加载更快）。
- */
-export async function fetchSubscriptions(
+ * 与后端 ``/subscriptions`` 同口径：插件订阅清单 ∪ 宿主 未暂停订阅。
+ * 失败返回空列表（面板不出就行，不打扰作品墙）。``site`` 是数据源当前站点，
+ * ``stale_count`` 是「还挂在别的站点身份上」的条数（换过站还没换过来的）。
+ */export async function fetchSubscriptions(
   props: { api?: PluginApi },
 ): Promise<{
-  engine: string
   items: SubscriptionRow[]
+  site: string
+  stale_count: number
   default_sites: string
   default_downloader: string
   default_save_path: string
+  /**
+   * 这次请求**成功与否**（``false`` = 网络/宿主/解析失败，``items`` 只是空壳）。
+   *
+   * 必须与「真的 0 条订阅」区分开：调用方拿空壳去覆盖本地订阅集合，就会把整面墙
+   * 已订阅的卡片刷成「未订阅」（2026-11-02 真机反馈）。
+   */
+  ok: boolean
 }> {
-  const api = resolveApi(props)
-  if (!api?.get) {
-    return { engine: '', items: [], default_sites: '', default_downloader: '', default_save_path: '' }
+  const empty = {
+    items: [] as SubscriptionRow[],
+    site: '',
+    stale_count: 0,
+    default_sites: '',
+    default_downloader: '',
+    default_save_path: '',
+    ok: false,
   }
+  const api = resolveApi(props)
+  if (!api?.get) return empty
   try {
     const data = readData<{
-      engine?: string
       items?: SubscriptionRow[]
+      site?: string
+      stale_count?: number
       default_sites?: string
       default_downloader?: string
       default_save_path?: string
     }>(await api.get(`${API_BASE}/subscriptions`, { ...SILENT }))
     return {
-      engine: String(data?.engine || ''),
       items: Array.isArray(data?.items) ? data.items : [],
+      site: String(data?.site || ''),
+      stale_count: Number(data?.stale_count || 0),
       default_sites: String(data?.default_sites || ''),
       default_downloader: String(data?.default_downloader || ''),
       default_save_path: String(data?.default_save_path || ''),
+      ok: true,
     }
   } catch {
-    return { engine: '', items: [], default_sites: '', default_downloader: '', default_save_path: '' }
+    return empty
+  }
+}
+
+/** 订阅身份的轻量快照（``GET /subscribed_ids``） */
+export interface SubscribedIdsPayload {
+  /** 订阅清单里的全部身份（当前站 + 别的站旧身份） */
+  ids: string[]
+  /** 数据源当前站点（空 = 没有站点画像） */
+  site: string
+  /** 「身份属于别的站点」那些订阅的剧名（换过站：ID 对不上、名字对得上） */
+  stale_titles: string[]
+  count: number
+  /** 已关注演员的身份（`actor:12` 这种），搜索结果里的演员卡据此点亮红心 */
+  actor_ids: string[]
+}
+
+/**
+ * 拉订阅身份的**轻量快照** —— 作品卡判「已订阅 / 未订阅」用。
+ *
+ * 为什么不复用 ``fetchSubscriptions``：那份是完整订阅清单（含台账、在库判定、
+ * 上百条 → 上百 KB）。作品卡只需要一串 ID，为它拉全量，一旦那次请求失败或
+ * 解析失败就会**静默**变成空集合，整屏「已订阅」全被画成「未订阅」（2026-11-02
+ * 真机反馈）。这里只要 ID + 换站前的同名桥。
+ *
+ * 失败返回空快照（调用方退回列表行自带的 ``subscribed`` 字段）。
+ */
+export async function fetchSubscribedIds(
+  props: { api?: PluginApi },
+): Promise<SubscribedIdsPayload> {
+  const empty: SubscribedIdsPayload = {
+    ids: [],
+    site: '',
+    stale_titles: [],
+    count: 0,
+    actor_ids: [],
+  }
+  const api = resolveApi(props)
+  if (!api?.get) return empty
+  try {
+    const data = readData<Partial<SubscribedIdsPayload>>(
+      await api.get(`${API_BASE}/subscribed_ids`, { ...SILENT }),
+    )
+    return {
+      ids: Array.isArray(data?.ids) ? data.ids.map((item) => String(item || '')) : [],
+      site: String(data?.site || ''),
+      stale_titles: Array.isArray(data?.stale_titles)
+        ? data.stale_titles.map((item) => String(item || ''))
+        : [],
+      count: Number(data?.count || 0),
+      actor_ids: Array.isArray(data?.actor_ids)
+        ? data.actor_ids.map((item) => String(item || ''))
+        : [],
+    }
+  } catch {
+    return empty
   }
 }
 
@@ -417,9 +437,8 @@ export async function fetchSubscriptions(
 /**
  * 订阅一部作品（**插件统一入口**）。
  *
- * 引擎 = ``self``：记进插件订阅清单（不进宿主订阅系统），等订阅搜索自动下载；
- * 引擎 = ``host``：后端转交宿主订阅链（与旧直连行为一致）。返回宿主风格
- * ``{ success, message }``，调用方照实提示。
+ * 只有一条链路：记进**插件订阅清单**，等订阅搜索自动下载（宿主订阅 2026-11-02
+ * 起完全去除）。返回宿主风格 ``{ success, message }``，调用方照实提示。
  */
 export async function pluginSubscribe(
   props: { api?: PluginApi },
@@ -450,15 +469,19 @@ export async function pluginSubscribe(
   )
 }
 
-/** 取消一部作品的订阅（插件订阅清单 + 宿主 ``djbaike`` 订阅一起清，后端幂等）。 */
+/** 取消一部作品的订阅（插件订阅清单 + 宿主 订阅一起清，后端幂等）。 */
 export async function pluginUnsubscribe(
   props: { api?: PluginApi },
   mediaId: string,
+  title = '',
 ): Promise<{ success?: boolean; message?: string }> {
   const api = resolveApi(props)
   if (!api?.post) throw new Error('缺少可用的 api 实例')
+  const body: Record<string, string> = { media_id: String(mediaId || '') }
+  // title 只在换过站时有意义：卡上是新身份、清单里是旧身份，后端按同名找那条旧记录
+  if (title) body.title = String(title)
   return unwrap<{ success?: boolean; message?: string }>(
-    await api.post(`${API_BASE}/unsubscribe`, { media_id: String(mediaId || '') }, { ...SILENT }),
+    await api.post(`${API_BASE}/unsubscribe`, body, { ...SILENT }),
   )
 }
 
@@ -652,6 +675,9 @@ function normalizeWork(raw: any): WorkItem {
     kind: String(raw?.kind || ''),
     year: String(raw?.year || ''),
     release_date: String(raw?.release_date || ''),
+    // 状态角标（爆火 / 新剧 / 完结 / 预约…）：后端已经给了就直接透传，
+    // 旧快照（这个字段还没有时）统一补空数组，卡片据此不渲染任何标签
+    badges: Array.isArray(raw?.badges) ? raw.badges.filter((item: unknown) => !!item) : [],
   }
 }
 
@@ -677,6 +703,7 @@ export async function fetchWorks(
   if (params.studio) query.set('studio', params.studio)
   if (params.platform) query.set('platform', params.platform)
   if (params.sort) query.set('sort', params.sort)
+  if (params.only_new) query.set('only_new', '1')
   if (params.only_not_in_library) query.set('only_not_in_library', '1')
   if (params.only_not_subscribed) query.set('only_not_subscribed', '1')
   if (params.keyword) query.set('keyword', params.keyword)
@@ -695,7 +722,6 @@ export async function fetchWorks(
     page_size: Number(payload?.page_size || params.page_size || 60),
     has_more: Boolean(payload?.has_more),
     sort: String(payload?.sort || params.sort || 'date'),
-    new_window_days: payload?.new_window_days ?? 7,
     summary: payload?.summary ?? {
       total: 0,
       new: 0,
@@ -703,6 +729,44 @@ export async function fetchWorks(
       in_library: 0,
     },
   }
+}
+
+/**
+ * `POST /works/refresh_library`：清空后端在库判定缓存，并让宿主同步一次媒体库。
+ *
+ * 在库结论带 600 秒 TTL，刚入库的剧在缓存过期前一直显示「未入库」；而宿主的本地库表
+ * 只有 6 小时一次的同步在灌，刚入库的剧表里压根没有 —— 光清缓存重判也是「未入库」。
+ * 所以后端顺手踢一次宿主同步、几十秒后再清一遍缓存。把后端的提示原样返回给调用方，
+ * 让按钮的 toast 说清楚「正在同步、稍等」。
+ */
+export async function refreshLibraryStatus(props: { api?: PluginApi }): Promise<string> {
+  const api = resolveApi(props)
+  if (!api?.post) throw new Error('缺少可用的 api 实例')
+  const response = await api.post(`${API_BASE}/works/refresh_library`, {}, { ...SILENT })
+  readData(response)
+  const message = (unwrap<any>(response) as { message?: unknown } | null)?.message
+  return typeof message === 'string' ? message : ''
+}
+
+/**
+ * `POST /refresh`：立即刷新全部演员的作品快照。
+ *
+ * `clearCache` = 顺手把**数据源的缓存**先清掉：快照刷新走数据源的 get_person，
+ * 那层带 24h 统一缓存 —— 不清的话 force 刷新命中的还是旧行（2026-11-04 实证：
+ * 数据源作品卡加了角标字段后，只刷快照墙上死活不显示）。全量强刷 100+ 位演员
+ * 要几分钟，timeout 给足 10 分钟。
+ */
+export async function refreshWorks(props: { api?: PluginApi }): Promise<string> {
+  const api = resolveApi(props)
+  if (!api?.post) throw new Error('缺少可用的 api 实例')
+  const response = await api.post(
+    `${API_BASE}/refresh?clear_cache=1`,
+    {},
+    { ...SILENT, timeout: 600_000 },
+  )
+  readData(response)
+  const message = (unwrap<any>(response) as { message?: unknown } | null)?.message
+  return typeof message === 'string' ? message : ''
 }
 
 /** 插件状态（演员数 / 作品数 / 新作品数 / 最近刷新） */
@@ -762,6 +826,8 @@ function normalizeSearchWork(raw: any, index: number): WorkItem {
     first_seen: '',
     is_new: false,
     overview: String(raw?.overview || ''),
+    // 站点搜索结果卡同样带角标（爆火 / 新剧）：有就印，没有就不印
+    badges: Array.isArray(raw?.badges) ? raw.badges.filter((item: unknown) => !!item) : [],
   })
 }
 
@@ -794,6 +860,13 @@ export interface SiteLookupResult {
   actors: ActorCandidate[]
   /** `site` = 站点命中 / `library` = 站点 0 条、退回本地库 / 空串 = 不知道 */
   source: string
+  /**
+   * 订阅身份的轻量快照（随检索一并取回）：命中的作品行已经就地带上
+   * `subscribed = true`，调用方再把 `ids` / `stale_titles` 并进自己的集合，
+   * 卡片后续刷新也不会退回「未订阅」。
+   */
+  subscribed_ids?: string[]
+  stale_titles?: string[]
 }
 
 /**
@@ -819,10 +892,10 @@ function normalizeLookupWork(raw: any, index: number): WorkItem {
     genres: (Array.isArray(raw?.genres) ? raw.genres : [])
       .map((item: any) => String(item?.name ?? item ?? '').trim())
       .filter(Boolean),
-    heat: 0,
-    play_count: 0,
+    heat: Number(raw?.heat || 0),
+    play_count: Number(raw?.play_count || 0),
     studio: '',
-    platform: '',
+    platform: String(raw?.platform || ''),
     kind: '',
     release_date: release,
     actor: '',
@@ -832,7 +905,7 @@ function normalizeLookupWork(raw: any, index: number): WorkItem {
   })
 }
 
-/** 检索返回的演员行 → 演员卡（换源后 MediaInfo 只带身份 + 海报，其余字段留空） */
+/** 检索返回的演员行 → 演员卡（站内检索自带头像 / 作品数 / 职业 / 性别，直接透传） */
 function normalizeLookupActor(raw: any): ActorCandidate {
   const mediaId = String(raw?.media_id || raw?.actor_id || '')
   return {
@@ -842,9 +915,9 @@ function normalizeLookupActor(raw: any): ActorCandidate {
     // 站内搜索的结果未必与输入完全同名（可能是同名不同人），交给卡片让用户判断
     exact: false,
     profile: String(raw?.poster_path || raw?.poster || '').trim() || undefined,
-    works_count: 0,
-    job_title: undefined,
-    gender: undefined,
+    works_count: Number(raw?.works_count || 0),
+    job_title: String(raw?.job_title || '').trim() || undefined,
+    gender: String(raw?.gender || '').trim() || undefined,
     nationality: undefined,
     bio: undefined,
     followers: 0,
@@ -861,9 +934,10 @@ function normalizeLookupActor(raw: any): ActorCandidate {
  * 是它面板里「检索」用的那一条 —— 站点优先、库兜底，同名多季会列全。用户要的就是
  * 「和那边搜出来一样」，所以只用它；它不可用（没装 / 未启用 / 旧版本）时调用方退回老路。
  *
- * 2026-10-22 换源：新 `/lookup` 回的是**混排的 MediaInfo 列表**（作品 / 演员 /
- * 原著 / 豆瓣条目在一起），这里按 media_id 前缀分流 —— 只收**百科剧集**（duanju /
- * manju / hema / huolong）与**百科人物**（yanyuan / daoyan / bianju）；原著与豆瓣
+ * 2026-11-03 换源：ShortDramaNetSource **完全废弃**，改走 ShortDramaBaikeScraper。
+ * 它的 `/lookup?name=` 回的是**一个 MediaInfo 扁平列表**（没有 works / actors 分块），
+ * 所以按 `media_id` 前缀自己分拣 —— 只收**百科剧集**（drama / duanju / manju /
+ * hema / huolong）与**百科人物**（actor / yanyuan / daoyan / bianju）；原著与豆瓣
  * 条目不是本插件的面板身份（号段 / 体系不同），丢弃。
  */
 export async function lookupSite(
@@ -874,26 +948,60 @@ export async function lookupSite(
   if (!api?.get) throw new Error('缺少可用的 api 实例')
   const text = String(keyword || '').trim()
   if (!text) return { works: [], actors: [], source: '' }
-  const payload = unwrap<any>(
-    await api.get(
-      `plugin/ShortDramaBaikeScraper/lookup?name=${encodeURIComponent(text)}&remote=1`,
-      { ...SILENT, timeout: 60_000 },
-    ),
-  )
-  const data = payload?.data
-  const rows = Array.isArray(data) ? data : []
+  // 检索与订阅快照**并行**：多一次往返不值得，订阅状态也等不起
+  const [payload, subs] = await Promise.all([
+    api
+      .get(
+        `plugin/ShortDramaBaikeScraper/lookup?name=${encodeURIComponent(text)}&remote=1`,
+        {
+          ...SILENT,
+          timeout: 60_000,
+        },
+      )
+      .then((response: any) => unwrap<any>(response)),
+    fetchSubscribedIds(props),
+  ])
+  const rows = Array.isArray(payload?.data) ? payload.data : []
   const works: WorkItem[] = []
   const actors: ActorCandidate[] = []
   for (const raw of rows) {
     const mediaId = String(raw?.media_id || '')
-    const entity = mediaId.split(':')[0] || ''
-    if (['duanju', 'manju', 'hema', 'huolong'].includes(entity)) {
+    const entity = mediaId.split(':')[0].toLowerCase()
+    if (['drama', 'duanju', 'manju', 'hema', 'huolong'].includes(entity)) {
       works.push(normalizeLookupWork(raw, works.length))
-    } else if (['yanyuan', 'daoyan', 'bianju'].includes(entity)) {
+    } else if (['actor', 'yanyuan', 'daoyan', 'bianju'].includes(entity)) {
       actors.push(normalizeLookupActor(raw))
     }
   }
-  return { works, actors, source: 'djbaike' }
+  // 订阅状态：搜索结果的作品行**不经本插件后端**（直连数据源 /lookup），
+  // 所以列表行上不会有后端标的 `subscribed`。这里补一次轻量快照，
+  // 命中就地打标 —— 不能只靠父组件的订阅清单（那份上百 KB，一旦失败/解析
+  // 失败会静默变空集合，整屏已订阅被画成未订阅，2026-11-02 真机反馈）。
+  if (subs.ids.length) {
+    const idSet = new Set(subs.ids)
+    for (const work of works) {
+      if (idSet.has(String(work.media_id || ''))) work.subscribed = true
+    }
+  }
+  // 演员卡同理：关注名单也是**本插件**的数据，检索结果不经过它，得就地打标，
+  // 否则搜索回来的演员卡永远是空心（2026-11-02 真机反馈）。
+  if (subs.actor_ids.length) {
+    const actorSet = new Set(subs.actor_ids)
+    for (const actor of actors) {
+      if (actorSet.has(String(actor.actor_id || actor.media_id || ''))) {
+        actor.subscribed = true
+      }
+    }
+  }
+  return {
+    works,
+    actors,
+    // 数据源把站点命中与本地库合并返回（`remote=1`），分不出哪条来自哪边 ——
+    // 空串 = 不知道，界面不会错贴「站点无结果」。
+    source: '',
+    subscribed_ids: subs.ids,
+    stale_titles: subs.stale_titles,
+  }
 }
 
 /** 演员增删的返回：``message`` 是给用户看的文案，其余是 data 里的内容 */
@@ -1092,11 +1200,21 @@ export async function subscribeAllActor(
  * 榜单目录（发现页「榜单」chips 用，``GET /ranks``）。
  * 纯静态目录、零网络，失败也返回空目录 + 说明，不当成请求错误。
  */
-export async function fetchRanks(props: { api?: PluginApi }): Promise<RanksPayload> {
+export async function fetchRanks(
+  props: { api?: PluginApi },
+  /**
+   * `true` = 要**全集**（配置页的选项列表用）。
+   *
+   * 默认只返回配置里勾选的项（发现页只该看到勾过的）；配置页则相反 ——
+   * 拿过滤后的目录做选项，被取消的项就再也勾不回来了。
+   */
+  includeAll = false,
+): Promise<RanksPayload> {
   const api = resolveApi(props)
   if (!api?.get) throw new Error('缺少可用的 api 实例')
+  const path = includeAll ? `${API_BASE}/ranks?all=1` : `${API_BASE}/ranks`
   return (
-    readData<RanksPayload>(await api.get(`${API_BASE}/ranks`, { ...SILENT })) || {
+    readData<RanksPayload>(await api.get(path, { ...SILENT })) || {
       ranks: [],
       message: '',
     }
@@ -1165,24 +1283,28 @@ export async function fetchLogs(
  *
  * @param kind ``yanyuan`` 演员 / ``daoyan`` 导演 / ``bianju`` 编剧
  * @param page 从 1 开始的页码
+ * @param gender ``男`` / ``女``；空串 = 全部（站点的男女榜，2026-11-02 用户口径）
  */
 export async function fetchPeople(
   props: { api?: PluginApi },
   kind: string,
   page: number,
+  gender = '',
 ): Promise<PeopleListPayload> {
   const api = resolveApi(props)
   if (!api?.get) throw new Error('缺少可用的 api 实例')
   const query = new URLSearchParams()
   query.set('kind', kind)
   query.set('page', String(page))
+  // 空串不发这个参数 —— 站点「全部」就是不筛（后端也按空串处理）
+  if (gender) query.set('gender', gender)
   return (
     readData<PeopleListPayload>(
       await api.get(`${API_BASE}/people?${query.toString()}`, {
         ...SILENT,
         timeout: 60_000,
       }),
-    ) || { kind, page, has_more: false, message: '', people: [] }
+    ) || { kind, page, gender, has_more: false, message: '', people: [] }
   )
 }
 
@@ -1284,19 +1406,18 @@ function normalizeWorkDetail(raw: any): WorkDetailPayload {
 /**
  * 站点原始记录里的一个**人物**（导演 / 编剧 / 演员通用）。
  *
- * 2026-10-22 换源后来自 ShortDramaBaikeScraper `/lookup` 的 MediaCredit
- * （`url` 是站点人物页地址，人物复合 ID 从地址里抠出来），所以能直接渲染成
- * 演员卡、点了进人物档案页。
+ * 来自数据源 `/recognize` 的 `actors[]`（人物分类全表，`kind` 标分类、
+ * `media_id` 直接给复合身份），所以能直接渲染成演员卡、点了进人物档案页。
  */
 export interface WorkSourcePerson {
   name: string
-  /** 复合身份（`yanyuan:` / `daoyan:` / `bianju:` + 页面 ID）；抠不出来时为空 */
+  /** 复合身份（`actor:` / `yanyuan:` / `daoyan:` / `bianju:` + 页面 ID）；抠不出来时为空 */
   media_id: string
   /** 演员是角色名，导演 / 编剧是职务 */
   role: string
-  /** 站点分类：`yanyuan` / `daoyan` / `bianju` */
+  /** 站点分类：`actor`（.org）或 `yanyuan` / `daoyan` / `bianju`（.net） */
   kind: string
-  /** 头像（站点图床绝对地址） */
+  /** 头像（站点图床 / CDN 绝对地址） */
   profile: string
 }
 
@@ -1312,10 +1433,11 @@ export interface AdaptedWork {
 }
 
 /**
- * 原著信息（ShortDramaBaikeScraper `/novel` 的投影）—— 「原著详情页」的数据源。
+ * 原著信息（数据源 `/recognize` 的 `adapted_from` 投影）—— 「原著详情页」的数据源。
  *
- * 2026-10-22 换源：站点不再在剧集记录里带 `adapted_from`，改由数据源的
- * `/novel` 端点单给（传剧 id 或原著 id 均可；页面没标原著时 `data=null`）。
+ * 2026-11-02 换源：剧集详情直接带 `adapted_from`（原著档案 + 改编作品清单）；
+ * 原著**自己**的页面（`xiaoshuo:<id>`）走数据源 `/catalog/detail` 取档案
+ * （改编作品清单数据源不反查，`works` 为空、该块隐藏）。
  */
 export interface AdaptedInfo {
   title: string
@@ -1340,39 +1462,40 @@ export interface AdaptedInfo {
 /**
  * 作品详情页补的「第二块数据面」：数据源侧的补充信息。
  *
- * 2026-10-22 换源后走 ShortDramaBaikeScraper 的两个公开端点：
- * - `/lookup?media_id=` → MediaInfo：导演（含职务）/ 演员（含角色）/ **豆瓣身份** /
- *   站点详情页地址 —— 其中豆瓣身份是关键：后端 `/works/detail` 经模块方法
- *   `recognize_media` 拿到的是宿主 domain 版 MediaInfo（转换时丢 `douban_id`），
- *   这一份把豆瓣补回来；
- * - `/novel?media_id=` → 原著档案 + 全部改编作品（「改编自」块与原著详情页）。
+ * 2026-11-03 换源后走 ShortDramaBaikeScraper（ShortDramaNetSource 已完全废弃）：
+ * - `/lookup?media_id=` → 宿主 MediaInfo：`actors[]`（演员表，`character` 是角色；
+ *   导演 / 编剧它不单列，两块恒空）、`douban_id`（后端 `/works/detail` 的 domain
+ *   转换会丢，这里补回）、`classification_facts` 里的站点统计；
+ * - `/novel?media_id=` → 原著档案 + 全部改编作品（「改编自」块）。
  *
- * 老源 NetSource `/catalog/detail` 里那些站点独有字段（热度 / 播放量 / 收藏 /
- * 状态 / 全片时长 / 出品方 / 平台 / 编剧）scraper 不再提供，一律留空 / 0，
- * 详情页按空值隐藏对应行。任一端点读不到就静默返回空壳，详情页退回第一块数据。
+ * 统计口径：`heat` / `play_count` / `favorite_count` 是已折算的数字，展示层转回
+ * 「万 / 亿」文案；`status` / `duration` 数据源不给，恒空。
+ *
+ * 出品方 / 平台数据源也不提供，留空，详情页按空值隐藏对应行。
+ * 端点读不到就静默返回空壳，详情页退回第一块数据。
  */
 export interface WorkSourceRecord {
   director: WorkSourcePerson[]
   writer: WorkSourcePerson[]
   cast: WorkSourcePerson[]
   /**
-   * 热度 / 播放量 / 收藏 —— 只留**站点原文**（「380.14万」/「1016万」/「8.86万」）。
+   * 热度 / 播放量 / 收藏 —— 展示文案（「380.14万」/「1016万」/「8.86万」）。
    *
-   * 数据源把三项作为分类事实原样提交；展示就照抄原文，不折算、不做数值兜底
-   * （2026-10-23 用户口径：数值那份用不上）。空串 = 站点没写这一项。
+   * `/recognize` 给的是已折算的数字；这里转回站点口径的「万 / 亿」文案，
+   * 空串 = 站点没写这一项。
    */
   heat_text: string
   play_count_text: string
   favorites_text: string
-  /** 连载状态（`已完结` / `连载中`…；换源后不再提供） */
+  /** 连载状态（`已完结` / `更新至第 N 集`…） */
   status: string
-  /** 全片总时长（分钟）+ 站点原文（换源后不再提供） */
+  /** 单集时长（分钟，换源后不再提供）+ 站点原文（如 `2分30秒`） */
   duration_minutes: number
   duration_text: string
   /** 出品方 / 版权方、播出平台（换源后不再提供） */
   studio: string
   platform: string
-  /** 豆瓣条目 ID + 地址（`/lookup` 带回；补后端 domain 转换丢掉的那份） */
+  /** 豆瓣条目 ID + 地址（`/recognize` 带回；补后端 domain 转换丢掉的那份） */
   douban_id: string
   douban_url: string
   /** 改编自（小说名 / 作者 / 原著页地址；不是改编作品时都为空） */
@@ -1410,12 +1533,16 @@ function toNumber(value: unknown): number {
 }
 
 /**
- * 从数据源 detail_link（`…/yanyuan/info-123.html`）里抠出**人物复合 ID**。
- * `/lookup` 的 MediaCredit 不带 media_id，只带人物页地址 —— 地址形态固定，反推即可。
+ * 从数据源 detail_link 里抠出**人物复合 ID**（三种页面形态都认）：
+ * .net `…/yanyuan/info-123.html`、.net `…/yanyuan/123.html`、
+ * .org `…/[zh-Hans/]actor/123`。`/lookup` 的 MediaCredit 不带 media_id，
+ * 只带人物页地址 —— 地址形态固定，反推即可。
  */
 function personIdFromUrl(url: unknown): string {
-  const hit = String(url || '').match(/\/(yanyuan|daoyan|bianju)\/info-(\d+)\.html/)
-  return hit ? `${hit[1]}:${hit[2]}` : ''
+  const hit = String(url || '').match(
+    /\/(?:zh-[A-Za-z]+\/)?(yanyuan|daoyan|bianju|actor)\/(?:info-)?([A-Za-z0-9][A-Za-z0-9_-]*?)(?:\.html)?(?=$|[/?#])/i,
+  )
+  return hit ? `${hit[1].toLowerCase()}:${hit[2]}` : ''
 }
 
 /** NovelData.words（`32.5 万字`）→ 总字数（解析不了给 0） */
@@ -1428,48 +1555,62 @@ function parseWordCount(text: unknown): number {
   return raw.includes('万') ? Math.round(value * 10000) : Math.round(value)
 }
 
-/** ShortDramaBaikeScraper `/novel` 的 NovelData → 「原著详情页」的 AdaptedInfo */
-function novelToAdaptedInfo(novel: any): AdaptedInfo | null {
-  const title = String(novel?.name || '').trim()
+/** 数值 → 人类可读文案（`3801400` → `380.14万`；与站点「万 / 亿」两档同口径） */
+function compactNum(value: unknown): string {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num) || num <= 0) return ''
+  const trim = (text: string) => text.replace(/\.?0+$/, '')
+  if (num >= 1e8) return `${trim((num / 1e8).toFixed(2))}亿`
+  if (num >= 1e4) return `${trim((num / 1e4).toFixed(2))}万`
+  return String(Math.round(num))
+}
+
+/**
+ * 数据源原著档案（`/novel` 的 `data`）→ 详情页「改编自」块。
+ *
+ * ShortDramaBaikeScraper 的 `NovelData`：`name` / `author` / `words`（字符串
+ * 「32.5 万字」）/ `overview` / `poster` / `detail_url` / `adaptations[]`
+ * （`name` 是剧名，不是 `title`）。字段缺就留空，界面按空值隐藏。
+ */
+function novelDataToAdapted(data: any): AdaptedInfo | null {
+  const title = String(data?.name || '').trim()
   if (!title) return null
   return {
     title,
-    author: String(novel?.author || '').trim(),
-    url: String(novel?.detail_url || '').trim(),
-    poster: String(novel?.poster || '').trim(),
-    media_id: String(novel?.media_id || '').trim(),
-    words: parseWordCount(novel?.words),
+    author: String(data?.author || '').trim(),
+    url: String(data?.detail_url || '').trim(),
+    poster: String(data?.poster || '').trim(),
+    media_id: String(data?.media_id || '').trim(),
+    words: parseWordCount(data?.words),
     genres: [],
-    summary: String(novel?.overview || '').trim(),
-    works: (Array.isArray(novel?.adaptations) ? novel.adaptations : [])
+    summary: String(data?.overview || '').trim(),
+    works: (Array.isArray(data?.adaptations) ? data.adaptations : [])
       .filter((item: any) => String(item?.name || '').trim())
-      .map((item: any) => {
-        const mediaId = String(item.media_id || '').trim()
-        const split = mediaId.split(':')
-        return {
-          media_id: mediaId,
-          title: String(item.name).trim(),
-          url:
-            split[0] && split[1]
-              ? `https://www.duanjubaike.net/${split[0]}/info-${split[1]}.html`
-              : '',
-          poster: String(item.poster || '').trim(),
-          release_date: String(item.date || '').trim(),
-          episodes: toNumber(item.episodes),
-          genres: [],
-        }
-      }),
+      .map((item: any) => ({
+        media_id: String(item.media_id || '').trim(),
+        title: String(item.name).trim(),
+        url: String(item.detail_url || '').trim(),
+        poster: String(item.poster || '').trim(),
+        release_date: String(item.date || '').trim(),
+        episodes: toNumber(item.episodes),
+        genres: [],
+      })),
   }
 }
 
 /**
- * 读数据源侧的**第二块数据面**（导演 / 演员表 + 豆瓣身份 + 改编自）。
+ * 读数据源侧的**第二块数据面**（演员表 + 豆瓣身份 + 改编自 + 站点统计）。
  *
- * 2026-10-22 换源：走 ShortDramaBaikeScraper 的 `/lookup`（MediaInfo：
- * 导演含职务 / 演员含角色 / 豆瓣身份 / 站点详情页地址）+ `/novel`（原著档案 +
- * 全部改编作品）。人物复合 ID 从 detail_link 里反推；scraper 不再提供的
- * 站点字段（热度 / 播放量 / 收藏 / 状态 / 时长 / 出品方 / 平台 / 编剧）留空，
- * 详情页按空值隐藏对应行。任一端点失败静默返回空壳，不影响详情页本身。
+ * 2026-11-03 换源：ShortDramaNetSource **完全废弃**，改走 ShortDramaBaikeScraper
+ * 的 `/lookup?media_id=`（回宿主 MediaInfo：`actors[]` 带角色、`douban_id`、
+ * `classification_facts` 里的站点统计）＋ `/novel?media_id=`（原著档案 + 改编清单）。
+ *
+ * 与旧数据源的差别（拿不到就留空，界面按空值隐藏，不报错）：
+ * * MediaInfo 的 `actors[]` 只有演员表（`character` 是角色），**没有**导演 / 编剧
+ *   分类 —— 那两块恒空；旧数据源能按 `kind` 拆三份，这里拆不出来；
+ * * 统计数字在 `classification_facts`（键 `extensions.djbaike.heat` /
+ *   `.play_count` / `.favorite_count`），不是顶层 `heat` / `play_count`；
+ * * `status` / `duration` 数据源不给，恒空。
  */
 export async function fetchWorkSource(
   props: { api?: PluginApi },
@@ -1478,14 +1619,30 @@ export async function fetchWorkSource(
   const api = resolveApi(props)
   if (!api?.get || !mediaId) return { ...EMPTY_SOURCE }
   try {
-    const payload = unwrap<any>(
-      await api.get(
-        `plugin/ShortDramaBaikeScraper/lookup?media_id=${encodeURIComponent(mediaId)}`,
-        { ...SILENT, timeout: 20_000 },
-      ),
-    )
+    const [payload, novel] = await Promise.all([
+      api
+        .get(
+          `plugin/ShortDramaBaikeScraper/lookup?media_id=${encodeURIComponent(mediaId)}`,
+          { ...SILENT, timeout: 30_000 },
+        )
+        .then((response: any) => unwrap<any>(response)),
+      api
+        .get(`plugin/ShortDramaBaikeScraper/novel?media_id=${encodeURIComponent(mediaId)}`, {
+          ...SILENT,
+          timeout: 30_000,
+        })
+        .then((response: any) => unwrap<any>(response))
+        .catch(() => null),
+    ])
     const info = payload?.data
-    if (!info || typeof info !== 'object') return { ...EMPTY_SOURCE }
+    // `data=null` = 查不到（数据源对未收录 / 人物身份会给 null）
+    if (
+      !info ||
+      typeof info !== 'object' ||
+      !String(info.media_id || info.title || '').trim()
+    ) {
+      return { ...EMPTY_SOURCE }
+    }
     const creditRows = (
       rows: unknown,
       kind: string,
@@ -1495,71 +1652,47 @@ export async function fetchWorkSource(
         .filter((item: any) => String(item?.name || '').trim())
         .map((item: any) => ({
           name: String(item.name).trim(),
-          media_id: personIdFromUrl(item.url),
-          role: String(item.character || item.job || '').trim() || fallbackRole,
+          media_id: String(item.media_id || '').trim() || personIdFromUrl(item.url),
+          role:
+            String(item.role || item.character || '').trim() ||
+            String(item.job || '').trim() ||
+            fallbackRole,
           kind,
-          // 头像：数据源（MediaCredit）给的是宿主形体 ``profile_path``，同样收
-          // ``profile`` / ``poster`` 两种别名 —— 过去这里写死空串，导演/编剧卡
-          // 因此永远只能出人形占位（演员走详情端点那一份，同源缺陷在 2026-10-22 一并修）。
+          // 头像：数据源（MediaCredit / ActorRow）给的是 ``profile_path`` 或
+          // ``poster``，两种别名都收 —— 写死空串会让导演/编剧卡永远人形占位。
           profile: String(
             item.profile_path || item.profile || item.poster || '',
           ).trim(),
         }))
-    const director = creditRows(info.directors, 'daoyan', '导演')
-    // scraper 的详情没有编剧字段（站点详情页不印）—— 留空，页面退回 MediaInfo 那份
-    const writer: WorkSourcePerson[] = []
+    // MediaInfo 的 `actors[]` 只有演员（`character` = 角色）；导演 / 编剧数据源
+    // 不在详情里给，两块恒空。
     const cast = creditRows(info.actors, 'yanyuan', '')
-    // 改编自：页面没标原著时 /novel 的 data=null（静默，改编块不渲染）
-    let adapted: AdaptedInfo | null = null
-    let adaptedTitle = ''
-    let adaptedAuthor = ''
-    let adaptedUrl = ''
-    try {
-      const novelPayload = unwrap<any>(
-        await api.get(
-          `plugin/ShortDramaBaikeScraper/novel?media_id=${encodeURIComponent(mediaId)}`,
-          { ...SILENT, timeout: 20_000 },
-        ),
-      )
-      adapted = novelToAdaptedInfo(novelPayload?.data)
-      if (adapted) {
-        adaptedTitle = adapted.title
-        adaptedAuthor = adapted.author
-        adaptedUrl = adapted.url
-      }
-    } catch {
-      // 原著端点不可用 / 没标原著：改编块不渲染，不影响详情页
-    }
+    const director: WorkSourcePerson[] = []
+    const writer: WorkSourcePerson[] = []
+    const adapted = novelDataToAdapted(novel?.data)
     const doubanId = String(info.douban_id || '').trim()
-    // ── 站内统计（2026-10-23 数据源补齐后接上）──
-    // 热度走宿主 ``MediaInfo.popularity``（站点「红果平台热度」）；播放 / 收藏宿主
-    // 没有专用列，数据源放在分类事实 ``extensions.djbaike.*`` 里（值是已折算的数字）。
-    const facts = (info.classification_facts || {}) as Record<string, unknown>
-    /**
-     * 站点统计的**原文**（「380.14万」/「1016万」/「8.86万」）：数据源把热度 /
-     * 播放 / 收藏作为分类事实原样提交（宿主 MediaInfo 没有这三列）。
-     * 展示照抄原文，不做折算（数值那份用不上）。
-     */
-    const factText = (key: string): string => String(facts[key] || '').trim()
-    const runtimeMinutes = Number(info.runtime)
-    const platformName = String((info.networks || [])[0]?.name || '').trim()
+    // ── 站内统计：数据源把折算后的数字放在 `classification_facts` 扩展位
+    // （`extensions.djbaike.*`），转回「万 / 亿」文案展示；缺键 = 站点没写。
+    const facts = (info.classification_facts || {}) as Record<string, any>
+    const factNum = (name: string): number =>
+      Number(facts[`extensions.djbaike.${name}`] || 0) || 0
     return {
       director,
       writer,
       cast,
-      heat_text: factText('extensions.djbaike.heat'),
-      play_count_text: factText('extensions.djbaike.play_count'),
-      favorites_text: factText('extensions.djbaike.favorite_count'),
-      status: String(info.status || '').trim(),
-      duration_minutes: Number.isFinite(runtimeMinutes) && runtimeMinutes > 0 ? runtimeMinutes : 0,
+      heat_text: compactNum(factNum('heat')),
+      play_count_text: compactNum(factNum('play_count')),
+      favorites_text: compactNum(factNum('favorite_count')),
+      status: '',
+      duration_minutes: 0,
       duration_text: '',
       studio: '',
-      platform: platformName,
+      platform: '',
       douban_id: doubanId,
       douban_url: doubanId ? `https://movie.douban.com/subject/${doubanId}/` : '',
-      adapted_title: adaptedTitle,
-      adapted_author: adaptedAuthor,
-      adapted_url: adaptedUrl,
+      adapted_title: adapted?.title || '',
+      adapted_author: adapted?.author || '',
+      adapted_url: adapted?.url || '',
       adapted,
     }
   } catch {
@@ -1710,8 +1843,9 @@ export async function fetchAdaptedInfo(
 /**
  * 原著**自己**的记录（`xiaoshuo:<id>`）→ 原著详情页的完整信息。
  *
- * 2026-10-22 换源后与剧集侧同一出口：数据源 `/novel` 端点传原著 id 也能取全
- * （含改编作品清单）；取不到就按已有字段照常显示。
+ * 2026-11-03 换源：ShortDramaNetSource **完全废弃**，改走 ShortDramaBaikeScraper 的
+ * `/novel?media_id=`（`NovelData`：书名 / 作者 / 封面 / 页面地址 / 字数 / 简介 /
+ * 改编作品清单）；取不到（`data=null`）就按已有字段照常显示。
  */
 export async function fetchAdaptedDetail(
   props: { api?: PluginApi },
@@ -1721,14 +1855,13 @@ export async function fetchAdaptedDetail(
   const api = resolveApi(props)
   if (!id || !api?.get) return null
   try {
-    // 2026-10-22 换源：/novel 传剧 id 或原著 id 均可；页面没标原著时 data=null
     const payload = unwrap<any>(
       await api.get(
         `plugin/ShortDramaBaikeScraper/novel?media_id=${encodeURIComponent(id)}`,
         { ...SILENT, timeout: 20_000 },
       ),
     )
-    return novelToAdaptedInfo(payload?.data)
+    return novelDataToAdapted(payload?.data)
   } catch {
     return null
   }
@@ -1796,6 +1929,6 @@ export async function saveConfig(
 
 /**
  * 卡片「已订阅」状态的**唯一来源**是 `/subscriptions`（订阅清单：插件订阅清单 ∪
- * 宿主 djbaike 订阅），见 ActorWall.loadSubscribed —— 这里不再单独读宿主订阅表：
+ * 宿主订阅），见 ActorWall.loadSubscribed —— 这里不再单独读宿主订阅表：
  * 两条来源各算一套的结果就是「订阅了红心不亮 / 取消点了没反应」（2026-10-22）。
  */

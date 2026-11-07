@@ -34,11 +34,12 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import BaikePanel from './BaikePanel.vue'
 import CachePanel from './CachePanel.vue'
 import OverviewPanel from './OverviewPanel.vue'
 import QueryPanel from './QueryPanel.vue'
+import { ensureSite } from './site'
 import type { PanelTab, PluginApi } from './types'
 // 四个分区共用的排版样式：全局一份、带 `.sdbs-` 前缀，只在此处引入一次
 import './panel.css'
@@ -72,4 +73,24 @@ async function openLookup(mediaId: string): Promise<void> {
   await nextTick()
   queryRef.value?.query(mediaId)
 }
+
+/**
+ * 回到面板时重读一次主站。
+ *
+ * 配置页是宿主另开的弹窗：用户在里面切成新站并保存，回来时面板**不会重新挂载**，
+ * 靠模块级状态共享也不一定跨组件树生效（联邦各 expose 各有一份模块实例）。
+ * 这里用 `focus` 兜底 —— 一次 `/status` 就能把顶栏 chip 与各面板文案拉回真实值。
+ */
+function syncSite(): void {
+  void ensureSite(props.api, true)
+}
+
+onMounted(() => {
+  syncSite()
+  if (typeof window !== 'undefined') window.addEventListener('focus', syncSite)
+})
+
+onUnmounted(() => {
+  if (typeof window !== 'undefined') window.removeEventListener('focus', syncSite)
+})
 </script>

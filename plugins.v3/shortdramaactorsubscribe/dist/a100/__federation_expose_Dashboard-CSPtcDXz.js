@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { d as fetchStatus, _ as _export_sfc } from './_plugin-vue_export-helper-Clm0RiNn.js';
+import { e as fetchStatus, _ as _export_sfc } from './_plugin-vue_export-helper-BdHzfgFO.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -24,7 +24,6 @@ const _hoisted_9 = {
   class: "text-caption"
 };
 const _hoisted_10 = {
-  key: 0,
   class: "d-flex align-center flex-wrap mb-2",
   style: { "gap": "12px" }
 };
@@ -33,11 +32,11 @@ const _hoisted_11 = {
   title: "自建订阅搜索：全分类补搜 + 择优下载"
 };
 const _hoisted_12 = {
-  key: 1,
+  key: 0,
   class: "text-caption sdas-dim"
 };
 const _hoisted_13 = {
-  key: 2,
+  key: 1,
   class: "text-caption sdas-dim"
 };
 const {onMounted,ref} = await importShared('vue');
@@ -103,7 +102,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     _createElementVNode("b", null, _toDisplayString(status.value.works || 0), 1)
                   ]),
                   _createElementVNode("span", _hoisted_8, [
-                    _cache[3] || (_cache[3] = _createTextVNode("新作品 ", -1)),
+                    _cache[3] || (_cache[3] = _createTextVNode("新剧 ", -1)),
                     _createElementVNode("b", null, _toDisplayString(status.value.new_works || 0), 1)
                   ]),
                   status.value.auto_subscribe ? (_openBlock(), _createElementBlock("span", _hoisted_9, [
@@ -111,7 +110,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     _createElementVNode("b", null, _toDisplayString(status.value.auto_subscribed || 0), 1)
                   ])) : _createCommentVNode("", true)
                 ]),
-                status.value.sub_engine === "self" ? (_openBlock(), _createElementBlock("div", _hoisted_10, [
+                _createElementVNode("div", _hoisted_10, [
                   _createElementVNode("span", _hoisted_11, [
                     _cache[8] || (_cache[8] = _createTextVNode(" 自建订阅 已下 ", -1)),
                     _createElementVNode("b", null, _toDisplayString(status.value.sub_downloaded || 0), 1),
@@ -130,7 +129,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     _cache[9] || (_cache[9] = _createTextVNode(" · 待搜 ", -1)),
                     _createElementVNode("b", null, _toDisplayString(status.value.sub_pending || 0), 1)
                   ])
-                ])) : _createCommentVNode("", true),
+                ]),
                 status.value.last_refresh ? (_openBlock(), _createElementBlock("div", _hoisted_12, " 上次刷新：" + _toDisplayString(status.value.last_refresh), 1)) : (_openBlock(), _createElementBlock("div", _hoisted_13, " 还没刷新过（可在插件设置里勾「保存后立即刷新一次」） "))
               ], 64))
             ])
@@ -142,6 +141,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-529b4ad6"]]);
+const Dashboard = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-415f739e"]]);
 
 export { Dashboard as default };

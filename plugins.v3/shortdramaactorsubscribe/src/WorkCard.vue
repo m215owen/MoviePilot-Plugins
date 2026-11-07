@@ -15,14 +15,15 @@
       点卡片进详情；触摸端两段式（先展开浮层，再点进详情）。
 
     本插件的差异：
-      - 角标文字是「短剧」（宿主印 type 的中文名），底色取宿主**电视剧**那一档
-        （`bg-indigo-500 border-indigo-600`）—— 短剧在系统里就是电视剧类型；
+      - 封面角标**与网页（duanjubaike.org 作品卡）同款**：实色胶囊、12px 字、字重 500、
+        无边框无阴影（`.sdas-chip`，量值照搬站点的 Tailwind 类）。原来那枚自造的「短剧」
+        靛蓝 chip 已撤 —— 站点短剧卡上本来没有这枚标；只有漫剧（.net 的 manju / huolong）
+        才印一枚紫标，用来区分品类；
       - 右下的来源图标短剧恒为短剧百科，用 MDI 图标代替 logo 外链；
       - 右上没有评分时退成**首播日期**（短剧百科给新剧打分的滞后，整屏空角标更难看）；
-        新作品（`is_new`）时这一格**改印「NEW」**（无底、细体、宽字距的半透明白，见 `.sdas-new`），
-        顶掉本该显示的日期，不再额外挂一枚 chip —— 用户口径：另加一枚太突兀；
-        调过三版（红底白字 / 主色底红字 / 红字无底）都被判「太显眼」，最终定位为
-        「日期那一格换了个词」：层级与日期同级或更低，只负责提示状态。
+      - 左上印数据源卡片上的**状态角标**（爆火 / 新剧 / 完结 / 预约），配色照搬站点。
+        2026-11-02 起「新」的判定也改成看这枚「新剧」角标（原先是「本轮比上轮多出来的」，
+        那份逐轮对比口径整体下线），所以右上不再单独印 NEW —— 同一个意思不出现两次。
   -->
   <v-hover v-slot="{ isHovering, props: hoverProps }">
     <div ref="cardRef" v-bind="hoverProps" class="sdas-hover-area">
@@ -37,43 +38,71 @@
         @click.stop="handleClick(isHovering)"
       >
         <!-- 海报：恒 2:3；骨架用宿主同款 VSkeletonLoader；加载失败退回图标占位 -->
-        <v-img
+        <!--
+          2026-10-27：**从 `v-img` 换成原生 `<img>`**。
+
+          现象：接口与图片代理全 200（浏览器实测 101 次请求无一次非 200），
+          缓存也落盘了，但整墙海报一张都不显示；同一时刻演员卡（ActorCard）
+          正常 —— 两者唯一的差别在图片组件。
+
+          `v-img` 依赖 `:aspect-ratio` 属性撑高容器，样式里没有显式高度：
+          这个属性一旦不生效，容器高度就是 0，图片「在、但看不见」。
+          原生 `<img>` + CSS `aspect-ratio` 不依赖任何组件内部实现，
+          也不再有 `v-img__img--preload`（opacity: 0）这类中间态。
+        -->
+        <!--
+          `referrerpolicy="no-referrer"`：兜底分支会**绕过代理直连图床**，
+          带上本站 Referer 反而会撞图床的防盗链；实测不带 Referer 直取 200。
+          代理地址那一支不受影响（同源请求）。
+        -->
+        <img
           v-if="work.poster && !imgFailed"
-          :key="imgRequest.key"
+          :key="displaySrc"
           :src="displaySrc"
-          :aspect-ratio="2 / 3"
-          :eager="imgRequest.eager"
-          :transition="imgRequest.transition"
-          cover
-          class="object-cover aspect-w-2 aspect-h-3"
+          class="sdas-poster-img"
+          :class="{ 'sdas-poster-img--ready': posterReady }"
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerpolicy="no-referrer"
           @load="handleImageLoad"
           @error="handleImageError"
-        >
-          <template #placeholder>
-            <div class="sdas-poster-skeleton-wrap">
-              <v-skeleton-loader class="sdas-poster-skeleton" />
-            </div>
-          </template>
-        </v-img>
+        />
         <div v-else class="sdas-poster-empty d-flex align-center justify-center">
           <v-icon icon="mdi-television-classic" size="64" color="medium-emphasis" />
         </div>
 
         <!--
-          品类角标（左上）：VChip 样式与宿主 MediaCard 同款。
-          文字按**复合 ID 的分类前缀**判「短剧 / 漫剧」（站点 /manju/ 与 /huolong/ 是漫剧频道，
-          /duanju/ 与 /hema/ 是短剧频道）；配色沿用宿主那两档 —— 短剧取电视剧的靛蓝、
-          漫剧取宿主默认的紫，扫一眼就能分开。
+          封面角标（左上）：**与 duanjubaike.org 作品卡上的 chip 完全同款**。
+          站点封面角标只有两种色胶囊 —— 爆火 `bg-red-500` / 新剧 `bg-green-500`，
+          几何统一 `text-xs px-2 py-1 rounded-full font-medium`（纯色、无边框、无阴影）。
+          这里不再用 Vuetify 的 elevated chip（有边框有阴影、字重偏重、圆角偏方，
+          和网页不是一套东西），照站点量值画 `.sdas-chip`。
+
+          品类「短剧」**不再单独印**：站点短剧卡上本来就没有这枚标，那枚靛蓝 chip
+          是插件自造的装饰，扫一眼就和网页对不上。只有漫剧（.net 的 manju / huolong）
+          才印一枚紫标区分品类 —— 短剧就是默认情况，不需要额外声明。
         -->
-        <v-chip
+        <div
           v-show="loaded"
-          variant="elevated"
-          size="small"
-          :class="kindChipClass"
-          class="absolute left-2 top-2 bg-opacity-80 text-white font-bold"
+          class="absolute left-2 top-2 d-flex flex-column align-start ga-1"
         >
-          {{ kindLabel }}
-        </v-chip>
+          <span
+            v-if="kindLabel !== '短剧'"
+            class="sdas-chip sdas-chip-purple"
+          >
+            {{ kindLabel }}
+          </span>
+          <span
+            v-for="item in stateBadges"
+            :key="item.label"
+            class="sdas-chip"
+            :class="item.cls"
+            :title="item.title"
+          >
+            {{ item.label }}
+          </span>
+        </div>
 
         <!-- 右上：已入库 = 绿色圆形勾（探索页 ExistIcon 同款，DOM 与显隐条件照抄：
              勾只在**未悬停**时显示，悬停浮层展开时换评分角标显示）；
@@ -99,15 +128,11 @@
             </div>
           </div>
           <!--
-            新作品：**替代日期占这一格**，但只做「日期那一格换了个词」——
-            小字号、常规字重、宽字距、半透明白、无底无边，靠一层极轻投影立住。
-            视觉重量压到与日期 chip 同级或更低：扫视时它是状态的注脚，不是告示牌。
+            右上是「已入库勾 / 评分 / 首播日期」三选一。
+            2026-11-02 起这里**不再印 NEW**：新作判定改成「站点的『新剧』角标」
+            （用户口径），而「新剧」已经由左上那列状态角标如实呈现（站点原样绿标），
+            同一个意思不用在卡上出现两次。
           -->
-          <span
-            v-else-if="badgeIsNew"
-            class="sdas-new"
-            title="新作品（最近上映 / 首次发现）"
-          >NEW</span>
           <v-chip
             v-else-if="badge"
             variant="elevated"
@@ -214,13 +239,27 @@
           </div>
         </div>
       </v-card>
+
+      <!--
+        卡下方常显剧名（2026-10-27 用户要求）。
+        此前片名只在悬停浮层里出现，未悬停时整墙只有图、认不出是哪部；
+        现在固定占两行高度，扫一眼就能读片名。点它等同于点卡片（进详情）。
+      -->
+      <div
+        v-if="work.title"
+        class="sdas-card-caption"
+        :title="work.title"
+        @click.stop="emit('open', work)"
+      >
+        {{ work.title }}
+      </div>
     </div>
   </v-hover>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { proxyImage, retryProxyImage } from './api'
+import { proxiedImage, proxyImage, retryProxyImage } from './api'
 import { activeTouchCardId, nextCardId, revealedPosters } from './cardState'
 import type { WorkItem } from './types'
 
@@ -265,24 +304,55 @@ const isTouchLikePointer = ref(
 /** 海报加载失败 → 退回图标占位（宿主 `imageLoadError` 同款语义） */
 const imgFailed = ref(false)
 
-/** 这张海报本次是否属于「重入」（见过就不再做淡入） */
+/** 海报代理地址（宿主 `system/img` 代理，带磁盘缓存）。 */
 const posterSrc = computed(() => (props.work.poster ? proxyImage(props.work.poster) : ''))
-const revisit = ref(Boolean(posterSrc.value) && revealedPosters.has(posterSrc.value))
 
 /**
- * 海报加载失败的重试次数（宿主图片代理 DNS 校验偶发失败，见 `retryProxyImage`）。
- * 0 = 原始地址；1 / 2 = 换一个带 `retry=N` 的地址重发。
+ * 海报加载失败的**重试阶梯**（2026-11-03 重写：现在首选可能是「直连 CDN」）。
+ *
+ * `proxyImage` 对 `cdn.duanjubaike.org` 直接返回原图（Cloudflare + 一年强缓存，
+ * 浏览器自己缓存，翻回去零往返）；其它域名才走宿主 `system/img` 代理。
+ * 所以阶梯要按**两条链路互换**来排，而不是固定「代理 → 代理 → 直连」：
+ *
+ *   0 = 首选链路（直连或代理，见 `proxyImage`）
+ *   1 = 换成另一条链路（直连失败走代理 / 代理失败走直连）
+ *   2 = 仍走备选链路，但加一个**时间戳**参数绕开可能被缓存住的坏响应
+ *   3 = 认输，退回占位图标（之后每 30 秒自己再走一轮，最多两轮）
+ *
+ * 为什么备选那一步还要时间戳：代理响应带 `Cache-Control: max-age=604800`（七天强
+ * 缓存），一旦某次拿到坏响应，浏览器七天之内连请求都不发 —— 固定的 `retry=1` 也会
+ * 被缓存住，重试等于重放坏结果。
  */
-const retryCount = ref(0)
-const retryTimer = ref<ReturnType<typeof setTimeout> | null>(null)
-const displaySrc = computed(() => retryProxyImage(posterSrc.value, retryCount.value))
+const MAX_PROXY_RETRY = 2
+/** 整轮失败后最多再自己重来的轮数（不用用户刷新页面） */
+const MAX_ROUNDS = 2
 
-/** 传给 `v-img` 的请求参数（与宿主一致：重入不加 CSS 过渡，直接显示） */
-const imgRequest = computed(() => ({
-  key: posterSrc.value,
-  eager: revisit.value,
-  transition: revisit.value ? ({ css: false } as const) : 'fade-transition',
-}))
+const retryCount = ref(0)
+const retryStamp = ref(Date.now())
+const retryTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const roundTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const retryRound = ref(0)
+
+/** 首选地址是不是「直连图床」（`proxyImage` 已经把 CDN 域名放行） */
+const preferDirect = computed(
+  () => Boolean(posterSrc.value) && posterSrc.value === String(props.work.poster || '').trim(),
+)
+
+const displaySrc = computed(() => {
+  const raw = String(props.work.poster || '').trim()
+  const preferred = posterSrc.value
+  if (!preferred) return ''
+  const attempt = retryCount.value
+  if (attempt <= 0) return preferred
+  // 备选链路：首选直连 → 走宿主代理；首选代理 → 直连原图
+  const fallback = preferDirect.value ? proxiedImage(raw) : raw
+  if (attempt === 1) return fallback
+  // 最后一次：在「会被强缓存住坏响应」的那条链路上换时间戳重发
+  if (attempt === MAX_PROXY_RETRY) {
+    return retryProxyImage(preferDirect.value ? fallback : preferred, retryStamp.value)
+  }
+  return fallback
+})
 
 /**
  * 海报是否已经**真正盖住**卡片。
@@ -330,24 +400,60 @@ function handleDocumentPointerDown(event: PointerEvent): void {
 
 const cardRef = ref<HTMLElement | null>(null)
 
+/**
+ * 海报是否已经**真正画出像素**（load 过才算）—— 没 load 之前不让它可见。
+ *
+ * 初值直接查 `revealedPosters`（模块级登记表，跨卡片实例共享）：这张图之前已经
+ * 加载过（翻页回来、从详情返回、换视图重建卡片）就**立刻可见**，不必等新的 load
+ * 事件 —— 否则每次重挂都会先透明一段，看起来就是「翻回去图片又空了」。
+ */
+const posterReady = ref(
+  Boolean(displaySrc.value && revealedPosters.has(displaySrc.value)),
+)
+
 function handleImageLoad(): void {
   imgFailed.value = false
-  if (posterSrc.value) revealedPosters.add(posterSrc.value)
+  posterReady.value = true
+  if (displaySrc.value) revealedPosters.add(displaySrc.value)
   emit('poster', props.work.key)
 }
 
+/** 换一条地址再来一次（时间戳每次都不同，见 `displaySrc` 的说明） */
+function scheduleRetry(delay: number): void {
+  if (retryTimer.value) clearTimeout(retryTimer.value)
+  retryTimer.value = setTimeout(() => {
+    retryTimer.value = null
+    retryStamp.value = Date.now()
+    retryCount.value += 1
+  }, delay)
+}
+
 function handleImageError(): void {
-  // 宿主图片代理的 SSRF 校验按张做 DNS 解析，整墙同时加载时偶发瞬时失败 ——
-  // 隔 700ms 换一个带重试标记的地址再来，两次都失败才退回占位图标。
-  if (retryCount.value < 2 && posterSrc.value) {
-    if (retryTimer.value) clearTimeout(retryTimer.value)
-    retryTimer.value = setTimeout(() => {
-      retryCount.value += 1
-    }, 700)
+  // 先把这张图藏起来（`posterReady=false`）：浏览器在「响应到了但不是图片 / 0 字节」
+  // 时会画出自己的**裂图**图标，重试那 800ms 里它会一直挂在卡面上 —— 用户看到的
+  // 就是「先裂图、再加载出来」。藏起来换重试，覆盖层一直是骨架，不会有裂图。
+  posterReady.value = false
+  // 这张图这次坏了：把「已展示过」的登记撤掉，重挂时不要凭登记直接亮出来
+  if (displaySrc.value) revealedPosters.delete(displaySrc.value)
+  // 还有下一条链路可试（阶梯见 `displaySrc` 上方）就隔 800ms 再来
+  if (retryCount.value < MAX_PROXY_RETRY && posterSrc.value) {
+    scheduleRetry(800)
     return
   }
   imgFailed.value = true
   emit('poster', props.work.key)
+  // 整条阶梯都失败：多半是代理那一时的故障（或浏览器缓存了坏响应），
+  // 隔半分钟自己再走一轮，不必等用户刷新页面；最多两轮，之后停在占位图标。
+  if (retryRound.value < MAX_ROUNDS && !roundTimer.value) {
+    roundTimer.value = setTimeout(() => {
+      roundTimer.value = null
+      retryRound.value += 1
+      retryStamp.value = Date.now()
+      // 从带新时间戳的那一步起步，不复用可能被缓存住的原始地址
+      retryCount.value = 1
+      imgFailed.value = false
+    }, 30_000)
+  }
 }
 
 onMounted(() => {
@@ -357,6 +463,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   resetTouchState()
   if (retryTimer.value) clearTimeout(retryTimer.value)
+  if (roundTimer.value) clearTimeout(roundTimer.value)
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
 })
 
@@ -364,11 +471,13 @@ onBeforeUnmount(() => {
 /**
  * 卡片左上角的品类：**漫剧 / 短剧**（2026-10-18 用户口径）。
  *
- * 判据是作品身份的**分类前缀**（`manju:…` / `duanju:…`），不是剧情字段 ——
- * 站点把漫剧单列频道（`/manju/`、`/huolong/` 火龙漫剧），短剧是 `/duanju/`、`/hema/` 河马短剧。
+ * 判据是作品身份的**分类前缀**，不是剧情字段 —— .org 新站的作品前缀只有
+ * `drama:`（站点卡片上另有「短剧 / 漫剧」badge 角标）；.net 老站把漫剧单列频道
+ * （`/manju/`、`/huolong/` 火龙漫剧），短剧是 `/duanju/`、`/hema/` 河马短剧。
  * 认得前缀就按表给，认不出（裸数字 / 老数据）按「短剧」兜底。
  */
 const KIND_LABELS: Record<string, string> = {
+  drama: '短剧',
   manju: '漫剧',
   huolong: '漫剧',
   duanju: '短剧',
@@ -384,20 +493,37 @@ const kindLabel = computed(() => {
   return KIND_LABELS[source] || '短剧'
 })
 
-/** 角标配色：短剧 = 宿主「电视剧」那一档（靛蓝）；漫剧 = 宿主默认紫 */
-const kindChipClass = computed(() =>
-  kindLabel.value === '漫剧'
-    ? 'border-purple-600 bg-purple-600'
-    : 'bg-indigo-500 border-indigo-600',
+/**
+ * 状态角标（爆火 / 新剧 / 完结 / 预约）：数据源作品卡封面左上角那列彩色 chip 的原文。
+ *
+ * 配色就是站点的 Tailwind 原值（red-500 / green-500 / blue-500 / amber-500），几何也一样
+ * （见 `.sdas-chip`）—— 网页什么样，卡上就什么样。
+ *
+ * 白名单只放已知词：站点以后加新角标时宁可先不显示，也不让卡上飘出认不出的文本 ——
+ * 要显示就到这里补一行（连同配色）。
+ */
+const STATE_BADGES: Record<string, { cls: string; title: string }> = {
+  爆火: { cls: 'sdas-chip-red', title: '爆火（站点标记的热播）' },
+  新剧: { cls: 'sdas-chip-green', title: '新剧（站点标记的新上线）' },
+  完结: { cls: 'sdas-chip-blue', title: '完结' },
+  预约: { cls: 'sdas-chip-amber', title: '预约' },
+}
+
+const stateBadges = computed(() =>
+  (props.work.badges || [])
+    .map((text) => {
+      const style = STATE_BADGES[text]
+      return style ? { label: text, cls: style.cls, title: style.title } : null
+    })
+    .filter((item): item is { label: string; cls: string; title: string } => Boolean(item)),
 )
 
 /**
- * 新作品标记：`is_new` 由后端**现算**（首播在最近 7 天内，见 `is_fresh_work`），
- * 过了窗口自动撤，不需要任何清理逻辑。
- * 展示位**借用右上角那个角标**（用户 2026-10-19 口径：不要额外再加一枚红 chip，
- * 太突兀；新作品直接顶掉本该显示的「首播日期」）。评分仍在时以评分为准。
+ * 新剧标记：**不再由本组件判定** —— 2026-11-02 用户口径把「新作」判定改成
+ * 「新剧标签」判定后，「新」就是数据源卡片上的「新剧」状态角标，已经由左上那列
+ * 状态角标（`stateBadges`）如实呈现，这里不再重复印 NEW / 新作品。
+ * 后端的 `is_new` 字段仍在（口径同为「带新剧角标」），供筛选与统计用。
  */
-const badgeIsNew = computed(() => Number(props.work.vote) <= 0 && Boolean(props.work.is_new))
 
 const badge = computed(() => {
   const vote = Number(props.work.vote)
@@ -408,7 +534,7 @@ const badge = computed(() => {
   return matched ? `${matched[2]}-${matched[3]}` : date
 })
 
-/** 角标含义（悬停提示）：评分 / 首播日期（新作品那枚有固定 title，不走这里） */
+/** 角标含义（悬停提示）：评分 / 首播日期 */
 const badgeTitle = computed(() =>
   Number(props.work.vote) > 0 ? '评分' : '首播日期（百科还没有这部剧的评分）',
 )
@@ -449,20 +575,107 @@ function cardSummary(work: WorkItem): string {
 }
 
 /*
- * 「NEW」标记：不是角标，是**日期位置的替身**。
- * 小字号 + 常规字重 + 宽字距 + 半透明白，无底无边，只借一层极轻的暗色投影
- * 保证它落在浅色海报上不消失。目的是与日期 chip 同级或更轻 —— 一眼看得到，
- * 但不会比片名、海报更抢镜（此前红字/主色底两版都太像告示牌）。
+ * 卡下方常显的剧名 —— 版式与 Emby 作品卡下方标题一致（2026-10-27 用户口径）：
+ * **居中、单行、超出省略号**。
+ *
+ * Emby 的 `.cardText` 就是这一套（`text-align: center` + `white-space: nowrap`
+ * + `text-overflow: ellipsis`），行高固定 ⇒ 同一行卡片高度天然齐平，
+ * 不依赖 line-clamp 的多行截断。颜色取 `on-surface` 派生色，明暗主题自适应。
  */
-.sdas-new {
-  font-size: 0.6875rem;
+/*
+ * 卡下方常显的剧名 —— 居中、最多两行、超出省略（2026-10-27 用户口径）。
+ *
+ * 字号 / 字重**向卡内标题（`.sdas-card-title`：18px / bold）靠拢**：卡内是 18px 粗体、
+ * 卡下方若只给 14px 常规，同一张卡上像两套排版，所以取两者之间的一档
+ * （16px / 600）。位置仍按 Emby 那样居中。
+ *
+ * 两行截断用 `-webkit-line-clamp`；再用 `min-block-size: 2.7em`（= 2 × 1.35 行高）
+ * 把单行标题也撑到两行高，保证同一行卡片高度齐平。
+ */
+.sdas-card-caption {
+  margin-block-start: 8px;
+  padding-inline: 4px;
+  font-size: 1rem;
+  line-height: 1.35;
   font-weight: 600;
-  letter-spacing: 0.16em;
-  line-height: 1;
-  color: rgba(248, 250, 252, 0.9);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
-  padding-inline: 2px;
+  text-align: center;
+  color: rgba(var(--v-theme-on-surface), 0.87);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  min-block-size: 2.7em;
+  cursor: pointer;
   user-select: none;
+}
+
+/**
+ * 「NEW」标记的样式已随判定口径下线（2026-11-02：新作 = 站点的「新剧」角标，
+ * 由左上的状态角标呈现）。这里保留一段说明，避免后来者把它当漏改的东西加回来。
+ */
+
+/*
+ * 封面角标（.sdas-chip）：**逐值复刻 duanjubaike.org 作品卡上的 chip**。
+ * 站点那几枚标就是 Tailwind 的 `text-xs px-2 py-1 rounded-full font-medium`：
+ * 12px 字 / 16px 行高、上下 4px 左右 8px、全圆角、纯色底、无边框无阴影、字重 500。
+ * 之前用的 Vuetify elevated chip 有边框、有阴影、字重 700、圆角也偏小 —— 和网页
+ * 摆在一起一眼就是两套 UI，所以改成自绘（2026-11-02 用户口径：调得和网页的标一致）。
+ * 颜色取站点 Tailwind 原值，不做半透明（站点是实色）。
+ */
+.sdas-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 9999px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: #fff;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* 站点实色：red-500 / green-500 / blue-500 / amber-500；紫是漫剧品类专用的补充色 */
+.sdas-chip-red {
+  background-color: #ef4444;
+}
+
+.sdas-chip-green {
+  background-color: #22c55e;
+}
+
+.sdas-chip-blue {
+  background-color: #3b82f6;
+}
+
+.sdas-chip-amber {
+  background-color: #f59e0b;
+}
+
+.sdas-chip-purple {
+  background-color: #a855f7;
+}
+
+/* 海报：原生 img，比例与裁切都在 CSS 里定死，不依赖组件的 aspect-ratio 属性 */
+.sdas-poster-img {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  object-position: center;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  /* 只有真正 load 过的图才显形：加载中 / 失败重试期间保持透明，
+     浏览器自己那枚裂图图标就不会露出来（2026-11-03 用户反馈「先裂图再加载」）。 */
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.sdas-poster-img--ready {
+  opacity: 1;
 }
 
 /* 海报骨架（宿主 `#placeholder` 里那层 VSkeletonLoader 的铺法） */

@@ -13,6 +13,8 @@
  */
 
 import type {
+  BackfillResult,
+  BaikeExtPage,
   BaikePage,
   CacheItems,
   MediaInfo,
@@ -168,7 +170,7 @@ export async function fetchStatus(props: { api?: PluginApi }): Promise<StatusPay
 
 // ── ID 库 ──────────────────────────────────────────────────────────────
 /**
- * `GET /baike/list`：ID 库分页（返回原始 4 列）。
+ * `GET /baike/list`：**站点库**分页（只返回 `media_id` / `name` 两列）。
  *
  * 搜索是**服务端**做的：库只增不减，一次拿全不现实；`q` 与 `entity` 都进 SQL
  * 条件，所以搜到的永远是全库范围，不会被分页截断。
@@ -180,6 +182,19 @@ export async function fetchBaikeList(
   return (await get(props, '/baike/list', params)) as BaikePage
 }
 
+/**
+ * `GET /baike/extlist`：**外部 id 表**分页（名字 + 豆瓣 + TMDB）。
+ *
+ * 与站点库独立：站点库清空后这些记录仍在，所以面板把它当一个单独分类看。
+ * `source` = `douban` / `tmdb` 时后端只回该列非空的行（面板拆成两个分类）。
+ */
+export async function fetchBaikeExtList(
+  props: { api?: PluginApi },
+  params: { q?: string; offset?: number; limit?: number; source?: string } = {},
+): Promise<BaikeExtPage> {
+  return (await get(props, '/baike/extlist', params)) as BaikeExtPage
+}
+
 /** `DELETE /baike/del`：删单条 ID（后端会联动删它的详情 / 人物缓存）。 */
 export async function deleteBaike(props: { api?: PluginApi }, mediaId: string): Promise<OpResult> {
   return (await del(props, '/baike/del', { media_id: mediaId })) as OpResult
@@ -188,6 +203,34 @@ export async function deleteBaike(props: { api?: PluginApi }, mediaId: string): 
 /** `POST /baike/clear`：清空整个 ID 库（危险）。 */
 export async function clearBaike(props: { api?: PluginApi }): Promise<OpResult> {
   return (await post(props, '/baike/clear')) as OpResult
+}
+
+/**
+ * `POST /baike/extids`：给库里 douban / tmdb 两列全空的行批量补外部 id。
+ *
+ * 一条一搜、串行走，所以 `limit` 别开太大（默认 20 ≈ 12 秒）；
+ * 豆瓣限流时后端会提前返回 `throttled=true`，过几分钟再点即可。
+ */
+export async function backfillExtIds(
+  props: { api?: PluginApi },
+  params: { entity?: string; limit?: number; after?: string } = {},
+): Promise<BackfillResult> {
+  return (await post(props, '/baike/extids', params)) as BackfillResult
+}
+
+/**
+ * `POST /baike/person_extids`：按豆瓣**演职员表**给人物补影人 id。
+ *
+ * 与 `backfillExtIds` 的单位不同：这里的 `limit` 是**作品条数**（一部剧一次
+ * 请求能覆盖几十个演员），`after` 也是作品 `media_id` 的游标。判据是「同一部
+ * 作品里同名即同一人」——豆瓣作品详情的演员列表只有名字、不带 id，唯一带 id
+ * 的入口是演职员表。
+ */
+export async function backfillPersonExtIds(
+  props: { api?: PluginApi },
+  params: { limit?: number; after?: string } = {},
+): Promise<BackfillResult> {
+  return (await post(props, '/baike/person_extids', params)) as BackfillResult
 }
 
 // ── 缓存 ───────────────────────────────────────────────────────────────
@@ -287,12 +330,18 @@ export async function fetchNovel(
 /**
  * 海报地址 → 浏览器可直接加载的 URL（**只给面板看**，不进 NFO / 刮削）。
  *
- * * 豆瓣图床只认 `Referer: https://movie.douban.com/`，浏览器 `<img>` 直连是
- *   403 / 418（空白），所以豆瓣地址统一改写成**宿主的图片代理**
- *   `/api/v1/system/img/0?imgurl=…&cache=1` —— 宿主取图时自带豆瓣 Referer
- *   与磁盘缓存。代理端点的鉴权是宿主的 `resource_token` cookie，面板同源天然带着。
- * * 站点图（`img.duanjubaike.net`）与 TMDB 图可直连，原样返回，不多绕一跳。
- * * 已是相对路径 / data URI 的不再套代理。
+ * 三类图统一走**宿主的图片代理** `/api/v1/system/img/0?imgurl=…&cache=1`：
+ *
+ * * 豆瓣图床（`*.doubanio.com`）：只认 `Referer: https://movie.douban.com/`，
+ *   浏览器 `<img>` 直连是 403 / 418（空白），必须由宿主代取；
+ * * 站点自家图床（老站 `img.duanjubaike.net` / 新站 `cdn.duanjubaike.org`）
+ *   与百度 gimg 中转（`gimg0.baidu.com`）：直连也能显示，但走代理后图片会落到
+ *   宿主的**全局图片缓存**（`/config/cache/images`，按完整 URL 的 hash 存盘），
+ *   面板不再每次回源。
+ *
+ * 代理端点的鉴权是宿主的 `resource_token` cookie，面板同源天然带着；域名必须在
+ * 宿主的 `SECURITY_IMAGE_DOMAINS` 里 —— 本插件启用时由 `whitelist.py` 把这几个
+ * 主机登记进去。已是相对路径 / data URI 的不再套代理。
  */
 export function proxyImage(url?: string | null): string {
   const text = String(url || '').trim()
@@ -303,10 +352,17 @@ export function proxyImage(url?: string | null): string {
   } catch {
     return text
   }
-  if (host === 'doubanio.com' || host.endsWith('.doubanio.com')) {
-    return `/api/v1/system/img/0?imgurl=${encodeURIComponent(text)}&cache=1`
-  }
-  return text
+  const hostCached =
+    host === 'doubanio.com' ||
+    host.endsWith('.doubanio.com') ||
+    host === 'img.duanjubaike.net' ||
+    // 新站（.org）的海报是页面自带的 CDN 绝对地址，和老站图床同等对待
+    host === 'cdn.duanjubaike.org' ||
+    host.endsWith('.duanjubaike.org') ||
+    host === 'gimg0.baidu.com'
+  return hostCached
+    ? `/api/v1/system/img/0?imgurl=${encodeURIComponent(text)}&cache=1`
+    : text
 }
 
 // ── 配置（Vue 配置页 `./Config`） ─────────────────────────────────────

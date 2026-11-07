@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { b as backend, h as hostApi, _ as _export_sfc } from './_plugin-vue_export-helper-DdliaD78.js';
+import { b as backend, h as hostApi, _ as _export_sfc } from './_plugin-vue_export-helper-DsyfXdEB.js';
 
 const {defineComponent:_defineComponent} = await importShared('vue');
 
@@ -39,7 +39,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       monitor_enabled: false,
       monitor_mode: "watch",
       monitor_interval: 60,
-      force_reorganize: false
+      force_reorganize: false,
+      syncdel_enabled: false,
+      syncdel_mp_history: true,
+      syncdel_delete_media: false,
+      syncdel_downloaders: [],
+      syncdel_exclude_path: "",
+      syncdel_library_path: ""
     };
     const transferItems = [
       { title: "移动（move）", value: "move" },
@@ -74,13 +80,15 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       ...DEFAULTS,
       ...incoming,
       source_dirs: toList(incoming.source_dirs),
-      library_dir: toOne(incoming.library_dir)
+      library_dir: toOne(incoming.library_dir),
+      syncdel_downloaders: toList(incoming.syncdel_downloaders)
     });
     const errorText = ref("");
     const saving = ref(false);
     const manualPath = ref("");
     const sourceItems = ref([]);
     const libraryItems = ref([]);
+    const downloaderItems = ref([]);
     const browseOpen = ref(false);
     const browseTarget = ref("source");
     const browseLoading = ref(false);
@@ -103,6 +111,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
         const data = await backend.dirOptions(api);
         sourceItems.value = data?.sources || [];
         libraryItems.value = data?.libraries || [];
+        downloaderItems.value = data?.downloaders || [];
       } catch (err) {
         errorText.value = `读取系统目录失败：${err?.message || String(err)}`;
       }
@@ -168,7 +177,8 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
       emit("save", {
         ...conf,
         source_dirs: toList(conf.source_dirs),
-        library_dir: toOne(conf.library_dir)
+        library_dir: toOne(conf.library_dir),
+        syncdel_downloaders: toList(conf.syncdel_downloaders)
       });
       window.setTimeout(() => {
         saving.value = false;
@@ -217,9 +227,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
             _: 1
           })) : _createCommentVNode("", true),
           _createVNode(_component_v_card_title, { class: "text-body-1 pb-1" }, {
-            default: _withCtx(() => [..._cache[23] || (_cache[23] = [
+            default: _withCtx(() => [..._cache[29] || (_cache[29] = [
               _createTextVNode(" 短剧百科整理 · 配置 ", -1),
-              _createElementVNode("span", { class: "text-caption text-medium-emphasis" }, "（前端 build a9）", -1)
+              _createElementVNode("span", { class: "text-caption text-medium-emphasis" }, "（前端 build a25）", -1)
             ])]),
             _: 1
           }),
@@ -310,7 +320,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 ]),
                 _: 1
               }),
-              _cache[27] || (_cache[27] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-3" }, "扫描目录（待整理短剧的上一层根目录，可多选）", -1)),
+              _cache[33] || (_cache[33] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-3" }, "扫描目录（待整理短剧的上一层根目录，可多选）", -1)),
               _createElementVNode("div", _hoisted_1, [
                 _createVNode(_component_v_select, {
                   modelValue: conf.source_dirs,
@@ -328,7 +338,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   "prepend-icon": "mdi-folder-search",
                   onClick: _cache[6] || (_cache[6] = ($event) => openBrowse("source"))
                 }, {
-                  default: _withCtx(() => [..._cache[24] || (_cache[24] = [
+                  default: _withCtx(() => [..._cache[30] || (_cache[30] = [
                     _createTextVNode("浏览目录", -1)
                   ])]),
                   _: 1
@@ -349,13 +359,13 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   variant: "text",
                   onClick: addManual
                 }, {
-                  default: _withCtx(() => [..._cache[25] || (_cache[25] = [
+                  default: _withCtx(() => [..._cache[31] || (_cache[31] = [
                     _createTextVNode("加入扫描目录", -1)
                   ])]),
                   _: 1
                 })
               ]),
-              _cache[28] || (_cache[28] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-3" }, "目标库目录（短剧媒体库根）", -1)),
+              _cache[34] || (_cache[34] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-3" }, "目标库目录（短剧媒体库根）", -1)),
               _createElementVNode("div", _hoisted_3, [
                 _createVNode(_component_v_select, {
                   modelValue: conf.library_dir,
@@ -372,7 +382,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   "prepend-icon": "mdi-folder-search",
                   onClick: _cache[9] || (_cache[9] = ($event) => openBrowse("library"))
                 }, {
-                  default: _withCtx(() => [..._cache[26] || (_cache[26] = [
+                  default: _withCtx(() => [..._cache[32] || (_cache[32] = [
                     _createTextVNode("浏览目录", -1)
                   ])]),
                   _: 1
@@ -504,19 +514,126 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                   })
                 ]),
                 _: 1
+              }),
+              _cache[35] || (_cache[35] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-4" }, " Emby 删除联动（Emby 里删掉整部短剧后：删插件记录 → 删宿主整理历史 → 取消作品订阅 → 删种子） ", -1)),
+              _createVNode(_component_v_row, {
+                dense: "",
+                class: "mt-1"
+              }, {
+                default: _withCtx(() => [
+                  _createVNode(_component_v_col, {
+                    cols: "12",
+                    md: "3"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_switch, {
+                        modelValue: conf.syncdel_enabled,
+                        "onUpdate:modelValue": _cache[17] || (_cache[17] = ($event) => conf.syncdel_enabled = $event),
+                        label: "启用联动删除",
+                        color: "primary",
+                        density: "compact",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_col, {
+                    cols: "12",
+                    md: "3"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_switch, {
+                        modelValue: conf.syncdel_mp_history,
+                        "onUpdate:modelValue": _cache[18] || (_cache[18] = ($event) => conf.syncdel_mp_history = $event),
+                        label: "删宿主整理历史",
+                        color: "primary",
+                        density: "compact",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_col, {
+                    cols: "12",
+                    md: "3"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_switch, {
+                        modelValue: conf.syncdel_delete_media,
+                        "onUpdate:modelValue": _cache[19] || (_cache[19] = ($event) => conf.syncdel_delete_media = $event),
+                        label: "删种子时同步删除媒体",
+                        color: "warning",
+                        density: "compact",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_col, {
+                    cols: "12",
+                    md: "3"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_select, {
+                        modelValue: conf.syncdel_downloaders,
+                        "onUpdate:modelValue": _cache[20] || (_cache[20] = ($event) => conf.syncdel_downloaders = $event),
+                        items: downloaderItems.value,
+                        multiple: "",
+                        chips: "",
+                        density: "compact",
+                        "hide-details": "",
+                        label: "指定下载器（空=自动）"
+                      }, null, 8, ["modelValue", "items"])
+                    ]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_col, {
+                    cols: "12",
+                    md: "6"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_text_field, {
+                        modelValue: conf.syncdel_exclude_path,
+                        "onUpdate:modelValue": _cache[21] || (_cache[21] = ($event) => conf.syncdel_exclude_path = $event),
+                        density: "compact",
+                        "hide-details": "",
+                        label: "排除路径前缀（逗号分隔）",
+                        placeholder: "/media/短剧/不参与清理的目录"
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_col, {
+                    cols: "12",
+                    md: "6"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_text_field, {
+                        modelValue: conf.syncdel_library_path,
+                        "onUpdate:modelValue": _cache[22] || (_cache[22] = ($event) => conf.syncdel_library_path = $event),
+                        density: "compact",
+                        "hide-details": "",
+                        label: "Emby 路径→本地路径映射（每行 源:目标）",
+                        placeholder: "/emby/短剧:/media/短剧"
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _: 1
+                  })
+                ]),
+                _: 1
               })
             ]),
             _: 1
           }),
           _createVNode(_component_v_card_actions, null, {
             default: _withCtx(() => [
-              _cache[31] || (_cache[31] = _createElementVNode("span", { class: "text-caption text-medium-emphasis" }, "识别源 djbaike ｜ 插件自包含搬运 ｜ 历史写系统整理历史", -1)),
+              _cache[38] || (_cache[38] = _createElementVNode("span", { class: "text-caption text-medium-emphasis" }, "识别源 djbaike ｜ 插件自包含搬运 ｜ 历史写系统整理历史", -1)),
               _createVNode(_component_v_spacer),
               _createVNode(_component_v_btn, {
                 variant: "text",
                 onClick: closeDialog
               }, {
-                default: _withCtx(() => [..._cache[29] || (_cache[29] = [
+                default: _withCtx(() => [..._cache[36] || (_cache[36] = [
                   _createTextVNode("取消", -1)
                 ])]),
                 _: 1
@@ -528,7 +645,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                 loading: saving.value,
                 onClick: saveConfig
               }, {
-                default: _withCtx(() => [..._cache[30] || (_cache[30] = [
+                default: _withCtx(() => [..._cache[37] || (_cache[37] = [
                   _createTextVNode("保存", -1)
                 ])]),
                 _: 1
@@ -538,7 +655,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
           }),
           _createVNode(_component_v_dialog, {
             modelValue: browseOpen.value,
-            "onUpdate:modelValue": _cache[22] || (_cache[22] = ($event) => browseOpen.value = $event),
+            "onUpdate:modelValue": _cache[28] || (_cache[28] = ($event) => browseOpen.value = $event),
             "max-width": "680",
             scrollable: ""
           }, {
@@ -559,30 +676,30 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                           size: "small",
                           "prepend-icon": "mdi-arrow-up",
                           disabled: !parentPath.value || browseLoading.value,
-                          onClick: _cache[17] || (_cache[17] = ($event) => goPath(parentPath.value))
+                          onClick: _cache[23] || (_cache[23] = ($event) => goPath(parentPath.value))
                         }, {
-                          default: _withCtx(() => [..._cache[32] || (_cache[32] = [
+                          default: _withCtx(() => [..._cache[39] || (_cache[39] = [
                             _createTextVNode("上级", -1)
                           ])]),
                           _: 1
                         }, 8, ["disabled"]),
                         _createVNode(_component_v_text_field, {
                           modelValue: pathInput.value,
-                          "onUpdate:modelValue": _cache[18] || (_cache[18] = ($event) => pathInput.value = $event),
+                          "onUpdate:modelValue": _cache[24] || (_cache[24] = ($event) => pathInput.value = $event),
                           density: "compact",
                           variant: "outlined",
                           "hide-details": "",
                           placeholder: "输入绝对路径后回车",
                           class: "sdbo-grow",
-                          onKeyup: _cache[19] || (_cache[19] = _withKeys(($event) => goPath(pathInput.value), ["enter"]))
+                          onKeyup: _cache[25] || (_cache[25] = _withKeys(($event) => goPath(pathInput.value), ["enter"]))
                         }, null, 8, ["modelValue"]),
                         _createVNode(_component_v_btn, {
                           variant: "text",
                           size: "small",
                           disabled: browseLoading.value,
-                          onClick: _cache[20] || (_cache[20] = ($event) => goPath(pathInput.value))
+                          onClick: _cache[26] || (_cache[26] = ($event) => goPath(pathInput.value))
                         }, {
-                          default: _withCtx(() => [..._cache[33] || (_cache[33] = [
+                          default: _withCtx(() => [..._cache[40] || (_cache[40] = [
                             _createTextVNode("前往", -1)
                           ])]),
                           _: 1
@@ -646,9 +763,9 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                     default: _withCtx(() => [
                       _createVNode(_component_v_btn, {
                         variant: "text",
-                        onClick: _cache[21] || (_cache[21] = ($event) => browseOpen.value = false)
+                        onClick: _cache[27] || (_cache[27] = ($event) => browseOpen.value = false)
                       }, {
-                        default: _withCtx(() => [..._cache[34] || (_cache[34] = [
+                        default: _withCtx(() => [..._cache[41] || (_cache[41] = [
                           _createTextVNode("取消", -1)
                         ])]),
                         _: 1
@@ -660,7 +777,7 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
                         disabled: !currentPath.value || browseLoading.value,
                         onClick: confirmBrowse
                       }, {
-                        default: _withCtx(() => [..._cache[35] || (_cache[35] = [
+                        default: _withCtx(() => [..._cache[42] || (_cache[42] = [
                           _createTextVNode("选定此目录", -1)
                         ])]),
                         _: 1
@@ -681,6 +798,6 @@ const _sfc_main = /* @__PURE__ */ _defineComponent({
   }
 });
 
-const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-6ca6c23a"]]);
+const Config = /* @__PURE__ */ _export_sfc(_sfc_main, [["__scopeId", "data-v-2a8a8456"]]);
 
 export { Config as default };

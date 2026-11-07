@@ -35,12 +35,12 @@ _TV_TYPES = {"tv", "movie"}
 # 限流**并不是「硬封 30 分钟」**，而是**指数退避**：``base_wait=60s``、
 # ``max_wait=600s``、``backoff_factor=2``、且**成功一次即重置回 60s 基线**。
 # 我们照搬这套，避免误判成永久封禁把人晾着：
-#   - 一碰 103 → 先等 60s；冷却期内又碰 → 120s → 240s → 480s → 封顶 600s；
+#   - 一碰 103 → 先等 5min；冷却期内又碰 → 10min → 20min → 封顶 30min；
 #   - 任意一次「未限流的成功搜索」立即把退避重置回基线。
 # 这样正常浏览（偶尔几次搜索）几乎不触发；即使被限，也会随成功自动恢复。
 THROTTLE_CODE = "103"
-COOLDOWN_BASE_SECONDS = 60.0
-COOLDOWN_MAX_SECONDS = 600.0
+COOLDOWN_BASE_SECONDS = 300.0
+COOLDOWN_MAX_SECONDS = 1800.0
 COOLDOWN_BACKOFF = 2.0
 
 _search_blocked_until = 0.0  # time.monotonic() 时刻（进程内全局，reload 即清）
@@ -69,20 +69,23 @@ def _fmt_cooldown(seconds: float) -> str:
     return f"{seconds / 60:.1f} 分钟"
 
 
+def _cool_down(reason: str) -> None:
+    """推进一次冷却（指数退避），并打一条告警。"""
+    global _search_blocked_until, _current_wait
+    wait = _current_wait
+    _search_blocked_until = _mono() + wait
+    _current_wait = min(_current_wait * COOLDOWN_BACKOFF, COOLDOWN_MAX_SECONDS)
+    logger.warning(
+        f"{constants.SOURCE_NAME} {reason}，自动退避降温：本轮冷却约 "
+        f"{_fmt_cooldown(wait)}（封顶 {_fmt_cooldown(COOLDOWN_MAX_SECONDS)}）；"
+        f"期间搜索请求不再发往豆瓣，成功一次即恢复"
+    )
+
+
 def _note_throttle(result: Any) -> None:
     """错误包是 103 限流 → 指数退避推进冷却；其它错误码不熔断。"""
-    global _search_blocked_until, _current_wait
     if isinstance(result, dict) and str(result.get("code") or "") == THROTTLE_CODE:
-        now = _mono()
-        wait = _current_wait
-        _search_blocked_until = now + wait
-        _current_wait = min(_current_wait * COOLDOWN_BACKOFF, COOLDOWN_MAX_SECONDS)
-        logger.warning(
-            f"{constants.SOURCE_NAME} 豆瓣搜索被限流（code=103 need_login），"
-            f"自动退避降温：本轮冷却约 {_fmt_cooldown(wait)}（封顶 "
-            f"{_fmt_cooldown(COOLDOWN_MAX_SECONDS)}）；期间搜索请求不再发往豆瓣，"
-            f"成功一次即恢复"
-        )
+        _cool_down("豆瓣搜索被限流（code=103 need_login）")
 
 
 def _reset_throttle() -> None:
@@ -94,10 +97,16 @@ def _reset_throttle() -> None:
 
 
 def _strip_html(text: str) -> str:
-    """豆瓣 ``desc`` 是富文本 HTML，剥成纯文本给展示层。"""
+    """豆瓣 ``desc`` 是富文本 HTML，剥成纯文本给展示层。
+
+    豆瓣影人简介会把整段 ``<style>`` 一起塞进正文（实测 2026-11-04：
+    「崔一梁」的介绍后面挂了 200 多字 CSS），所以先连内容一起丢掉
+    ``<style>`` / ``<script>``，再剥标签。
+    """
     if not text:
         return ""
-    text = re.sub(r"<[^>]+>", "", str(text))
+    text = re.sub(r"<(style|script)\b[^>]*>.*?</\1>", " ", str(text), flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", "", text)
     return (
         text.replace("&nbsp;", " ")
         .replace("&amp;", "&")
@@ -162,6 +171,13 @@ def _tv_search_sync(keyword: str, count: int) -> list[dict]:
         logger.warning(f"{constants.SOURCE_NAME} 豆瓣搜索失败 {keyword}：{err}")
         return []
     if not isinstance(result, dict):
+        # ``None`` 不是「豆瓣没收录」，而是**这次请求没拿到可用响应**。
+        # 关键背景（2026-11-03 实测）：宿主 ``DoubanApi._handle_response`` 会把
+        # 非 200、JSON 异常、以及 ``code != 0`` 的业务错误（含 ``code=103``）
+        # **统统一律吞成 ``None``**，插件侧看不到错误码 —— 于是熔断永远不会触发，
+        # 批量回填会一条接一条地继续打，把本来只是「偶发被限」的通道打成全灭。
+        # 所以这里按「通道忙」处理：同样推进冷却，让上层提前收工、过几分钟再来。
+        _cool_down(f"豆瓣搜索无响应（返回 {type(result).__name__}）")
         return []
     # 错误包判别（实测 2026-10-21：搜索过频时返回 ``{"code":103,"msg":"need_login"}``，
     # 没有 ``items`` 键）——必须告警而不是当成"无结果"，否则调用方会把限流误判成
@@ -291,6 +307,78 @@ def is_douban_work(media_id: str) -> bool:
     return entity_of(media_id) == constants.DOUBAN_WORK
 
 
+# ── 豆瓣演职员表（人物豆瓣 id 的唯一来源，2026-11-03 实装） ────────────
+#
+# 实测（2026-11-03）：豆瓣**作品详情** ``tv_detail`` 里的 ``actors`` 只有名字
+# （``[{"name": "卡戎"}, {"name": "张珊"}]``），``directors`` 常常直接是空数组
+# —— **完全不带 id**。带 id 的只有 ``/tv/{sid}/celebrities``：``actors`` 与
+# ``directors`` 两组都是完整影人对象，每项有 ``id``（豆瓣影人 id）、``uri``、
+# ``url``、``avatar``、``character``（「导演」/「饰 安欣」）与 ``roles``。
+#
+# 所以「人物 → doubanp」最硬的一条路是**反过来**走：先有作品 sid，再拉演职员
+# 表，同片同名的就是同一个人 —— 不用 person_search，也不用「影人作品交集」
+# 打分消歧，一次请求还能覆盖几十号人。
+
+
+def _celebrities_sync(subject_id: str) -> Optional[list[dict]]:
+    """同步取豆瓣演职员表（须在线程里调用）。
+
+    返回 ``None`` = **通道没给可用响应**（限流 / 403 / 宿主吞成 ``None``），
+    与「这部剧确实没有演职员数据」的空列表严格区分：调用方靠这个决定是
+    提前收工降温，还是继续往下扫。混为一谈会把风控当成「没数据」一路打下去。
+    """
+    if search_blocked():
+        return None
+    try:
+        data = _api().tv_celebrities(str(subject_id))
+    except Exception as err:  # pragma: no cover - 网络/通道异常一律降级
+        logger.warning(f"{constants.SOURCE_NAME} 豆瓣演职员表失败 {subject_id}：{err}")
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    if _is_error_envelope(data):
+        _note_throttle(data)
+        logger.warning(
+            f"{constants.SOURCE_NAME} 豆瓣演职员表被拒 {subject_id}："
+            f"code={data.get('code')} msg={data.get('msg')}"
+        )
+        return None
+    out: list[dict] = []
+    seen: set[str] = set()
+    for kind, key in (("director", "directors"), ("actor", "actors")):
+        for item in data.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not pid.isdigit() or not name:
+                continue
+            # 导演兼主演的同一人会在两组各出现一次，按 pid 去重
+            if pid in seen:
+                continue
+            seen.add(pid)
+            avatar = item.get("avatar") or {}
+            out.append(
+                {
+                    "name": name,
+                    "pid": pid,
+                    "kind": kind,
+                    "role": str(item.get("character") or "").strip(),
+                    "avatar": str(avatar.get("normal") or avatar.get("large") or ""),
+                }
+            )
+    _reset_throttle()
+    return out
+
+
+async def tv_celebrities(subject_id: str) -> Optional[list[dict]]:
+    """豆瓣演职员表 → ``[{name, pid, kind, role, avatar}]``；``None`` = 通道异常。"""
+    sid = str(subject_id or "").strip()
+    if not sid:
+        return []
+    return await asyncio.to_thread(_celebrities_sync, sid)
+
+
 # ── 豆瓣人物（人物档案融合用，2026-10-22 实装） ───────────────────────
 
 def _person_search_sync(keyword: str) -> list[dict]:
@@ -308,6 +396,11 @@ def _person_search_sync(keyword: str) -> list[dict]:
         result = _api().person_search(keyword, start=0, count=10)
     except Exception as err:  # pragma: no cover - 网络/通道异常一律降级
         logger.warning(f"{constants.SOURCE_NAME} 豆瓣人物搜索失败 {keyword}：{err}")
+        return []
+    if not isinstance(result, dict):
+        # 同 ``_tv_search_sync``：宿主把非 200 / 业务错误码一律吞成 None，
+        # 只能在插件侧按「通道忙」推进冷却，别继续打。
+        _cool_down(f"豆瓣人物搜索无响应（返回 {type(result).__name__}）")
         return []
     if _is_error_envelope(result):
         _note_throttle(result)

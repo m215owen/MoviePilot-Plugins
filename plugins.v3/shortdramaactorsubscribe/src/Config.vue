@@ -9,7 +9,8 @@
       </div>
 
       <v-alert type="info" variant="tonal" density="compact" class="mb-3">
-        作品全部来自<b>短剧百科</b>（duanjubaike.net，已作为媒体数据源接入系统）。
+        作品全部来自<b>短剧百科数据源</b>（ShortDramaBaikeScraper：duanjubaike.org /
+        www.duanjubaike.net，已作为媒体数据源接入系统；站点由数据源插件统一配置）。
         在作品墙点「订阅」，走的就是<b>MoviePilot 自己的订阅系统</b> ——
         搜索、下载、整理全部由系统接管。
       </v-alert>
@@ -27,7 +28,7 @@
           />
         </v-col>
         <v-col cols="12" sm="6" md="3">
-          <v-switch v-model="local.notify" label="新作品发系统通知" color="primary" hide-details />
+          <v-switch v-model="local.notify" label="新剧发系统通知" color="primary" hide-details />
         </v-col>
         <v-col cols="12" sm="6" md="3">
           <v-switch
@@ -273,7 +274,7 @@
       <div class="text-subtitle-2 mb-2">
         <v-icon icon="mdi-bell-plus-outline" size="18" class="mr-1" />
         自动订阅演员作品
-        <span class="text-caption sdas-dim ml-2">发现到符合条件的新作品，直接交给宿主订阅系统</span>
+        <span class="text-caption sdas-dim ml-2">发现到符合条件的新剧，直接记进插件订阅清单</span>
       </div>
       <v-switch
         v-model="local.auto_subscribe"
@@ -319,36 +320,24 @@
         label="已在媒体库的作品跳过"
       />
       <div class="text-caption sdas-dim mt-1">
-        订阅走宿主订阅系统（与作品墙点「订阅」同一条链路），搜索 / 下载 / 整理都由宿主接手；
-        集数按作品卡上的集数提交，下载器沿用上面「订阅下载器」。
-        <b>只订新作品</b>：只订最近 7 天内上映（按作品卡上的首播 / 上映日期）的作品，与作品墙的「新作品」同口径；
+        订阅记进**插件订阅清单**（与作品墙点「订阅」同一条链路；宿主订阅 2026-11-02 起完全去除），
+        搜索由插件的订阅搜索任务全分类代跑，下载 / 整理仍由宿主接手；下载器沿用上面「订阅下载器」。
+        <b>只订新剧</b>：只订带站点「新剧」角标的作品（与作品墙的「新剧」同口径）；
         <b>全部作品</b>：连历史作品一起补订，按「单轮最多订阅」逐轮推进。
       </div>
 
       <v-divider class="my-3" />
 
-      <!-- 订阅引擎 -->
+      <!-- 订阅搜索（2026-11-02：宿主订阅完全去除，只剩插件自建这一条） -->
       <div class="text-subtitle-2 mb-2">
         <v-icon icon="mdi-engine-outline" size="18" class="mr-1" />
-        订阅引擎
+        订阅搜索
       </div>
-      <v-select
-        v-model="local.subscribe_engine"
-        :items="engineOptions"
-        item-title="title"
-        item-value="value"
-        label="搜索下载走哪条链路"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
       <div class="text-caption sdas-dim mt-1">
-        <b>宿主订阅系统</b>：订阅交给宿主，搜索按媒体类型带站点分类参数 —— 个别站点把短剧挂在电影分类时会永远搜不到；
-        <b>自建订阅搜索</b>：插件自己就是订阅系统 —— 「订阅」记在插件自己的清单里（作品墙左侧面板可见），
-        **不提交宿主订阅系统**；搜索时全分类一起搜（电影 + 电视剧 + 短剧），按演员名 / 集数 / 年份消歧后直接提交下载，
-        下载 / 整理 / 通知仍归宿主。两种引擎自动互斥，只跑选中的那条。
+        订阅只有这一条链路：<b>插件自己就是订阅系统</b> —— 「订阅」记在插件自己的清单里（作品墙左侧面板可见），
+        <b>不再提交宿主订阅系统</b>（宿主那边的订阅与本插件无关）。搜索时全分类一起搜（电影 + 电视剧 + 短剧），
+        按演员名 / 集数 / 年份消歧后直接提交下载，下载 / 整理 / 通知仍归宿主。
       </div>
-      <template v-if="local.subscribe_engine === 'self'">
         <v-row dense class="mt-1">
           <v-col cols="12" sm="4">
             <v-text-field
@@ -392,7 +381,6 @@
           另外，插件每 30 分钟自动拉一次**订阅站点的站点 RSS**（不打搜索接口，避开站点流控），新种子与当前订阅
           按剧名消歧后直接下载；RSS 没有的仍由主动搜索兜底。
         </div>
-      </template>
 
       <v-divider class="my-3" />
 
@@ -487,6 +475,102 @@
 
       <v-divider class="my-3" />
 
+      <!-- 发现页（原数据源「探索页」的配置，2026-11-02 迁到本插件） -->
+      <div class="text-subtitle-2 mb-2">
+        <v-icon icon="mdi-compass-outline" size="18" class="mr-1" />
+        发现页
+        <span class="text-caption sdas-dim ml-2">
+          演员目录分男女榜（在「发现」页切换）；这里控制还露出哪些站点列表 / 榜单
+        </span>
+      </div>
+      <v-select
+        v-model="local.discover_tabs"
+        :items="discoverOptions"
+        item-title="title"
+        item-value="value"
+        label="发现页展示的列表 / 榜单"
+        variant="outlined"
+        density="compact"
+        multiple
+        chips
+        closable-chips
+        hide-details
+        :loading="discoverLoading"
+        :placeholder="discoverOptions.length ? '不选 = 全部显示' : '正在从数据源取目录…'"
+      >
+        <template #prepend-item>
+          <div class="d-flex align-center px-4 pb-2" style="gap: 8px">
+            <v-btn
+              size="x-small"
+              variant="tonal"
+              color="primary"
+              @click="selectAllDiscoverTabs"
+            >
+              全选
+            </v-btn>
+            <v-btn size="x-small" variant="tonal" @click="local.discover_tabs = []">
+              清空
+            </v-btn>
+            <span class="text-caption sdas-dim">留空 = 全部显示</span>
+          </div>
+        </template>
+      </v-select>
+      <div class="text-caption sdas-dim mt-1">
+        选项来自<b>数据源</b>（站点不同，能翻的列表 / 榜单也不同）：分类列表可以一直往下翻，
+        榜单是整榜一页。<b>全部取消 = 发现页只留「演员」目录</b>。
+        这项配置原先在数据源插件的「探索页」里，2026-11-02 迁到这里。
+      </div>
+      <div v-if="discoverMessage" class="text-caption text-warning mt-1">
+        {{ discoverMessage }}
+      </div>
+
+      <!-- 发现页 RSS 站点（2026-11-03）：「站点 RSS」视图拉哪些站点，独立配置 -->
+      <template v-if="siteOptions.length">
+        <div class="text-subtitle-2 mb-2 mt-4">
+          <v-icon icon="mdi-rss" size="18" class="mr-1" />
+          发现页 RSS 站点
+          <span class="text-caption sdas-dim ml-2">
+            发现页「站点 RSS」视图拉哪些站点的最新种子
+          </span>
+        </div>
+        <v-select
+          v-model="rssSiteModels"
+          :items="sortedRssSiteOptions"
+          item-title="name"
+          item-value="id"
+          label="发现页 RSS 站点"
+          multiple
+          chips
+          closable-chips
+          variant="outlined"
+          density="compact"
+          hide-details
+          placeholder="不选 = 跟随订阅站点"
+        >
+          <template #prepend-item>
+            <div class="d-flex align-center px-4 pb-2" style="gap: 8px">
+              <v-btn size="x-small" variant="tonal" color="primary" @click="selectAllRssSites">
+                全选
+              </v-btn>
+              <v-btn size="x-small" variant="tonal" @click="rssSiteModels = []">清空</v-btn>
+              <span class="text-caption sdas-dim">
+                已选 {{ rssSiteIds.length }} / {{ siteOptions.length }}
+              </span>
+            </div>
+          </template>
+        </v-select>
+        <div class="text-caption sdas-dim mt-1">
+          与「订阅站点」是两件事：那一项管<b>提交订阅</b>去哪搜，这一项管发现页「站点 RSS」
+          拉<b>哪些站点</b>的最新种子。不勾 = 跟随订阅站点集合（老配置不用重新勾）。
+          站点识别出的种子会用<b>数据源</b>识别成作品卡，点卡进详情 / 订阅。
+        </div>
+      </template>
+      <div v-else-if="!siteLoading" class="text-caption sdas-dim mt-2">
+        当前没有启用中的站点 —— 「站点 RSS」视图会跟随订阅站点集合。
+      </div>
+
+      <v-divider class="my-3" />
+
       <v-alert v-if="saveError" type="error" variant="tonal" density="compact" class="mb-2">
         {{ saveError }}
       </v-alert>
@@ -506,6 +590,7 @@ import {
   fetchActorList,
   fetchDownloaderOptions,
   fetchDownloadPaths,
+  fetchRanks,
   fetchSearchSites,
   saveConfig,
 } from './api'
@@ -545,6 +630,7 @@ function defaults(): PluginConfig {
     search_sites: '',
     subscribe_downloader: '',
     subscribe_sites: '',
+    rss_sites: '',
     subscribe_save_path: '',
     subscribe_mode: 'follow',
     subscribe_prefer: 'seeders',
@@ -552,25 +638,20 @@ function defaults(): PluginConfig {
     auto_subscribe_scope: 'new',
     auto_subscribe_max_per_run: 5,
     auto_subscribe_skip_library: true,
-    subscribe_engine: 'host',
+    discover_tabs: [],
     self_interval_hours: 6,
     self_max_per_run: 5,
     self_max_pages: 3,
   }
 }
 
-/** 订阅范围选项：`new` 只订演员加入之后的新作品，`all` 连历史作品一起补订 */
+/** 订阅范围选项：`new` 只订带「新剧」角标的作品，`all` 连历史作品一起补订 */
 const scopeOptions = [
-  { title: '只订新作品（推荐）', value: 'new' },
+  { title: '只订新剧（推荐）', value: 'new' },
   { title: '全部作品（含历史）', value: 'all' },
 ]
 
 /** 订阅引擎选项：宿主订阅链 vs 插件自建订阅搜索 */
-const engineOptions = [
-  { title: '宿主订阅系统（默认）', value: 'host' },
-  { title: '自建订阅搜索（全分类补搜）', value: 'self' },
-]
-
 const local = ref<PluginConfig>(defaults())
 const saving = ref(false)
 const saveError = ref('')
@@ -581,7 +662,39 @@ const siteOptions = ref<HostSite[]>([])
 const siteLoadFailed = ref(false)
 const siteLoading = ref(true)
 
+// ── 发现页的列表 / 榜单 ──（选项由数据源的 discover_tabs 模块方法给）
+
+/** 可选项：数据源当前站点能翻的列表 / 榜单（配置项存的就是这些 key） */
+const discoverOptions = ref<{ title: string; value: string }[]>([])
+const discoverLoading = ref(true)
+/** 目录取不到时的说明（数据源未启用 / 停用 / 还没实现模块方法都会走到这里） */
+const discoverMessage = ref('')
+
+/** 拉一次可选项。⚠️ 必须带 `all=1`：`/ranks` 默认按当前配置过滤，拿它当选项会让取消过的项再也勾不回来 */
+async function loadDiscoverOptions(): Promise<void> {
+  discoverLoading.value = true
+  try {
+    const payload = await fetchRanks(props, true)
+    discoverOptions.value = (payload.ranks || [])
+      .filter((item) => !!item.key)
+      .map((item) => ({ title: item.name || item.key, value: item.key }))
+    discoverMessage.value = payload.message || ''
+  } catch (err) {
+    discoverMessage.value = `列表 / 榜单目录加载失败：${
+      err instanceof Error ? err.message : String(err)
+    }`
+  } finally {
+    discoverLoading.value = false
+  }
+}
+
+/** 全选（写入的是数据源目录的 key，不是写死的清单） */
+function selectAllDiscoverTabs(): void {
+  local.value.discover_tabs = discoverOptions.value.map((item) => item.value)
+}
+
 onMounted(async () => {
+  void loadDiscoverOptions()
   try {
     siteOptions.value = await fetchSearchSites(props)
   } catch {
@@ -653,6 +766,31 @@ const sortedSubscribeSiteOptions = computed<HostSite[]>(() => {
 
 function selectAllSubscribeSites(): void {
   local.value.subscribe_sites = siteOptions.value.map((site) => site.id).join(',')
+}
+
+// ── 发现页 RSS 站点（独立配置项，落到 rss_sites；空 = 跟随订阅站点） ──
+
+const rssSiteIds = computed(() => parseSiteIds(local.value.rss_sites))
+
+/** v-select 多选直接吃数组；写回时归一成逗号分隔字符串存配置 */
+const rssSiteModels = computed<number[]>({
+  get: () => rssSiteIds.value,
+  set: (ids) => {
+    const unique = Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)))
+    local.value.rss_sites = unique.join(',')
+  },
+})
+
+/** 已勾选的排前面，组内保持原有顺序 */
+const sortedRssSiteOptions = computed<HostSite[]>(() => {
+  const picked = new Set(rssSiteIds.value)
+  const selected = siteOptions.value.filter((site) => picked.has(site.id))
+  const rest = siteOptions.value.filter((site) => !picked.has(site.id))
+  return [...selected, ...rest]
+})
+
+function selectAllRssSites(): void {
+  local.value.rss_sites = siteOptions.value.map((site) => site.id).join(',')
 }
 
 // ── 订阅下载目录 ──
@@ -836,7 +974,7 @@ const actorNameToIds = computed<Record<string, string[]>>(() => {
 })
 
 /** 行内 ID 形态（复合 ID，与后端 `_actor_id_of` 同一口径） */
-const ACTOR_ID_RE = /^(?:yanyuan|daoyan|bianju):\d+$/
+const ACTOR_ID_RE = /^(?:yanyuan|daoyan|bianju|actor):\d+$/
 
 const actorsDisplay = computed<string>({
   get() {
@@ -861,7 +999,7 @@ const actorsDisplay = computed<string>({
         const text = line.trim()
         if (!text) return ''
         // 「名字｜ID」形态：取 ID（同名区分后缀）
-        const mixed = text.match(/^(.*)｜((?:yanyuan|daoyan|bianju):\d+)$/)
+        const mixed = text.match(/^(.*)｜((?:yanyuan|daoyan|bianju|actor):\d+)$/)
         if (mixed) return mixed[2]
         if (ACTOR_ID_RE.test(text)) return text
         // 纯名字：映射回 ID（同名取不出唯一 ID 时原样传，后端解析归位）

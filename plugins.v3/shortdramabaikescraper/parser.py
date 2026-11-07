@@ -132,6 +132,9 @@ def parse_detail(media_id: str, html: str) -> Optional[dict]:
     if not media_id or not html:
         return None
     # 只解析百科八类实体页；豆瓣前缀（douban/doubanp）走豆瓣通道，不归本解析器
+    # .org 的两个实体（drama/actor）页面结构完全不同，走 orgsite + orgadapt
+    if entity_of(media_id) in constants.ORG_ENTITIES:
+        return None
     if entity_of(media_id) not in constants.ENTITY_ALL:
         return None
     h1 = re.search(r"<h1[^>]*>(.{0,500}?)</h1>", html, re.S)
@@ -256,7 +259,10 @@ def detail_to_media_info(detail: dict):
                 # 抓页面 —— 图床模板对人物实体同样成立（``yanyuan/<id>.jpg``，实测
                 # 200 / 22KB），按身份反推即得。不传的话宿主 ``MediaInfo.actors``
                 # 里压根没有头像字段，下游详情页只能出人形占位。
-                profile_path=image_url(item.get("media_id", "")) or None,
+                #
+                # ``.org`` 的头像在卡里就带 CDN 绝对地址（不能按身份反拼），
+                # 所以记录里的 ``poster`` 优先，模板反推只是 .net 的兜底。
+                profile_path=(item.get("poster") or image_url(item.get("media_id", ""))) or None,
             )
         )
     directors = []
@@ -270,7 +276,7 @@ def detail_to_media_info(detail: dict):
                 url=detail_url(item.get("media_id", "")) or None,
                 # 头像同演员：站点「导演/编剧」区块的卡片也是 ``<img src=…yanyuan|daoyan|bianju/<id>.jpg>``，
                 # 图床模板按身份反推即得，零请求。
-                profile_path=image_url(item.get("media_id", "")) or None,
+                profile_path=(item.get("poster") or image_url(item.get("media_id", ""))) or None,
             )
         )
     genres = [MediaGenre(id=0, name=tag) for tag in detail.get("tags", []) if tag]
@@ -301,9 +307,9 @@ def detail_to_media_info(detail: dict):
         # （``hostmedia.to_host_media`` 只搬白名单字段，漏传等于识别结果里没有）
         release_date=str(detail.get("release_date") or "") or None,
         networks=networks,
-        # 两个外部 id 都是 `service` 回填的（站点页面本身没有这两个字段）：
-        # 豆瓣走站内搜索 + 豆瓣，`_fill_tmdb_id` 经宿主 TMDB 通道按片名+年份匹配。
-        # 查不到时回填的是 "" 占位（让缓存命中路径不再重复搜），这里一律当没有。
+        # 两个外部 id 都由 `service` 回 ID 库按名取（站点页面本身没有这两个字段）：
+        # 豆瓣走站内搜索 + 豆瓣、TMDB 经宿主通道按片名+年份匹配，结论落在
+        # `baike_ext`（只按名存一份）；详情缓存里不留副本，这里拿到的就是当下库值。
         # 挂上去只有一个目的：让 NFO 能带上外部 id（注入见 scrape.py）。
         douban_id=str(detail["douban_id"]) if detail.get("douban_id") else None,
         tmdb_id=int(detail["tmdb_id"]) if str(detail.get("tmdb_id") or "").isdigit() else None,
@@ -390,6 +396,9 @@ def parse_person_works(html: str) -> list[dict]:
 def parse_person(media_id: str, html: str) -> Optional[dict]:
     """解析人物页；无 ``<h1>``（软 404 空壳）返回 ``None``。"""
     entity = entity_of(media_id)
+    # ``actor`` 属 .org（Alpine 页面），本解析器的正则不适用
+    if entity in constants.ORG_ENTITIES:
+        return None
     if entity not in constants.ENTITY_PERSON or not html:
         return None
     h1 = re.search(r"<h1[^>]*>(.{0,500}?)</h1>", html, re.S)

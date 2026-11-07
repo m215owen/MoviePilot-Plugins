@@ -1,15 +1,12 @@
 const currentImports = {};
       const exportSet = new Set(['Module', '__esModule', 'default', '_export_sfc']);
       let moduleMap = {
-"./AppPage":()=>{
-      dynamicLoadingCss(["PanelTabs-B58reUcy.css"], false, './AppPage');
-      return __federation_import('./__federation_expose_AppPage-olFsNJy4.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Page":()=>{
-      dynamicLoadingCss(["PanelTabs-B58reUcy.css"], false, './Page');
-      return __federation_import('./__federation_expose_Page-BUFGmW0x.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_Page-DBQ-wF1i.css"], false, './Page');
+      return __federation_import('./__federation_expose_Page-DnXiu5iw.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Config":()=>{
-      dynamicLoadingCss([], false, './Config');
-      return __federation_import('./__federation_expose_Config-jhGW1cEi.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
+      dynamicLoadingCss(["__federation_expose_Config-ynH7u3IJ.css"], false, './Config');
+      return __federation_import('./__federation_expose_Config-DGaKLmfo.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
       const seen = {};
       const dynamicLoadingCss = (cssFilePaths, dontAppendStylesToHead, exposeItemName) => {
         const metaUrl = import.meta.url;
@@ -20,7 +17,7 @@ const currentImports = {};
 
         const curUrl = metaUrl.substring(0, metaUrl.lastIndexOf('remoteEntry.js'));
         const base = '/';
-        'a14';
+        'assets';
 
         cssFilePaths.forEach(cssPath => {
          let href = '';
@@ -50,7 +47,7 @@ const currentImports = {};
          }
          
           if (dontAppendStylesToHead) {
-            const key = 'css__ShortDramaBaikeScraper__' + exposeItemName;
+            const key = 'css__ShortDramaBaikeOrganizer__' + exposeItemName;
             window[key] = window[key] || [];
             window[key].push(href);
             return;

@@ -30,7 +30,16 @@ from typing import Any, Iterable, Optional
 
 from app.sdk.logging import logger
 
-__all__ = ["IMAGE_DOMAINS", "KEY", "active", "ensure", "revoke", "sync"]
+__all__ = [
+    "ALL_IMAGE_DOMAINS",
+    "BAIDU_IMAGE_DOMAINS",
+    "IMAGE_DOMAINS",
+    "KEY",
+    "active",
+    "ensure",
+    "revoke",
+    "sync",
+]
 
 try:  # 宿主正式门面；没有就整体降级为 no-op（老宿主不该因此拖垮插件）
     from app.sdk.config import settings as _host_settings
@@ -43,8 +52,20 @@ KEY = "SECURITY_IMAGE_DOMAINS"
 #: 需要登记的图片主机（见模块 docstring 的取舍理由）
 IMAGE_DOMAINS = (
     "img.duanjubaike.net",
+    # .org 的海报 / 头像全在自建 CDN 上（``cdn.duanjubaike.org``，
+    # 详情 / 人物页给的是完整绝对地址，不能按身份反拼）——不登记就整站无封面
+    "cdn.duanjubaike.org",
     "doubanio.com",
 )
+
+#: 百度 gimg 中转主机：**恒登记**（与「保留使用百度图床代理」开关无关）。
+#: 站点页面里现成的海报 / 头像地址就是这种形态（详情 / 榜单解析出来的原样带出去），
+#: 不登记就会被宿主图片代理按 ``domain_not_allowed`` 拦掉（返回 0 字节 ⇒ 卡上空白）。
+#: 站点目前固定用 ``gimg0``；若将来换主机，在这里补。
+BAIDU_IMAGE_DOMAINS = ("gimg0.baidu.com",)
+
+#: 本插件可能登记过的全部图片主机 —— 停用 / 关闭代理时按它撤回，避免残留
+ALL_IMAGE_DOMAINS = tuple(IMAGE_DOMAINS) + tuple(BAIDU_IMAGE_DOMAINS)
 
 #: 串行化读改写，避免 init 与 stop 交错时把对方的改动覆盖掉
 _lock = threading.Lock()
@@ -85,7 +106,7 @@ def ensure(domains: Iterable[str] = IMAGE_DOMAINS) -> list[str]:
         return missing
 
 
-def revoke(domains: Iterable[str] = IMAGE_DOMAINS) -> list[str]:
+def revoke(domains: Iterable[str] = ALL_IMAGE_DOMAINS) -> list[str]:
     """只撤回本插件登记的那几个域，返回实际移除的条目。"""
     wanted = {str(domain) for domain in domains if domain}
     with _lock:
@@ -110,14 +131,26 @@ def active(domains: Iterable[str] = IMAGE_DOMAINS) -> list[str]:
     return [domain for domain in domains if domain in current]
 
 
-def sync(enabled: bool) -> dict[str, Any]:
-    """按启用状态登记 / 撤回；任何异常都吞掉（只记 warning）。"""
+def sync(enabled: bool, use_baidu_proxy: bool = True) -> dict[str, Any]:
+    """按启用状态登记 / 撤回；任何异常都吞掉（只记 warning）。
+
+    ⚠️ 百度 gimg 主机**恒登记**（不看 ``use_baidu_proxy``）：
+
+    出图形态只是「新拼的地址走哪条路」，站点**页面里现成的地址**就是百度中转形态
+    （详情 / 榜单解析出来的 poster 原样带出去），别的插件落盘的快照里也可能留着
+    上一次开关留下的百度地址。这些地址能不能显示只看白名单放不放行 —— 撤回它，
+    那些卡就集体空白（宿主图片代理直接返回 0 字节）。白名单是「能不能显示」的开关，
+    不该被「新地址怎么拼」这个偏好带着撤。
+
+    停用插件时仍按 :data:`ALL_IMAGE_DOMAINS` 全集撤回，不留残留。
+    """
     result: dict[str, Any] = {"added": [], "removed": []}
     try:
         if enabled:
-            result["added"] = ensure()
+            wanted = list(IMAGE_DOMAINS) + list(BAIDU_IMAGE_DOMAINS)
+            result["added"] = ensure(wanted)
         else:
-            result["removed"] = revoke()
+            result["removed"] = revoke(ALL_IMAGE_DOMAINS)
     except Exception as err:  # noqa: BLE001 - 白名单失败不该影响插件主功能
         logger.warning(f"{KEY} 同步失败（不影响检索与识别）：{err}")
         return result

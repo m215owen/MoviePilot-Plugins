@@ -115,12 +115,21 @@
       <span class="sdbs-meta-item">
         <v-icon size="14" icon="mdi-web" />
         站点
+        <!-- 跟随 `/status.site`：切到新站后这里必须跟着变，否则「切换没生效」 -->
         <a
           class="sdbs-key"
-          href="https://www.duanjubaike.net"
+          :href="siteInfo.base"
           target="_blank"
           rel="noreferrer noopener"
-        >duanjubaike.net</a>
+        >{{ siteInfo.host }}</a>
+        <span class="sdbs-dim">{{ siteKey === 'org' ? '新站' : '老站' }}</span>
+      </span>
+      <span class="sdbs-meta-item">
+        <v-icon size="14" icon="mdi-filter-remove-outline" />
+        排除
+        <span class="sdbs-meta-value">
+          {{ status?.exclude_manju === false ? '未开启' : siteInfo.excludeName }}
+        </span>
       </span>
       <v-spacer />
       <v-btn
@@ -140,7 +149,15 @@
 import { computed, onMounted, ref } from 'vue'
 import { fetchStatus } from './api'
 import DonutChart from './DonutChart.vue'
-import { ENTITY_FILTERS, REGION_LABELS, entityLabel, percent, regionLabel } from './constants'
+import {
+  MANJU_ENTITIES,
+  entityFiltersFor,
+  REGION_LABELS,
+  entityLabel,
+  percent,
+  regionLabel,
+} from './constants'
+import { setSite, siteInfo, siteKey } from './site'
 import type { PluginApi, StatusPayload } from './types'
 
 const props = defineProps<{
@@ -161,20 +178,33 @@ const doubanTotal = computed(() => {
 })
 
 /**
- * 实体分布行：按固定顺序（作品 → 原著 → 人物 → 豆瓣），**全部列出**。
+ * 实体分布行：按**当前主站**的实体顺序（作品 → 原著 → 人物 → 豆瓣）**全部列出**。
  *
- * 不隐藏 0 条的行：`hema` 为 0 与 `hema` 不存在是两件事，隐藏了就看不出
+ * 不隐藏本主站 0 条的行：`drama` 为 0 与 `drama` 不存在是两件事，隐藏了就看不出
  * 「这个分区一次都没抓到过」。
+ *
+ * 别的主站的前缀（切站不清库，老站的行还在库里）只在**有条目时**才追加：
+ * 它们是残留数据，0 条时列出来只会让人以为分类没切过来。
+ *
+ * 「排除漫剧 / AI 剧」打开时，漫剧类（`MANJU_ENTITIES`）整类不列：后端已把
+ * 这些行从统计里滤掉，留着就是三行永远 0 条的「漫剧」。
  */
 const entityRows = computed(() => {
   const counts = status.value?.by_entity || {}
-  const known = ENTITY_FILTERS.map((key) => ({ key, count: Number(counts[key] || 0) }))
-  // 后端将来加了新前缀：排在后面原样显示，不丢数据
+  const excludeManju = status.value?.exclude_manju !== false
+  const own = entityFiltersFor(siteKey.value, excludeManju)
+  const known = own.map((key) => ({ key, count: Number(counts[key] || 0) }))
+  // 后端将来加了新前缀 / 库里还有别站的数据：有条目就排在后面原样显示，不丢数据
   const extra = Object.keys(counts)
-    .filter((key) => !ENTITY_FILTERS.includes(key))
+    .filter(
+      (key) =>
+        !own.includes(key) &&
+        Number(counts[key] || 0) > 0 &&
+        !(excludeManju && MANJU_ENTITIES.includes(key))
+    )
     .sort()
     .map((key) => ({ key, count: Number(counts[key] || 0) }))
-  return [...known, ...extra].filter((row) => row.count > 0 || ENTITY_FILTERS.includes(row.key))
+  return [...known, ...extra]
 })
 
 /**
@@ -206,6 +236,9 @@ async function load(): Promise<void> {
   error.value = ''
   try {
     status.value = await fetchStatus(props)
+    // 顺带把主站同步到全局状态：概览是打开面板的第一屏，
+    // 这里拿到的 site 比各组件各发一次 /status 更省
+    setSite(status.value?.site)
   } catch (err) {
     error.value = `读取状态失败：${err instanceof Error ? err.message : String(err)}`
     status.value = null

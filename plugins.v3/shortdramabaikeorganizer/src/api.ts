@@ -38,6 +38,13 @@ export interface OrganizerConfig {
   monitor_mode: string
   monitor_interval: number
   force_reorganize: boolean
+  // 反向联动：Emby 删除媒体 → 级联清理
+  syncdel_enabled: boolean
+  syncdel_mp_history: boolean
+  syncdel_delete_media: boolean
+  syncdel_downloaders: string[]
+  syncdel_exclude_path: string
+  syncdel_library_path: string
 }
 
 /** `/status` 载荷 */
@@ -139,6 +146,30 @@ export interface StoreSnapshot {
 export interface DirOption {
   title: string
   value: string
+}
+
+/** 补图结果里的一行（一部剧补了哪些图 / 失败原因） */
+export interface RepairItem {
+  drama: string
+  path: string
+  seasons: number[]
+  state: 'repaired' | 'failed'
+  written: string[]
+  errors: string[]
+  media_id?: string
+}
+
+/** 补图进度快照（后台任务，前端轮询） */
+export interface RepairSnapshot {
+  state: string
+  total: number
+  done: number
+  current: string
+  message: string
+  started_at: number | null
+  finished_at: number | null
+  counts: { repaired: number; failed: number }
+  items: RepairItem[]
 }
 
 /** 目录浏览结果 */
@@ -248,6 +279,8 @@ export interface OrganizePreview {
   library_dir: string
   title: string
   year: number | null
+  /** 落盘季号（手动指定时按它，默认 1） */
+  season?: number
   count: number
   items: PreviewPlan[]
 }
@@ -263,6 +296,10 @@ export interface OrganizeParams {
   episode_count?: string
   library_dir?: string
   transfer_type?: string
+  /** 手动指定季号（留空 = 沿用配置口径，Season 1） */
+  season?: string
+  /** 人工指定名称（manual=1）：百科上没有的剧，只按 title 整理、不识别不刮削 */
+  manual?: string
 }
 
 /** 扫描动作的返回（后端包了一层：`{started/stopped, message, scan: <快照>}`） */
@@ -379,6 +416,17 @@ export function pickOrganize(value: unknown, depth = 0): OrganizeSnapshot | null
   return null
 }
 
+/** 一条删除任务台账（Emby 删除联动执行过的清理） */
+export interface DeleteTaskItem {
+  time: string
+  title: string
+  media_id: string
+  mp_rows: number
+  torrents: number
+  delete_media: boolean
+  ok: boolean
+}
+
 export const backend = {
   status: (api: HostApi) => getJson<OrganizerStatus>(api, '/status'),
   scan: (api: HostApi) => getJson<ScanSnapshot>(api, '/scan'),
@@ -399,9 +447,11 @@ export const backend = {
     postJson<OrganizeAction>(api, '/organize/start', { force: force ? '1' : '0' }),
   /** 停止后台整理 */
   organizeStop: (api: HostApi) => postJson<OrganizeAction>(api, '/organize/stop'),
-  /** 整理预演：按指定身份/目标库列出将整理哪些文件（media_id 用于从源数据取季号） */
-  preview: (api: HostApi, params: { path: string; title?: string; year?: string; library_dir?: string; media_id?: string }) =>
-    getJson<OrganizePreview>(api, '/preview', params as Record<string, unknown>),
+  /** 整理预演：按指定身份/目标库/季号列出将整理哪些文件 */
+  preview: (
+    api: HostApi,
+    params: { path: string; title?: string; year?: string; library_dir?: string; media_id?: string; season?: string },
+  ) => getJson<OrganizePreview>(api, '/preview', params as Record<string, unknown>),
   /**
    * 整理详情：传 `path`/`dest` 拿单剧文件级记录；都不传拿本次整理运行详情。
    */
@@ -412,6 +462,12 @@ export const backend = {
     getJson<{ count: number; items: SearchCandidate[] }>(api, '/search', { keyword, limit }),
   /** 记录库：统计 + 全部剧记录（整理中 / 整理完成分开数） */
   store: (api: HostApi) => getJson<StoreSnapshot>(api, '/store'),
+  /** 删除任务台账 */
+  deleteHistory: (api: HostApi) =>
+    getJson<{ items: DeleteTaskItem[] }>(api, '/delete/history'),
+  /** 恢复一条删除任务（清墓碑标记） */
+  deleteRestore: (api: HostApi, time: string) =>
+    postJson<{ success: boolean; message?: string }>(api, '/delete/restore', { time }),
   /** 手动标记 / 取消「整理完成」（value=0 取消） */
   storeComplete: (api: HostApi, path: string, value = '1') =>
     postJson<{ success: boolean; message?: string }>(api, '/store/complete', { path, value }),
@@ -422,13 +478,24 @@ export const backend = {
       '/scrape',
       params,
     ),
+  /** 补图进度快照（缺失 / 残图封面补齐，后台任务） */
+  repairProgress: (api: HostApi) => getJson<RepairSnapshot>(api, '/repair'),
+  /** 启动补封面（留空 library_dir 用配置的目标库） */
+  repairStart: (api: HostApi, libraryDir = '') =>
+    postJson<{ started: boolean; message?: string; repair?: RepairSnapshot }>(
+      api,
+      '/repair/start',
+      libraryDir ? { library_dir: libraryDir } : {},
+    ),
   /** 删除一条记录库记录 */
   storeDelete: (api: HostApi, path: string) =>
-    postJson<{ success: boolean; message?: string }>(api, '/store/delete', { path }),
-  /** 清空记录库 */
+    postJson<{ success: boolean; message?: string }>(api, '/store/delete', { path }),  /** 清空记录库 */
   storeClear: (api: HostApi) =>
     postJson<{ success: boolean; message?: string; data?: { count: number } }>(api, '/store/clear'),
   browse: (api: HostApi, path = '') => getJson<BrowseResult>(api, '/dirs/browse', { path }),
   dirOptions: (api: HostApi) =>
-    getJson<{ sources: DirOption[]; libraries: DirOption[] }>(api, '/dirs/options'),
+    getJson<{ sources: DirOption[]; libraries: DirOption[]; downloaders: DirOption[] }>(
+      api,
+      '/dirs/options',
+    ),
 }

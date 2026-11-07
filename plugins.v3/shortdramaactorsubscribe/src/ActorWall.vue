@@ -53,13 +53,29 @@
 
     ⚠️ 排在所有列表之前：两个都是「钻进一个东西」，任何列表分支都得让位。
   -->
-  <ActorDetail
-    v-if="viewLayer === 'actor' && detailActor"
+  <!--
+    整页视图层：学宿主探索页（`<KeepAlive>` + `scrollBehavior` 的 savedPosition）。
+    宿主探索页「返回停在原地」的本质是**列表滚动从头到尾不被触碰**——详情盖在列表
+    上面、自己内部滚。这里同样：fixed 全屏覆盖层（Teleport 到 body —— 宿主面板容器
+    带 `transform`，留在面板里 fixed 会退化成相对它定位），列表的 scrollTop 打开
+    详情时不动、返回时也不用恢复，天然停在原地；层与层之间的位置才需要记。
+    ⚠️ 必须排在所有列表之前：都是「钻进一个东西」，任何列表分支都得让位。
+  -->
+  <Teleport to="body">
+    <div v-if="viewLayer" ref="fullViewRef" class="sdas-fullview">
+      <!-- 层间互返不再重挂：三个详情页按身份缓存实例（学宿主探索页的 KeepAlive 语义）。
+           返回上一层直接复用活实例 —— 不闪加载态、不重拉接口；滚动仍由覆盖层容器 +
+           restoreScrollTo 管，与实例缓存互不干扰。max=9 兜底 LRU，防逛多了内存膨胀。 -->
+      <KeepAlive :max="9">
+        <ActorDetail
+          v-if="viewLayer === 'actor' && detailActor"
+          :key="`a:${actorKey(detailActor)}`"
     :api="props.api"
     :actor="detailActor"
     :subscribed="isActorAdded(detailActor)"
     :busy-follow="isActorBusy(detailActor)"
     :subscribed-ids="subscribed"
+    :unsubscribed-ids="locallyUnsubscribed"
     :busy-subscribe-all="subscribingAllKey === actorKey(detailActor)"
     @back="backFromActor()"
     @toggle-actor="toggleActor(detailActor)"
@@ -71,9 +87,10 @@
 
   <WorkDetail
     v-else-if="viewLayer === 'work' && detailWork"
+    :key="`w:${detailWork.media_id || detailWork.title}`"
     :api="props.api"
     :work="detailWork"
-    :subscribed="subscribed.has(detailWork.media_id)"
+    :subscribed="isWorkSubscribed(detailWork.media_id, detailWork.title, detailWork.subscribed)"
     :subscription="detailSubscription"
         :sub-editable="subEditable"
     :followed-ids="followedActorIds"
@@ -91,17 +108,22 @@
 
   <AdaptedDetail
     v-else-if="viewLayer === 'adapted' && detailAdapted"
+    :key="`n:${detailAdapted.media_id || detailAdapted.title}`"
     :api="props.api"
     :novel="detailAdapted"
     :media-id="detailWork?.media_id || ''"
     :subscribed-ids="subscribed"
+    :unsubscribed-ids="locallyUnsubscribed"
     @back="backFromAdapted()"
     @open-work="openWorkDetail"
     @search="searchWork"
     @subscribe="subscribe"
   />
+      </KeepAlive>
+    </div>
+  </Teleport>
 
-  <div v-else class="sdas" :class="{ 'sdas--full': full }">
+  <div class="sdas" :class="{ 'sdas--full': full }">
     <!-- 标题行：只放标题与统计；筛选栏里不放任何按钮 -->
     <div class="sdas-head">
       <div class="sdas-head-main">
@@ -111,7 +133,7 @@
           <template v-else>
             {{ allTotal }} 部作品 · {{ actorCount }} 位演员
             <template v-if="inLibraryKnown"> · 已入库 {{ inLibraryCount }} 部</template>
-            <template v-if="newWorks"> · <span class="sdas-new-dot">{{ newWorks }} 部新作品</span></template>
+            <template v-if="newWorks"> · <span class="sdas-new-dot">{{ newWorks }} 部新剧</span></template>
             <template v-if="filteredOut"> · 筛选出 {{ total }} 部</template>
           </template>
         </div>
@@ -299,6 +321,23 @@
             <v-icon size="18">mdi-refresh</v-icon>
           </v-btn>
           <!--
+            刷新在库状态：在库判定带 600 秒 TTL，刚入库的剧在缓存过期前仍显示
+            「未入库」；而且宿主的本地库表只有 6 小时一次的同步在灌，刚入库的剧
+            表里压根没有。这个按钮清后端缓存、顺手触发一次宿主媒体库同步，
+            再重拉第一页，不用干等下一轮。
+          -->
+          <v-btn
+            icon
+            variant="text"
+            size="x-small"
+            class="ml-1"
+            :loading="libraryRefreshing"
+            title="刷新在库状态（清缓存 + 同步媒体库）"
+            @click="refreshInLibrary()"
+          >
+            <v-icon size="18">mdi-database-refresh</v-icon>
+          </v-btn>
+          <!--
             随机订阅 + 立即搜索全部（2026-10-23 用户口径，都在主界面）：
             随机订阅 = 从作品墙全集随机挑 N 部未订阅且未入库的作品；数量输入框
             1~10（默认 1）。立即搜索 = 现在就对全部订阅跑一轮（清冷却；
@@ -337,8 +376,16 @@
           >
             立即搜索
           </v-btn>
-          <span v-if="subEngine" class="text-caption text-medium-emphasis ml-3">
-            {{ subEngine === 'self' ? '订阅搜索：插件自建（不进系统订阅页）' : '订阅搜索：走宿主订阅系统' }}
+          <span class="text-caption text-medium-emphasis ml-3">
+            订阅搜索：插件自建（不进系统订阅页）
+          </span>
+          <!-- 换过数据源站点时：还有几条挂在旧身份上（作品墙里没对上、迁不过去） -->
+          <span
+            v-if="subStaleCount"
+            class="text-caption text-warning ml-3"
+            :title="`数据源当前站点是 ${subSite || '未知'}，这 ${subStaleCount} 条还挂在别的站点身份上`"
+          >
+            另有 {{ subStaleCount }} 条旧站点身份（点订阅即按当前站点替换）
           </span>
         </div>
       </template>
@@ -486,13 +533,26 @@
         </div>
 
         <!--
-          媒体库两张卡（2026-10-23 用户口径）：「未入库」「未订阅」—— 点一下即按该
+          媒体库三张卡（2026-10-23 用户口径）：「新剧」「未入库」「未订阅」—— 点一下即按该
           条件筛，再点取消。热度 / 播放 / 评分三种排序已撤（墙的快照里那些值恒为 0，
           排了也是并列），排序只剩「首播日期」，不再给排序行。
         -->
         <div class="flex justify-start align-center">
           <div class="mr-5 sdas-row-label"><v-label>媒体库</v-label></div>
           <div class="sdas-library-cards">
+            <button
+              type="button"
+              class="sdas-library-card"
+              :class="{ 'is-active': onlyNew }"
+              title="只看新剧（带站点「新剧」角标的作品，与卡片左上那枚绿色标签同口径）"
+              @click="onlyNew = !onlyNew"
+            >
+              <v-icon size="16" class="mr-1">mdi-new-box</v-icon>
+              <span>新剧</span>
+              <span v-if="onlyNew && filteredCount" class="sdas-library-count">
+                {{ filteredCount }}
+              </span>
+            </button>
             <button
               type="button"
               class="sdas-library-card"
@@ -511,7 +571,7 @@
               type="button"
               class="sdas-library-card"
               :class="{ 'is-active': onlyNotSubscribed }"
-              title="只显示还没订阅的作品（订阅清单 = 插件订阅清单 ∪ 宿主 djbaike 订阅，与卡片红心同一份）"
+              title="只显示还没订阅的作品（订阅清单 = 插件订阅清单，与卡片红心同一份）"
               @click="onlyNotSubscribed = !onlyNotSubscribed"
             >
               <v-icon size="16" class="mr-1">mdi-heart-off-outline</v-icon>
@@ -521,6 +581,23 @@
               </span>
             </button>
           </div>
+          <!--
+            刷新作品（2026-11-04）：先清数据源缓存、再强刷全部演员的作品快照。
+            快照平时按小时级自动更新、内容又来自数据源 24h 缓存 —— 站点改版 /
+            字段刚上线时墙上会一直是旧样子，这个按钮一次到位。全量要几分钟，
+            按钮转圈期间别关页面。
+          -->
+          <v-btn
+            icon
+            variant="text"
+            size="x-small"
+            class="ml-2"
+            :loading="worksRefreshing"
+            title="刷新作品（清数据源缓存 + 强刷快照，约几分钟）"
+            @click="refreshWorksNow()"
+          >
+            <v-icon size="18">mdi-cached</v-icon>
+          </v-btn>
         </div>
 
       </template>
@@ -595,6 +672,15 @@
               演员
             </v-chip>
             <v-chip
+              value="rss"
+              :color="discoverView === 'rss' ? 'primary' : ''"
+              title="订阅站点 RSS 最新条目（用数据源识别成作品卡）"
+              filter
+              tile
+            >
+              站点 RSS
+            </v-chip>
+            <v-chip
               v-for="item in rankItems"
               :key="item.key"
               :value="item.key"
@@ -608,12 +694,38 @@
           </v-chip-group>
         </div>
 
+        <!--
+          男女榜（2026-11-02 用户口径）：站点演员目录按性别分两榜，「全部」= 不筛。
+          只挂在「演员」这本目录上 —— 榜单是作品片单，没有性别这回事。
+        -->
+        <div
+          v-if="discoverView === 'people'"
+          class="flex justify-start align-center sdas-actor-gender"
+        >
+          <div class="mr-5 sdas-row-label"><v-label>性别</v-label></div>
+          <v-chip-group
+            :model-value="peopleGender"
+            @update:model-value="setPeopleGender($event)"
+          >
+            <v-chip
+              v-for="item in GENDER_TABS"
+              :key="item.value"
+              :value="item.value"
+              :color="peopleGender === item.value ? 'primary' : ''"
+              filter
+              tile
+            >
+              {{ item.title }}
+            </v-chip>
+          </v-chip-group>
+        </div>
+
         <div class="flex justify-start align-center sdas-actor-bar">
           <div class="text-body-2 text-medium-emphasis">
             <template v-if="discoverView === 'people'">
-              <template v-if="peopleLoading">正在取{{ peopleKindLabel }}目录…</template>
+              <template v-if="peopleLoading">正在取{{ peopleDirectoryLabel }}目录…</template>
               <template v-else-if="peopleRows.length">
-                已加载 <b>{{ peopleRows.length }}</b> 位{{ peopleKindLabel }}
+                已加载 <b>{{ peopleRows.length }}</b> 位{{ peopleDirectoryLabel }}
               </template>
               <template v-else>{{ peopleMessage || '还没有加载' }}</template>
             </template>
@@ -689,7 +801,7 @@
               <WorkCard
                 :work="work"
                 :loaded="isPosterLoaded(work.key)"
-                :subscribed="subscribed.has(work.media_id)"
+                :subscribed="isWorkSubscribed(work.media_id, work.title, work.subscribed)"
                 :subscribing="subscribingId"
                 :searching="searchNowId"
                 @poster="markPosterLoaded(work.key)"
@@ -797,12 +909,12 @@
     <template v-else-if="activeTab === 'people' && discoverView === 'people'">
       <LoadingBanner
         v-if="peopleLoading && !peopleRows.length"
-        :text="`正在取${peopleKindLabel}目录…`"
+        :text="`正在取${peopleDirectoryLabel}目录…`"
       />
       <NoDataFound
         v-else-if="!peopleRows.length"
         error-code="404"
-        :error-title="peopleMessage ? '人物目录还取不到' : `没有取到${peopleKindLabel}`"
+        :error-title="peopleMessage ? '人物目录还取不到' : `没有取到${peopleDirectoryLabel}`"
         :error-description="peopleMessage || '数据源这次没有返回内容，过一会儿再试'"
       />
       <ProgressiveCardGrid
@@ -840,7 +952,7 @@
           width="2"
         />
         <span v-else-if="peopleRows.length && !peopleHasMore">
-          已到末尾 · 共 {{ peopleRows.length }} 位{{ peopleKindLabel }}
+          已到末尾 · 共 {{ peopleRows.length }} 位{{ peopleDirectoryLabel }}
         </span>
       </div>
     </template>
@@ -876,14 +988,14 @@
           <WorkCard
             :work="item"
             :loaded="isPosterLoaded(item.key)"
-            :subscribed="subscribed.has(item.media_id)"
+            :subscribed="isWorkSubscribed(item.media_id, item.title, item.subscribed)"
             :subscribing="subscribingId"
             :searching="searchNowId"
             @poster="markPosterLoaded(item.key)"
-            @open="openWorkDetail"
+            @open="openRankWork"
             @search="searchWork"
-            @subscribe="subscribe"
-            @search-now="searchNow"
+            @subscribe="subscribeRankWork"
+            @search-now="searchNowRank"
           />
         </template>
       </ProgressiveCardGrid>
@@ -935,7 +1047,7 @@
             <WorkCard
               :work="item"
               :loaded="isPosterLoaded(item.key)"
-              :subscribed="subscribed.has(item.media_id)"
+              :subscribed="isWorkSubscribed(item.media_id, item.title, item.subscribed)"
               :subscribing="subscribingId"
               :searching="searchNowId"
               @poster="markPosterLoaded(item.key)"
@@ -1006,7 +1118,7 @@
             <WorkCard
               :work="item"
               :loaded="isPosterLoaded(item.key)"
-              :subscribed="subscribed.has(item.media_id)"
+              :subscribed="isWorkSubscribed(item.media_id, item.title, item.subscribed)"
               :subscribing="subscribingId"
               :searching="searchNowId"
               @poster="markPosterLoaded(item.key)"
@@ -1155,6 +1267,8 @@ import {
   pluginSubscribeSearchAll,
   pluginSubscribeSearchNow,
   pluginUnsubscribe,
+  refreshLibraryStatus,
+  refreshWorks,
   removeActor,
   resourceSearchUrl,
   subscribeAllActor,
@@ -1304,7 +1418,7 @@ const works = ref<WorkItem[]>([])
 const total = ref(0)
 /** 全集作品数（不受筛选影响） */
 const allTotal = ref(0)
-/** 全集里的新作品数 */
+/** 全集里的新剧数 */
 const newWorks = ref(0)
 /** 在库状态查成了的作品数（页模式下只含缓存里已有的结论，冷缓存时为 0） */
 const libraryKnown = ref(0)
@@ -1366,6 +1480,33 @@ const peopleError = ref('')
 const peopleMessage = ref('')
 
 /**
+ * 演员目录的性别档（2026-11-02 用户口径：发现页的演员分男女榜）。
+ *
+ * 站点那边就是 `?gender=男` / `?gender=女` 两档，「全部」= 不带这个参数；
+ * 所以这里是 `'all' | '男' | '女'` 三选一，请求时空档转成空串。
+ */
+type PeopleGender = 'all' | '男' | '女'
+const peopleGender = ref<PeopleGender>('all')
+const GENDER_TABS: { title: string; value: PeopleGender }[] = [
+  { title: '全部', value: 'all' },
+  { title: '女演员', value: '女' },
+  { title: '男演员', value: '男' },
+]
+/** 当前档位的文案（计数行用：「已加载 N 位女演员」） */
+const peopleGenderLabel = computed(
+  () => GENDER_TABS.find((item) => item.value === peopleGender.value)?.title || '',
+)
+/** 目录文案：没选性别就是「演员」，选了就是「女演员 / 男演员」（计数行、空态都用它） */
+const peopleDirectoryLabel = computed(() =>
+  peopleGender.value === 'all' ? peopleKindLabel.value : peopleGenderLabel.value,
+)
+/**
+ * 请求序号：换性别 / 换分类时**旧请求可能还在飞**，回来晚了会把新榜的行覆盖掉
+ * （reset 是整表替换，不是追加，覆盖就是错档）。每次发请求递增，回来时对不上就丢。
+ */
+let peopleReqSeq = 0
+
+/**
  * 「发现」页当前看哪本：``'people'`` = 演员目录；其余值 = 榜单 key
  * （``rebo`` / ``reso`` / …，目录来自后端 ``/ranks``，纯静态零网络）。
  */
@@ -1375,6 +1516,8 @@ const discoverView = ref<string>('people')
 const rankItems = ref<RankItem[]>([])
 
 const rankLoading = ref(false)
+/** 榜单请求序号：换榜立即放行新请求，晚归的旧请求按 seq 丢弃（与 loadPeople 同口径） */
+let rankReqSeq = 0
 /** 当前榜单的原样卡行（数据源按实际页面解析，这里不做归一） */
 const rankMedias = ref<RankMediaItem[]>([])
 /** 已加载到第几页（0 = 还没拉过；作品页同样口径：每页 30 部） */
@@ -1385,9 +1528,12 @@ const rankHasMore = ref(false)
 const rankMessage = ref('')
 /** 当前选中的榜单 key（'' = 没在看榜单） */
 const rankKey = computed(() => (discoverView.value === 'people' ? '' : discoverView.value))
-const rankName = computed(
-  () => rankItems.value.find((item) => item.key === rankKey.value)?.name || '榜单',
-)
+const rankName = computed(() => {
+  if (rankKey.value === 'rss') return '站点 RSS'
+  return (
+    rankItems.value.find((item) => item.key === rankKey.value)?.name || '榜单'
+  )
+})
 
 /**
  * 榜单原样卡 → WorkItem：**样式与作品页同一张卡**（WorkCard）。卡行只有必要
@@ -1397,7 +1543,7 @@ const rankName = computed(
 function rankMediaToWork(row: RankMediaItem): WorkItem {
   const source = row.media_id.includes(':')
     ? row.media_id.split(':')[0].toLowerCase()
-    : 'djbaike'
+    : 'duanju'
   return {
     key: `rank:${row.media_id}`,
     title: row.title,
@@ -1422,6 +1568,9 @@ function rankMediaToWork(row: RankMediaItem): WorkItem {
     is_new: false,
     // 卡片「入库」图标（与作品页同一套判定）
     in_library: row.in_library ?? null,
+    // 卡片红心：后端已按订阅台账判过（2026-11-03 用户反馈「订阅了的作品显示
+    // 没订阅」—— 这里原先把后端字段丢了，只剩前端集合兜底，集合一没加载就全错）
+    subscribed: row.subscribed ?? undefined,
   }
 }
 
@@ -1434,16 +1583,25 @@ const rankWorkItems = computed(() => rankMedias.value.map(rankMediaToWork))
  * - ``reset = false``：滚到底续拉下一页（按 media_id 去重合并）。
  */
 async function loadRank(key: string, reset = true): Promise<void> {
-  if (!key || rankLoading.value) return
+  // 追加页要防重入；换榜（reset）必须放行 —— 否则上一张榜还在拉（RSS 拉取+识别
+  // 可达几十秒）时切榜，新榜请求被静默丢弃，旧榜卡片一直挂在新 chip 底下
+  // （2026-11-03 用户反馈「真人短剧混进了站点 RSS」）。与 loadPeople 同一套 seq 口径。
+  if (!reset && (rankLoading.value || !rankHasMore.value)) return
   const page = reset ? 1 : rankPage.value + 1
-  if (!reset && !rankHasMore.value) return
+  const seq = ++rankReqSeq
   rankLoading.value = true
-  if (reset) rankMessage.value = ''
+  if (reset) {
+    // 换榜先清场：RSS 慢加载 / 失败期间不许旧榜卡片挂在新榜名下
+    rankMessage.value = ''
+    rankMedias.value = []
+    rankPage.value = 0
+    rankHasMore.value = false
+  }
   try {
     const payload = await fetchRankWorks(props, key, page)
     const medias = Array.isArray(payload.medias) ? payload.medias : []
-    // 拉的期间用户可能已切走：只把当前正看的榜上屏
-    if (rankKey.value !== key) return
+    // 拉的期间用户可能已切走：只有「仍是最新一次请求 + 仍在这个榜」才上屏
+    if (seq !== rankReqSeq || rankKey.value !== key) return
     if (reset) {
       rankMedias.value = medias
     } else {
@@ -1456,9 +1614,12 @@ async function loadRank(key: string, reset = true): Promise<void> {
     rankPage.value = payload.page || page
     rankHasMore.value = Boolean(payload.has_more)
   } catch (err) {
-    rankMessage.value = `榜单加载失败：${err instanceof Error ? err.message : err}`
+    if (seq === rankReqSeq && rankKey.value === key) {
+      rankMessage.value = `榜单加载失败：${err instanceof Error ? err.message : err}`
+    }
   } finally {
-    rankLoading.value = false
+    // 只有自己的请求仍是最新时才收 loading 旗（旧请求晚归不能替新请求收旗）
+    if (seq === rankReqSeq) rankLoading.value = false
     void nextTick(observeRankSentinel)
   }
 }
@@ -1467,7 +1628,7 @@ async function loadRank(key: string, reset = true): Promise<void> {
 function setDiscoverView(value: unknown): void {
   const key = String(value || '')
   if (!key || key === discoverView.value) return
-  if (key === 'people' || rankItems.value.some((item) => item.key === key)) {
+  if (key === 'people' || key === 'rss' || rankItems.value.some((item) => item.key === key)) {
     discoverView.value = key
   }
 }
@@ -1917,6 +2078,8 @@ const platform = ref('')
 const sort = ref('date')
 /** 「未订阅」卡：只看还没订阅的作品（后端按订阅清单排除） */
 const onlyNotSubscribed = ref(false)
+/** 只看新剧（带站点「新剧」角标的作品，与后端 only_new 对应） */
+const onlyNew = ref(false)
 /** 只看未入库（后端只排除明确已在库的；「未知」作品保留） */
 const onlyNotInLibrary = ref(false)
 
@@ -1963,18 +2126,374 @@ const detailAdapted = ref<AdaptedInfo | null>(null)
  * 回到作品详情），所以不能靠「谁非空」来判渲染 —— 用这个字段记最上面那层，返回时退到下一层。
  */
 const viewLayer = ref<'' | 'work' | 'actor' | 'adapted'>('')
+/** 整页视图覆盖层（Teleport 到 body 的 fixed 容器，详情层内部滚动都发生在它身上） */
+const fullViewRef = ref<HTMLElement | null>(null)
+/** 覆盖层当前滚到哪（详情层间互返时记这个，不碰列表） */
+function fullViewScrollTop(): number {
+  return Number(fullViewRef.value?.scrollTop || 0)
+}
 /** 演员作品页是从哪进来的：`work` = 作品详情页里的演员阵容卡（返回回那一页） */
 let actorOpenedFrom: '' | 'work' = ''
 /** 作品详情页是从哪进来的：`actor` = 演员作品页里的作品卡（返回回那一页） */
 let workOpenedFrom: '' | 'actor' | 'adapted' = ''
 
-/** 进详情前的滚动位置（返回详情时还原） */
-let detailScrollY = 0
-/** 进演员作品页前的滚动位置（返回时还原；与作品详情各记一份，互不覆盖） */
-let actorScrollY = 0
+/**
+ * 详情层（fixed 覆盖层）**自己**滚到哪了 —— 学宿主探索页：整页视图是盖在列表上面的
+ * 独立层，列表滚动从头到尾不被触碰，返回时列表天然停在原地，不存在「恢复」。
+ * 这里只记详情层之间的位置：从作品详情点演员卡 / 点原著，退回来时该回到详情页
+ * 刚才读到的位置，而不是从头开始。
+ */
+let workPageScrollY = 0
+/** 演员作品层自己的滚动位置（被作品详情盖住后退回来时还原） */
+let actorPageScrollY = 0
+
+/**
+ * 浏览器历史里存的那一格（2026-11-02 用户口径「返回支持鼠标的前进后退键」）。
+ *
+ * 鼠标侧键 / 触控板双指横扫 / `Alt+←` 触发的是**浏览器自身的 history 导航**，
+ * 插件不是路由页面，不接管就只能把整个 MoviePilot 页面退出去。所以每进一层
+ * 整页视图就往 history 压一格、把视图打包成快照存进 `history.state`，
+ * `popstate` 时按快照还原 —— 返回键、侧键、手势因此走的是同一条路。
+ */
+type ViewSnapshot = {
+  /** 哪个组件实例压的（`Page` / `AppPage` 各挂一份 ActorWall，互不认领） */
+  id: string
+  /** 层深：0 = 卡片墙，1 起 = 第几层整页视图 */
+  depth: number
+  layer: '' | 'work' | 'actor' | 'adapted'
+  work: WorkItem | null
+  actor: ActorCandidate | null
+  adapted: AdaptedInfo | null
+  actorFrom: '' | 'work'
+  workFrom: '' | 'actor' | 'adapted'
+}
+
+/** `history.state` 上的私有键（同一条目里其余字段属于宿主，必须原样保留） */
+const VIEW_STATE_KEY = 'sdasView'
+/**
+ * 我们压入的每一格都带 `replaced: true`（2026-11-03 实测真凶）。
+ *
+ * 宿主插件面板是一个 Vuetify `VDialog`（`closeOnBack` 默认 true）：浏览器任何后退
+ * （鼠标侧键 / 手势 / 我们自己返回键走的 `history.back()`）触发 popstate 后，
+ * Vuetify `useBackButton`（composables/router.tsx 的 `onPopstate`）先看
+ * `e.state?.replaced` —— 为 true 直接豁免；否则标记 popped，随后它的
+ * `router.beforeEach` 守卫判定「弹窗开着」就把**整个插件面板关掉**，面板内容
+ * display:none 连带滚动容器的 scrollTop 归零，重开自然「回到顶部」。
+ * vue-router 自身导航期间不读 `replaced`（只在建条目时写入），打这个标是安全的。
+ */
+const VIEW_STATE_REPLACED = true
+/** 本实例标识：只处理自己压的条目，别把另一个入口的历史当成自己的 */
+const viewStateId = Math.random().toString(36).slice(2, 10)
+/** 当前 `history.state` 处在第几层 */
+let viewDepth = 0
+/**
+ * 进整页视图前卡片墙的滚动位置（墙滚的是 **window/文档**——2026-11-03 埋点证实
+ * `scrollHost()` 探到的就是 `<html>` 元素、scrollTop 与 `window.scrollY` 相等）。
+ *
+ * 侧键返回回到卡片墙时，宿主路由会对这次 POP 导航跑一遍 `scrollBehavior`：
+ * `savedPosition` 取自 `history.state.scroll` —— 那是一份**陈旧快照**（挂载/刷新时
+ * 写进去的旧位置，不随滚动更新），按它滚必然「不回原位 / 回顶」。所以退回卡片墙
+ * 必须用进层前记下的位置自己纠正（恢复循环会压过宿主的程序性滚动）。
+ */
+let wallScrollY = 0
+/**
+ * 历史是否可用。宿主同一条条目已被另一个 ActorWall 实例占用时置 false ——
+ * 那种情况不抢，退回键照旧直接回卡片墙。
+ */
+let viewHistoryUsable = true
+/** 挂载前宿主的 `scrollRestoration`（卸载时还原，别把宿主其它页面的行为也改掉） */
+let prevScrollRestoration: ScrollRestoration | '' = ''
+
+/**
+ * 深拷贝成「纯 JSON」再往历史里放。
+ *
+ * `ref` 里的对象是 Vue 的 reactive Proxy，而 `history.pushState` 走的是结构化克隆 ——
+ * 传 Proxy 直接抛 `DataCloneError`，整条历史推进都会失败。这几个类型本来就是接口
+ * 回来的纯数据，JSON 一趟即可（顺带剪掉可能挂上去的响应式引用）。
+ */
+function plainClone<T>(value: T): T {
+  if (value == null) return value
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+/** 把当前视图打包成快照（写进 `history.state`） */
+function viewSnapshot(depth: number): ViewSnapshot {
+  return {
+    id: viewStateId,
+    depth,
+    layer: viewLayer.value,
+    work: plainClone(detailWork.value),
+    actor: plainClone(detailActor.value),
+    adapted: plainClone(detailAdapted.value),
+    actorFrom: actorOpenedFrom,
+    workFrom: workOpenedFrom,
+  }
+}
+
+/** 压一格历史（进入一层整页视图时调用） */
+function pushViewState(): void {
+  if (!viewHistoryUsable) return
+  viewDepth += 1
+  try {
+    history.pushState(
+      { ...(history.state || {}), replaced: VIEW_STATE_REPLACED, [VIEW_STATE_KEY]: viewSnapshot(viewDepth) },
+      '',
+    )
+  } catch {
+    // 沙箱 iframe / 只读历史：写不进去就整体降级，返回键照旧直接回列表
+    viewHistoryUsable = false
+    viewDepth = 0
+  }
+}
+
+/** 把某一格历史就地改写成当前视图（内部跳转、不新增条目） */
+function replaceViewState(): void {
+  if (!viewHistoryUsable) return
+  try {
+    history.replaceState(
+      { ...(history.state || {}), replaced: VIEW_STATE_REPLACED, [VIEW_STATE_KEY]: viewSnapshot(viewDepth) },
+      '',
+    )
+  } catch {
+    viewHistoryUsable = false
+  }
+}
+
+/** 切到某一层整页视图，并记进历史 */
+function enterViewLayer(layer: 'work' | 'actor' | 'adapted'): void {
+  // 记下进层前墙的位置：退回卡片墙时按它恢复（见 wallScrollY 注释）
+  wallScrollY = Math.round(window.scrollY || 0)
+  viewLayer.value = layer
+  pushViewState()
+  // 新一层从顶部开始：覆盖层是同一个 DOM 容器（只有内容换），scrollTop 会残留，
+  // 等 DOM 更新完把它归零。层间互返的恢复（applyViewSnapshot / goBackView）各自
+  // 再走 restoreScrollTo —— 它们的 token 会作废这里的动作，谁最后跑谁说了算。
+  void nextTick(() => {
+    const el = fullViewRef.value
+    if (el && el.scrollTop) el.scrollTop = 0
+  })
+}
+
+/**
+ * 快照还原时尽量复用现有对象：同一部剧 / 同一位演员就不换引用。
+ *
+ * 换引用会让 `WorkDetail` 把它当成新作品再拉一次详情（后端有缓存，但没必要），
+ * 也会白重建一遍子树。键取各自的身份字段。
+ */
+function keepSame<T extends object>(
+  current: T | null,
+  next: T | null,
+  keyOf: (row: T) => string,
+): T | null {
+  if (!current || !next) return next
+  return keyOf(current) === keyOf(next) ? current : next
+}
+
+/**
+ * 把一份快照套回界面（`popstate` 的唯一入口）。
+ *
+ * 滚动（学宿主探索页的 KeepAlive 语义）：整页视图是 fixed 覆盖层、**列表滚动从不被
+ * 触碰**，退回卡片墙什么都不用恢复 —— 列表本来就停在原地。只有「层与层之间」才恢复：
+ * 退回某一层详情用它自己记下的位置（`workPageScrollY` / `actorPageScrollY`，滚的是
+ * 覆盖层自己的容器，与宿主路由 / 浏览器互不干扰）。
+ */
+function applyViewSnapshot(snap: ViewSnapshot): void {
+  detailWork.value = keepSame(detailWork.value, snap.work, (row) => String(row.media_id || ''))
+  detailActor.value = keepSame(
+    detailActor.value,
+    snap.actor,
+    (row) => String(row.actor_id || row.name || ''),
+  )
+  detailAdapted.value = keepSame(
+    detailAdapted.value,
+    snap.adapted,
+    (row) => String(row.media_id || row.title || ''),
+  )
+  actorOpenedFrom = snap.actorFrom
+  workOpenedFrom = snap.workFrom
+  viewLayer.value = snap.layer
+  if (!snap.layer) {
+    // 退回卡片墙：宿主路由的 POP 导航此刻会按陈旧的 state.scroll（或 {top:0}）
+    // 程序性滚一把 window —— 用进层前记下的位置纠正回来。
+    void nextTick(() => restoreScrollTo(wallScrollY, 2500))
+    return
+  }
+  if (snap.layer === 'work') {
+    void nextTick(() => restoreScrollTo(workPageScrollY, 2500, fullViewRef.value))
+    return
+  }
+  if (snap.layer === 'actor') {
+    void nextTick(() => restoreScrollTo(actorPageScrollY, 2500, fullViewRef.value))
+    return
+  }
+  if (snap.layer === 'adapted') {
+    void nextTick(() => restoreScrollTo(0, 2500, fullViewRef.value))
+  }
+}
+
+/** 鼠标侧键 / 手势 / 系统返回：按历史里那一格的快照还原视图 */
+function onViewPopState(event: PopStateEvent): void {
+  const snap = (event.state || {})[VIEW_STATE_KEY] as ViewSnapshot | undefined
+  if (!snap || snap.id !== viewStateId) {
+    return
+  }
+  viewDepth = snap.depth
+  applyViewSnapshot(snap)
+}
+
+/**
+ * 后退一格整页视图。
+ *
+ * 历史里有我们这一层就走 `history.back()` —— 于是返回按钮与鼠标侧键完全同一条路，
+ * 不会一边清视图一边留下无效历史。历史不可用（沙箱 iframe、只读历史、另一入口占着
+ * 这条 state）时退回老路：按「来源」退一层，退无可退才回卡片墙。
+ */
+function goBackView(): void {
+  if (viewHistoryUsable && viewDepth > 0 && history.state?.[VIEW_STATE_KEY]?.id === viewStateId) {
+    history.back()
+    return
+  }
+  const layer = viewLayer.value
+  if (layer === 'adapted' && detailWork.value) {
+    viewLayer.value = 'work'
+    void nextTick(() => restoreScrollTo(workPageScrollY, 2500, fullViewRef.value))
+    return
+  }
+  if (layer === 'actor' && actorOpenedFrom === 'work' && detailWork.value) {
+    actorOpenedFrom = ''
+    viewLayer.value = 'work'
+    void nextTick(() => restoreScrollTo(workPageScrollY, 2500, fullViewRef.value))
+    return
+  }
+  if (layer === 'work' && workOpenedFrom === 'actor' && detailActor.value) {
+    workOpenedFrom = ''
+    viewLayer.value = 'actor'
+    void nextTick(() => restoreScrollTo(actorPageScrollY, 2500, fullViewRef.value))
+    return
+  }
+  if (layer === 'work' && workOpenedFrom === 'adapted' && detailAdapted.value) {
+    workOpenedFrom = ''
+    viewLayer.value = 'adapted'
+    void nextTick(() => restoreScrollTo(0, 2500, fullViewRef.value))
+    return
+  }
+  exitViews()
+}
+
 
 /** 已订阅作品的 media_id（作品卡悬停浮层上爱心按钮的状态） */
 const subscribed = ref<Set<string>>(new Set())
+/**
+ * 旧站点身份的订阅：**剧名键**集合。
+ *
+ * 换过数据源站点后，同一部剧在新旧站的号段完全不同 —— 身份永远对不上，但名字对得上。
+ * 只收 `stale`（身份不属于当前站点）的那些行，所以同站同名不会被误标。
+ */
+const subscribedTitles = ref<Set<string>>(new Set())
+
+/**
+ * 剧名比较键 —— 与后端 `_title_key` 同口径：小写、去掉「(66集)」「（2024）」
+ * 「[国语]」这类纯括注、去掉空白与标点。**不**去「第 N 部 / 第 N 季」，
+ * 那是作品名的一部分（去了会把系列剧并成一部）。
+ */
+function titleKeyOf(title?: string): string {
+  return String(title || '')
+    .toLowerCase()
+    .replace(
+      /[（(【\[]\s*(?:第?[0-9一二三四五六七八九十百]+\s*[集季部期]?|[0-9]{4}|全\s*[0-9]+\s*集|国语|粤语|普通话|高清|蓝光|完结|已完结|HD)\s*[)）】\]]/gi,
+      '',
+    )
+    .replace(/[\s·・•\-—_~～/\\|,，.。、:：;；!！?？"'“”‘’()（）\[\]【】]+/g, '')
+}
+/**
+ * 本次会话里**刚取消订阅**的身份。
+ *
+ * 后端标注的 ``subscribed`` 是「取数那一刻」的结论：用户点取消后，列表里那些行
+ * 还挂着 ``subscribed = true``（只有重新拉列表才会变）。这里把它压掉，
+ * 卡片才能立刻变回空心 —— 订阅成功则相反（从集合里移除）。
+ */
+const locallyUnsubscribed = ref<Set<string>>(new Set())
+
+/**
+ * 这部作品是否已订阅：**后端标注** → **身份命中** → **换站前的同名订阅**。
+ *
+ * * ``flag`` 是列表行自带的 ``subscribed``（``/works``、``/actors/detail`` 由后端
+ *   逐行标注；搜索结果由 ``lookupSite`` 拿轻量订阅快照打标）。它是**权威判定** ——
+ *   前端集合要靠拉整份订阅清单（上百 KB）建立，那次请求一旦失败/解析失败就会静默
+ *   变空，整屏已订阅会被画成「未订阅」（2026-11-02 真机反馈的正是这个）。
+ * * 集合命中用于「刚点订阅 / 刚取消」的即时反馈（后端行数据还没重取）。
+ * * 同名桥只对 ``stale``（换站旧身份）的行成立，同站同名不会被误标。
+ */
+function isWorkSubscribed(
+  mediaId?: string,
+  title?: string,
+  flag?: boolean | null,
+): boolean {
+  const mid = String(mediaId || '')
+  // 刚取消的那部：后端行数据还没重取，先按本地的否定信息压掉
+  if (mid && locallyUnsubscribed.value.has(mid)) return false
+  if (flag) return true
+  if (mid && subscribed.value.has(mid)) return true
+  const key = titleKeyOf(title)
+  return !!key && subscribedTitles.value.has(key)
+}
+
+/**
+ * 就地改**所有当前列表行**里这部剧的订阅标记（订阅/取消后的即时反馈）。
+ *
+ * 行上的 ``subscribed`` 是后端给的，用户点完不会自动变；不刷新这些行，
+ * 卡片上的红心就会跟真实订阅状态脱节 —— 直到下一次拉列表。
+ */
+function markWorkSubscribed(mediaId: string, value: boolean): void {
+  const mid = String(mediaId || '')
+  if (!mid) return
+  const nextLocal = new Set(locallyUnsubscribed.value)
+  if (value) nextLocal.delete(mid)
+  else nextLocal.add(mid)
+  locallyUnsubscribed.value = nextLocal
+  const touch = (list: WorkItem[] | undefined) => {
+    for (const row of list || []) {
+      if (String(row?.media_id || '') === mid) row.subscribed = value
+    }
+  }
+  touch(works.value)
+  touch(workResults.value)
+  const detail = detailWork.value
+  if (detail && String(detail.media_id || '') === mid) detail.subscribed = value
+}
+
+/**
+ * 把**轻量订阅快照**并进本地集合（搜索结果随 ``/lookup`` 一并取回的那份）。
+ *
+ * 只增不减：快照代表「当前订阅身份」，取消订阅走本地删除 + 下次整表刷新，
+ * 不靠这里收窄 —— 否则一次早到的快照会把刚取消的那条又标成已订阅。
+ */
+function syncSubscribedSnapshot(ids?: string[], staleTitles?: string[]): void {
+  if (Array.isArray(ids) && ids.length) {
+    const next = new Set(subscribed.value)
+    let changed = false
+    for (const raw of ids) {
+      const mid = String(raw || '')
+      if (mid && !next.has(mid)) {
+        next.add(mid)
+        changed = true
+      }
+    }
+    if (changed) subscribed.value = next
+  }
+  if (Array.isArray(staleTitles) && staleTitles.length) {
+    const next = new Set(subscribedTitles.value)
+    let changed = false
+    for (const title of staleTitles) {
+      const key = titleKeyOf(title)
+      if (key && !next.has(key)) {
+        next.add(key)
+        changed = true
+      }
+    }
+    if (changed) subscribedTitles.value = next
+  }
+}
 /** 图已加载完的卡片 key（工作 / 演员共用一套；探索页也是「图加载完才加 ring」） */
 const loadedKeys = ref<Set<string>>(new Set())
 
@@ -2007,6 +2526,7 @@ const filteredOut = computed(() =>
       year.value ||
       studio.value ||
       platform.value ||
+      onlyNew.value ||
       onlyNotInLibrary.value ||
       onlyNotSubscribed.value,
   ),
@@ -2018,6 +2538,7 @@ function resetFilters(): void {
   year.value = ''
   studio.value = ''
   platform.value = ''
+  onlyNew.value = false
   onlyNotInLibrary.value = false
   onlyNotSubscribed.value = false
 }
@@ -2084,6 +2605,7 @@ function query(): Record<string, unknown> {
     studio: studio.value,
     platform: platform.value,
     sort: sort.value,
+    only_new: onlyNew.value,
     only_not_in_library: onlyNotInLibrary.value,
     only_not_subscribed: onlyNotSubscribed.value,
     page_size: PAGE_SIZE,
@@ -2097,6 +2619,10 @@ const filteredCount = computed(() => total.value)
 
 /** 演员名后第一个失败/未收录原因，作为空态提示 */
 const emptyHint = computed(() => {
+  // 「新剧」= 带站点「新剧」角标的作品：一部都没有 = 空墙，不说一句会让人以为坏了
+  if (onlyNew.value && !works.value.length) {
+    return '当前没有带「新剧」角标的作品（角标由短剧百科标记，站点撤掉后这里自然为空）'
+  }
   const waiting = actorFilters.value.filter((item) => item.state === 'waiting')
   const empty = actorFilters.value.filter((item) => item.state === 'empty')
   if (!works.value.length && empty.length) {
@@ -2134,17 +2660,49 @@ function actorKey(item: ActorCandidate): string {
 // ── 演员搜索卡片 ──
 
 /**
- * 这位演员是否已经在关注列表里。
+ * 已关注演员的**身份集合**（权威名单：``/actors/cards`` 的 ``actor_id`` / ``baike_id``）。
  *
- * 2026-10-20 起按 **actor_id** 比对（ID 是唯一身份）：同名的另一位是不同的人，
- * 按名字比会把同名的另一位误标成已关注。候选没带 ID（极端情况）才退回名字。
+ * 两个用处：① 演员卡红心（{@link isActorAdded}）；② 作品详情里的演职员卡
+ * （以 ``followed-ids`` 传下去，那边的 ``isFollowed`` 直接查这个集合）。
+ *
+ * 不能再用作品墙的演员筛选项（``actor_filters``）当关注名单：那里的 ``key`` 是
+ * **姓名**，而且只包含「作品墙里真有作品」的演员。站点检索回来的演员卡带的是
+ * ``actor:12`` 这种 ID，拿 ID 去比永远比不上 —— 2026-11-02 实测：王格格（actor:12）
+ * 明明在关注列表里（``/actors/cards`` 有她），搜索结果卡却是空心。
+ */
+const followedActorIds = computed(() => {
+  const ids = new Set<string>()
+  for (const row of followedActors.value) {
+    const extra = (row as unknown as { baike_id?: string }).baike_id
+    for (const raw of [row.actor_id, row.media_id, extra]) {
+      const id = String(raw || '')
+      if (id) ids.add(id)
+    }
+  }
+  return ids
+})
+
+/** 演员的**唯一身份**：站点候选常只有 ``media_id``（``actor:12``），关注名单两者相同 */
+function actorIdentity(item: ActorCandidate): string {
+  return String(item.actor_id || item.media_id || '')
+}
+
+/** 按 ID 判关注（**只认 ID**） */
+function isActorFollowedById(mediaId?: string): boolean {
+  const mid = String(mediaId || '')
+  return !!mid && followedActorIds.value.has(mid)
+}
+
+/**
+ * 这位演员是否已经在关注列表里（**只影响卡片红心**）。
+ *
+ * **只按身份 ID 判**（2026-11-02 用户口径）：行上的后端标注 → 关注名单 ID。
+ * 不再用姓名兜底 —— 站点里同名的重复条目（如 ``actor:12`` 与 ``actor:1267``）
+ * 是两个身份，只认关注的那个；同名不同人也不会被误点亮。
  */
 function isActorAdded(item: ActorCandidate): boolean {
   if (item.subscribed) return true
-  if (item.actor_id) {
-    return actorFilters.value.some((row) => row.key === item.actor_id)
-  }
-  return actorFilters.value.some((row) => row.name === item.name)
+  return isActorFollowedById(actorIdentity(item))
 }
 
 /** 打开百科的演员页 */
@@ -2158,11 +2716,12 @@ function openActorPage(item: ActorCandidate): void {
 
 /** 「订阅」演员 = 把它加进本插件的演员表（不是宿主的剧集订阅） */
 async function subscribeActor(item: ActorCandidate): Promise<void> {
+  // 守卫与卡片红心同口径：**只认 ID**，同名不同人不互相拦
   if (isActorAdded(item)) {
     toast(`「${item.name}」已经在关注列表里`)
     return
   }
-  addingActorId.value = item.actor_id
+  addingActorId.value = actorIdentity(item)
   try {
     const result = await addActor(props, item.name, item.actor_id)
     if (result.need_pick) {
@@ -2189,7 +2748,7 @@ async function unsubscribeActor(item: ActorCandidate): Promise<void> {
     toast(`「${item.name}」不在关注列表里`)
     return
   }
-  removingActorId.value = item.actor_id
+  removingActorId.value = actorIdentity(item)
   try {
     // ID 是唯一身份：优先按 actor_id 移除（同名另一位不受影响），name 只作后端兜底
     const result = await removeActor(props, { actor_id: item.actor_id, name: item.name })
@@ -2218,12 +2777,11 @@ async function unsubscribeActor(item: ActorCandidate): Promise<void> {
  */
 function openActorDetail(item: ActorCandidate): void {
   // 详情开着时点演员卡（搜索结果里那排）：先退出作品详情，整页视图才看得见
-  exitViews(false)
+  exitViews()
   actorQuery.value = ''
-  actorScrollY = currentScrollY()
+  actorPageScrollY = 0
   detailActor.value = item
-  viewLayer.value = 'actor'
-  scrollToPosition(0)
+  enterViewLayer('actor')
 }
 
 /**
@@ -2255,48 +2813,25 @@ function applyGenreFilter(value: string): void {
  * 作品详情里点「改编自」：进**原著详情页**（叠在作品详情之上，返回回那一页）。
  */
 function openAdaptedFromWork(novel: AdaptedInfo): void {
+  // 原著层叠在作品层之上：先记下作品层读到哪了（覆盖层自己的滚动），退回来接着看
+  workPageScrollY = fullViewScrollTop()
   detailAdapted.value = novel
-  viewLayer.value = 'adapted'
-  scrollToPosition(0)
+  enterViewLayer('adapted')
 }
 
-/** 原著详情页的返回键：回作品详情（那是入口），没有作品页时回列表 */
+/** 原著详情页的返回键：回上一层（通常是作品详情，没有作品页时回列表） */
 function backFromAdapted(): void {
-  if (detailWork.value) {
-    viewLayer.value = 'work'
-    void nextTick(() => scrollToPosition(detailScrollY))
-    return
-  }
-  exitViews()
+  goBackView()
 }
 
-/** 演员作品页的返回键：有下一层就退一层，没有就回列表 */
+/** 演员作品页的返回键：从作品详情进来的就退回那一页，否则回列表 */
 function backFromActor(): void {
-  if (actorOpenedFrom === 'work' && detailWork.value) {
-    actorOpenedFrom = ''
-    viewLayer.value = 'work'
-    void nextTick(() => scrollToPosition(detailScrollY))
-    return
-  }
-  exitViews()
+  goBackView()
 }
 
-/** 作品详情页的返回键：从演员作品页点进来的就退回演员页，否则回列表 */
+/** 作品详情页的返回键：从演员页 / 原著页进来的就退回去，否则回列表 */
 function backFromWork(): void {
-  if (workOpenedFrom === 'actor' && detailActor.value) {
-    workOpenedFrom = ''
-    viewLayer.value = 'actor'
-    void nextTick(() => scrollToPosition(0))
-    return
-  }
-  // 从原著页的改编作品点进来：退回原著页（再退一步才是列表）
-  if (workOpenedFrom === 'adapted' && detailAdapted.value) {
-    workOpenedFrom = ''
-    viewLayer.value = 'adapted'
-    void nextTick(() => scrollToPosition(0))
-    return
-  }
-  exitViews()
+  goBackView()
 }
 
 /**
@@ -2305,19 +2840,18 @@ function backFromWork(): void {
  * `restoreScroll` = 是否还原「进来之前列表的滚动位置」—— 列表入口自己切页时不需要
  * （那时候接着会走自己的滚动），槽位上那些「我要看卡片墙」的操作需要。
  */
-function exitViews(restoreScroll = true): void {
-  const hadWork = Boolean(detailWork.value)
-  const hadActor = Boolean(detailActor.value)
-  const hadAdapted = Boolean(detailAdapted.value)
+function exitViews(): void {
   detailWork.value = null
   detailActor.value = null
   detailAdapted.value = null
   actorOpenedFrom = ''
   workOpenedFrom = ''
   viewLayer.value = ''
-  if ((!hadWork && !hadActor && !hadAdapted) || !restoreScroll) return
-  const top = hadActor ? actorScrollY : detailScrollY
-  void nextTick(() => scrollToPosition(top))
+  // 历史同步：把当前这一格**就地**改写成「卡片墙」（不用 `history.go(-n)` ——
+  // 那是异步导航，紧跟其后的 `pushState` 会跟它抢，出现「刚打开的页被退掉」）。
+  viewDepth = 0
+  replaceViewState()
+  // 列表滚动从不被整页视图触碰（覆盖层自己内部滚）——退回来什么都不用恢复。
 }
 
 /**
@@ -2337,14 +2871,6 @@ function refreshFollowed(): void {
   toActorWall()
   loadFollowed(true)
 }
-
-/** 已关注演员的身份集合（作品详情的演职员卡据此点亮爱心） */
-const followedActorIds = computed(
-  () =>
-    new Set(
-      followedActors.value.map((item) => String(item.actor_id || '')).filter(Boolean),
-    ),
-)
 
 /** 关注 / 取消关注请求在飞的演员身份（爱心转圈，与卡片墙共用同一对变量） */
 const busyActorIds = computed(
@@ -2368,7 +2894,8 @@ function toggleActorFromWork(row: ActorCandidate): void {
  */
 function isActorBusy(item: ActorCandidate | null): boolean {
   if (!item) return false
-  return addingActorId.value === item.actor_id || removingActorId.value === item.actor_id
+  const id = actorIdentity(item)
+  return !!id && (addingActorId.value === id || removingActorId.value === id)
 }
 
 /**
@@ -2466,6 +2993,9 @@ async function runLookup(mode: 'cache' | 'site' = 'cache'): Promise<void> {
     actorResults.value = result.actors
     workResults.value = result.works
     searchSource.value = result.source
+    // 订阅身份随检索一起回来（作品行已就地打标，这里把集合也补齐）：
+    // 卡片之后无论怎么重渲染，都还有「已订阅」的底
+    syncSubscribedSnapshot(result.subscribed_ids, result.stale_titles)
   } catch (err) {
     // 数据源检索不可用就明说（2026-10-18 用户口径：**不兜底**）——
     // 本插件自己那两条链路口径不同（片名精确匹配、同名多季不全），拿它顶替只会
@@ -2671,6 +3201,9 @@ function muteNativeScrollBar(on: boolean): void {
 }
 
 function scrollHost(): HTMLElement | null {
+  // 缓存的是 DOM 节点：切层后旧容器可能已被卸载，此时 `scrollTop` 恒读 0 ——
+  // 记下来的位置就成了 0（表现同样是「返回上一层滚动位置乱」）。断开即重新探测。
+  if (scrollHostEl && !scrollHostEl.isConnected) scrollHostEl = null
   return scrollHostEl ?? resolveScrollHost()
 }
 
@@ -2802,6 +3335,59 @@ async function reload(): Promise<void> {
  * 因此做全量判定并把探针焐热），拿全量 summary 回填统计；预热后只要 0.2 秒。
  */
 let librarySummaryBusy = false
+
+/** 「刷新在库状态」按钮的进行态 */
+const libraryRefreshing = ref(false)
+
+/** 「刷新作品」按钮的进行态（清数据源缓存 + 强刷快照，全程可达数分钟） */
+const worksRefreshing = ref(false)
+
+/**
+ * 清数据源缓存 → 强刷全部演员的作品快照 → 重拉第一页与统计。
+ *
+ * 快照刷新（`POST /refresh?clear_cache=1`）内部先调数据源的 `clear_cache`
+ * 模块方法再逐演员现抓 —— 不清数据源缓存的话，force 刷新命中的还是它
+ * 24h 缓存里的旧行（2026-11-04 角标事件实证）。成功提示用后端原话
+ * （带「已清数据源缓存 N 区」），失败照常 toast。
+ */
+async function refreshWorksNow(): Promise<void> {
+  if (worksRefreshing.value) return
+  worksRefreshing.value = true
+  toast('已开始刷新作品（清缓存 + 强刷快照，约几分钟，别关页面）')
+  try {
+    const message = await refreshWorks(props)
+    await reload()
+    await refreshLibrarySummary()
+    toast(message || '作品已刷新')
+  } catch (err) {
+    toast(`刷新作品失败：${err instanceof Error ? err.message : err}`, 'error')
+  } finally {
+    worksRefreshing.value = false
+  }
+}
+
+/**
+ * 清后端在库缓存（并让宿主同步一次媒体库）→ 重拉第一页 → 补一次全集统计。
+ *
+ * 两层等待都要破：探针结论带 600 秒 TTL（`_LibraryProbe.CACHE_TTL`）；宿主的本地
+ * 库表又只有 6 小时一次的 `mediaserver_sync` 在灌 ⇒ 刚入库的剧表里根本没有。后端
+ * 会顺手踢一次同步、几十秒后自己再清一遍缓存，所以这里不阻塞等同步，先把提示说清楚。
+ */
+async function refreshInLibrary(): Promise<void> {
+  if (libraryRefreshing.value) return
+  libraryRefreshing.value = true
+  try {
+    const message = await refreshLibraryStatus(props)
+    await reload()
+    await refreshLibrarySummary()
+    toast(message || '已刷新在库状态')
+  } catch (err) {
+    toast(`刷新在库状态失败：${err instanceof Error ? err.message : err}`, 'error')
+  } finally {
+    libraryRefreshing.value = false
+  }
+}
+
 async function refreshLibrarySummary(): Promise<void> {
   if (librarySummaryBusy || !probeAvailable.value) return
   librarySummaryBusy = true
@@ -2824,42 +3410,31 @@ async function refreshLibrarySummary(): Promise<void> {
 }
 
 /**
- * 订阅状态集合 = **订阅清单**（`/subscriptions`：插件订阅清单 ∪ 宿主 djbaike 订阅）。
+ * 订阅状态集合 = **插件订阅清单**（`/subscriptions`，2026-11-02 起是唯一来源：
+ * 宿主订阅完全去除，不再合并宿主订阅表）。
  *
- * 老实现只读宿主订阅表，自建订阅（引擎 = self 之后默认路径）根本不在里面 ——
- * 表现为「订阅了但红心不亮 / 取消点了没反应」。现在只认这一份真相，
- * 作品墙、搜索结果、演员作品页、改编页拿的都是同一个 Set。
+ * 作品墙、搜索结果、演员作品页、改编页拿的都是同一个 Set；换过数据源站点时
+ * 另外用 `subscribedTitles`（stale 行的剧名键）把旧身份的订阅桥过去。
  */
 async function loadSubscribed(): Promise<void> {
   await loadSubscriptions()
 }
 
-/** 订阅清单（「已订阅」标签页；插件订阅清单 ∪ 宿主 djbaike 订阅） */
+/** 订阅清单（「已订阅」标签页；唯一来源 = 插件订阅清单） */
 const subItems = ref<SubscriptionRow[]>([])
-const subEngine = ref('')
 const subsLoading = ref(false)
+/** 数据源当前站点（`/subscriptions` 回的 site；空 = 数据源没给站点画像） */
+const subSite = ref('')
+/** 还挂在「别的站点身份」上的订阅条数（换过站、作品墙里又没对上） */
+const subStaleCount = ref(0)
 
 /**
- * 自建订阅模式？（订阅记插件清单、不进宿主订阅系统）
+ * 订阅设置整块是否可编辑（暂停 / 站点 / 下载器 / 目录）。
  *
- * 取**运行时真相**：`/subscriptions` 回的 `subEngine` → 配置页缓存 → 未知按 self。
- * 只看配置页那份会把插件订阅误判成宿主订阅 —— 取消时走错分支，红心点了没反应
- * （2026-10-22 真机）。
+ * 2026-11-02 起恒为真：宿主订阅完全去除，插件订阅就是唯一的订阅，
+ * 没有「引擎不是自建」这种状态了。
  */
-const isSelfEngine = computed(() => {
-  const engine = String(subEngine.value || configData.value.subscribe_engine || 'self')
-  return engine !== 'host'
-})
-
-/**
- * 详情页「订阅设置」能不能编辑整块（暂停 / 站点 / 下载器 / 目录）。
- *
- * 判据优先用**后端 `/subscriptions` 回的 engine**（运行时真相），配置页那份只是
- * 本地缓存 —— 配置还没拉回来 / 字段缺失时，只认配置会把整块设置藏起来
- * （2026-10-22 真机：弹窗里三行落点全不见）。
- */
-/** 订阅设置整块是否可编辑：与 `isSelfEngine` 同一口径（未知按 self） */
-const subEditable = computed(() => isSelfEngine.value)
+const subEditable = true
 
 /**
  * 订阅行 → WorkItem（「已订阅」页复用作品墙 WorkCard 的映射）。
@@ -2873,7 +3448,7 @@ const subEditable = computed(() => isSelfEngine.value)
  * 「同一部剧在两页各拉一次海报登记」互相干扰（其实同键也无害，前缀只是语义更清楚）。
  */
 function subRowToWork(row: SubscriptionRow): WorkItem {
-  const source = row.media_id.includes(':') ? row.media_id.split(':')[0].toLowerCase() : 'djbaike'
+  const source = row.media_id.includes(':') ? row.media_id.split(':')[0].toLowerCase() : 'duanju'
   return {
     key: `sub:${row.media_id}`,
     title: row.title,
@@ -2963,14 +3538,36 @@ function onDetailSubUpdated(): void {
   void loadSubscriptions()
 }
 
+/** 订阅清单加载失败只提示一次（每次进面板最多一条，别刷屏） */
+let subsLoadTipShown = false
+
 async function loadSubscriptions(): Promise<void> {
   subsLoading.value = true
   try {
     const res = await fetchSubscriptions(props)
+    if (!res.ok) {
+      // ⚠️ 拉失败时**绝不能**用空壳覆盖本地集合：那会让整面墙已订阅的卡片
+      // 全部变回「未订阅」（2026-11-02 真机反馈）。保留上一次的集合，
+      // 卡片仍有列表行自带的 `subscribed` 兜底。
+      if (!subsLoadTipShown) {
+        subsLoadTipShown = true
+        toast('订阅清单加载失败，卡片订阅状态可能不准', 'error')
+      }
+      return
+    }
     subItems.value = res.items
-    if (res.engine) subEngine.value = res.engine
+    subSite.value = res.site
+    subStaleCount.value = res.stale_count
     // 订阅状态集合跟订阅清单一起刷新（唯一真相源，见 loadSubscribed 的说明）
     subscribed.value = new Set(res.items.map((row) => String(row.media_id || '')).filter(Boolean))
+    // 换过站后旧身份的订阅：身份对不上，但**名字**对得上 —— 用标题键再建一份，
+    // 卡片才不会一屏全变成「未订阅」（判据只收 stale 行，同站同名不算）
+    subscribedTitles.value = new Set(
+      res.items
+        .filter((row) => row.stale)
+        .map((row) => titleKeyOf(row.title))
+        .filter(Boolean),
+    )
   } catch {
     // 面板数据拉不到就算了，不影响墙
   } finally {
@@ -3043,8 +3640,10 @@ async function searchAllNow(): Promise<void> {
  * 补完直接覆盖列表 —— 用户不用手动点「刷新档案」。
  */
 async function backfillFollowedProfiles(): Promise<void> {
+  // 缺头像也要补（2026-11-03）：`.org` 的头像是 CDN 上的 UUID，**按身份拼不出来**，
+  // 档案不落盘的那些（重启后第一次打开）只能靠这一次 enrich 现抓。
   const need = followedActors.value.filter(
-    (item) => item.actor_id && !item.followers && !item.likes,
+    (item) => item.actor_id && (!item.profile || (!item.followers && !item.likes)),
   ).length
   if (!need) return
   try {
@@ -3078,13 +3677,23 @@ async function loadFollowed(enrich = false): Promise<void> {
  * 显示出来，**不弹错误**：那是能力缺失，不是这次请求失败。
  */
 async function loadPeople(reset = false): Promise<void> {
-  if (peopleLoading.value) return
-  if (!reset && (!peopleHasMore.value || !peopleRows.value.length)) return
+  // 追加页要防重入；换档 / 换分类（reset）必须放行 —— 否则切性别时正有个请求在飞，
+  // 新榜就永远拉不出来（列表已被清空，哨兵也不再触发）
+  if (!reset && (peopleLoading.value || !peopleHasMore.value || !peopleRows.value.length)) {
+    return
+  }
   const page = reset ? 1 : peoplePage.value + 1
+  const seq = ++peopleReqSeq
   peopleLoading.value = true
   peopleError.value = ''
   try {
-    const payload = await fetchPeople(props, peopleKind.value, page)
+    const payload = await fetchPeople(
+      props,
+      peopleKind.value,
+      page,
+      peopleGender.value === 'all' ? '' : peopleGender.value,
+    )
+    if (seq !== peopleReqSeq) return // 过期响应（已换性别 / 换分类）：整表丢弃
     peopleMessage.value = payload.message || ''
     const merged = reset ? payload.people : [...peopleRows.value, ...payload.people]
     const seen = new Set<string>()
@@ -3097,12 +3706,35 @@ async function loadPeople(reset = false): Promise<void> {
     peoplePage.value = payload.page || page
     peopleHasMore.value = Boolean(payload.has_more)
   } catch (err) {
-    peopleError.value = `人物目录加载失败：${err instanceof Error ? err.message : err}`
+    if (seq === peopleReqSeq) {
+      peopleError.value = `人物目录加载失败：${err instanceof Error ? err.message : err}`
+    }
   } finally {
-    peopleLoading.value = false
-    // 哨兵随列表一起重排：重挂一次，若还在视口内会立刻续拉下一页
-    void nextTick(observePeopleSentinel)
+    // 过期请求不能把 loading 清掉：新一轮还在飞，清了会让哨兵重复发请求
+    if (seq === peopleReqSeq) {
+      peopleLoading.value = false
+      // 哨兵随列表一起重排：重挂一次，若还在视口内会立刻续拉下一页
+      void nextTick(observePeopleSentinel)
+    }
   }
+}
+
+/**
+ * 切男女榜：等于换一本目录 —— 行清空、页码归零、重新拉第 1 页。
+ *
+ * 站点的「全部」就是不带 gender 参数，所以 `all` 走空串（由 `loadPeople` 转）。
+ */
+function setPeopleGender(value: unknown): void {
+  const key = String(value || 'all')
+  const next: PeopleGender = key === '男' || key === '女' ? key : 'all'
+  if (next === peopleGender.value) return
+  peopleGender.value = next
+  peopleRows.value = []
+  peoplePage.value = 0
+  peopleHasMore.value = false
+  peopleError.value = ''
+  void loadPeople(true)
+  void nextTick(observePeopleSentinel)
 }
 
 /** 换人物分类 = 换一本目录，回到第一页（只在正看这一页时才请求） */
@@ -3197,6 +3829,36 @@ function observeSentinel(): void {
 }
 
 onMounted(async () => {
+  // 鼠标前进后退键（2026-11-02）：把宿主当前这一条历史标记成「卡片墙」层，
+  // 之后每进一层就压一格。合并宿主自己的 state 字段，不能整条覆盖（Vue Router
+  // 也在这条 state 上存 position / back / forward）。
+  const seeded = (history.state || {})[VIEW_STATE_KEY] as ViewSnapshot | undefined
+  if (seeded && seeded.id === viewStateId) {
+    viewDepth = seeded.depth
+  } else {
+    // 没有标记 / 标记属于上一次实例（刷新后残留）或另一个入口：都接管并重置成
+    // 「卡片墙」层 —— 不重置的话侧键会退到一格不认识的快照，表现成「点了没反应」。
+    try {
+      history.replaceState(
+        { ...(history.state || {}), replaced: VIEW_STATE_REPLACED, [VIEW_STATE_KEY]: viewSnapshot(0) },
+        '',
+      )
+    } catch {
+      viewHistoryUsable = false
+    }
+  }
+  window.addEventListener('popstate', onViewPopState)
+  // 浏览器默认会在 `popstate` 之后**自己**再恢复一次滚动位置（而且是异步、在我们的
+  // handler 之后执行）⇒ 把我们刚设好的位置覆盖掉，返回上一层就「滚到哪儿看运气」。
+  // 插件自己管滚动，挂载期间改成 manual，卸载时还原宿主原来的值。
+  if ('scrollRestoration' in history) {
+    prevScrollRestoration = history.scrollRestoration
+    try {
+      history.scrollRestoration = 'manual'
+    } catch {
+      /* 只读环境忽略 */
+    }
+  }
   if (typeof IntersectionObserver === 'function') {
     observer = new IntersectionObserver(
       (entries) => {
@@ -3302,6 +3964,9 @@ const showBackTop = computed(() => {
  * 所以这里同时看：探测到的容器、window、以及**滚动事件的目标元素**（最可靠）。
  */
 function currentScrollTop(event?: Event): number {
+  // 覆盖层（详情）开着：只看覆盖层自己的滚动 —— 列表虽常驻 DOM、位置没动，
+  // 但把它的 scrollTop 混进来会让回顶按钮的显隐跟着列表而不是详情走
+  if (viewLayer.value) return fullViewScrollTop()
   const host = scrollHost()
   const target = (event?.target || null) as HTMLElement | null
   const fromTarget =
@@ -3325,7 +3990,8 @@ function onScroll(event?: Event): void {
 
 /** 回到列表顶部（滚的是宿主钉的那个内容容器，不是 window） */
 function scrollToTop(): void {
-  const host = scrollHost()
+  // 覆盖层开着：滚的是覆盖层自己的容器（Teleport 到 body，不归宿主容器管）
+  const host = viewLayer.value ? fullViewRef.value : scrollHost()
   if (host) host.scrollTo({ top: 0, behavior: 'smooth' })
   else window.scrollTo({ top: 0, behavior: 'smooth' })
   lastScrollY = 0
@@ -3334,27 +4000,114 @@ function scrollToTop(): void {
   backTopHiding.value = true
 }
 
-/** 跳到记录的位置（容器滚动 ⇒ 滚容器，否则滚 window） */
-function scrollToPosition(position: number): void {
-  const host = scrollHost()
-  if (host) host.scrollTo({ top: position })
-  else window.scrollTo({ top: position })
+/**
+ * 待生效的滚动还原令牌。每次新的还原 / 主动跳转都 +1，旧的那一轮立刻作废 ——
+ * 否则「退回列表」之后紧跟一次「进详情」，上一轮的按帧重试会把新页面又拽下去。
+ */
+let restoreScrollToken = 0
+
+/**
+ * 还原滚动位置（返回上一层、退回卡片墙都走这里）。
+ *
+ * 不能只 `scrollTo` 一次：详情页的内容是**异步**回来的，切层那一瞬间滚动容器往往
+ * 还只有一屏高，`scrollTo(1600)` 会被浏览器夹成 `scrollHeight - clientHeight`
+ * （通常是 0～几百），等正文铺开后再没人纠正 —— 表现就是「返回上一层后滚动位置
+ * 不固定」（同一部剧有时对、有时跑到很靠上）。所以这里按帧重试：内容长高一点就再
+ * 对一次，直到真的到位或超时。
+ *
+ * 交还控制权的两个出口：用户真的动手滚了（滚轮 / 触摸 / 按键）、或超时。
+ */
+function restoreScrollTo(
+  target: number,
+  budgetMs = 2500,
+  elOverride?: HTMLElement | null,
+): void {
+  const token = ++restoreScrollToken
+  const startedAt = performance.now()
+  const deadline = startedAt + budgetMs
+  let wanted = -1
+
+  // 交还控制权只认**用户真正的操作**，不认「位置对不上」。
+  //
+  // 原先的判据是「 scrollTop 与上一次设置的值差出 12px 就当用户滚了、放弃纠正」——
+  // 但侧键返回（history.back）会同时唤醒**宿主路由**的 popstate 处理，它在恢复之后
+  // 做一次程序性滚动（回到它记录的位置 / 顶部），位置一被拽走我们恰恰会误判放弃 ——
+  // 表现正是「返回后列表不在进详情前的位置」（2026-11-03 真机反馈）。
+  let userTouched = false
+  const markUser = (): void => {
+    userTouched = true
+  }
+  const passiveCapture = { capture: true, passive: true } as AddEventListenerOptions
+  window.addEventListener('wheel', markUser, passiveCapture)
+  window.addEventListener('touchmove', markUser, passiveCapture)
+  window.addEventListener('keydown', markUser, { capture: true })
+  const cleanup = (): void => {
+    window.removeEventListener('wheel', markUser, passiveCapture)
+    window.removeEventListener('touchmove', markUser, passiveCapture)
+    window.removeEventListener('keydown', markUser, { capture: true })
+  }
+
+  const step = (): void => {
+    if (token !== restoreScrollToken) {
+      cleanup()
+      return
+    }
+    const host = elOverride && elOverride.isConnected ? elOverride : scrollHost()
+    const el = host || (document.scrollingElement as HTMLElement | null)
+    if (!el) {
+      cleanup()
+      return
+    }
+    const top = Number(el.scrollTop || 0)
+    // 用户动手了：立刻交还
+    if (userTouched) {
+      cleanup()
+      return
+    }
+    const max = Math.max(0, Number(el.scrollHeight || 0) - Number(el.clientHeight || 0))
+    const want = Math.min(target, max)
+    // 程序性跳动（宿主路由的滚动、布局抖动）：一律纠正回来，直到到位或超时
+    if (Math.abs(top - want) > 1) {
+      if (host) host.scrollTo({ top: want, behavior: 'auto' })
+      else window.scrollTo({ top: want })
+    }
+    wanted = want
+    // 到位后不立刻交还：宿主路由的 scrollBehavior 走 `nextTick().then(...)` 异步链，
+    // 它的程序性滚动可能落在我们的恢复之后 —— 再钉 300ms，期间跳变一律纠正。
+    // （用户动手滚仍立即交还，见上方 userTouched。）
+    if (
+      (want >= target - 1 && performance.now() - startedAt > 300) ||
+      performance.now() > deadline
+    ) {
+      cleanup()
+      return
+    }
+    requestAnimationFrame(step)
+  }
+
+  step()
 }
 
-/** 当前的滚动位置（容器滚动 ⇒ 容器的 scrollTop，否则 window.scrollY） */
-function currentScrollY(): number {
-  const host = scrollHost()
-  return host ? host.scrollTop : window.scrollY || 0
-}
 
 onUnmounted(() => {
   // 离开页面前把宿主原生滚动条还原（类是临时挂上去的）
   muteNativeScrollBar(false)
+  // 滚动还原交还宿主
+  if (prevScrollRestoration) {
+    try {
+      history.scrollRestoration = prevScrollRestoration
+    } catch {
+      /* 只读环境忽略 */
+    }
+    prevScrollRestoration = ''
+  }
+  restoreScrollToken += 1
   if (logsTimer) {
     clearInterval(logsTimer)
     logsTimer = null
   }
   window.removeEventListener('scroll', onScroll, { capture: true })
+  window.removeEventListener('popstate', onViewPopState)
   window.removeEventListener('resize', updateLogMetrics)
   // 拖动中途卸载：摘掉挂在 window 上的 pointer 监听，避免泄漏
   onLogPointerUp()
@@ -3429,7 +4182,7 @@ watch(
 
 // 筛选条件一变就重新拉第一页；搜索演员做防抖，避免每敲一个字都去查百科
 let lookupTimer: ReturnType<typeof setTimeout> | null = null
-watch([actor, genre, year, studio, platform, sort, onlyNotInLibrary, onlyNotSubscribed], () => {
+watch([actor, genre, year, studio, platform, sort, onlyNew, onlyNotInLibrary, onlyNotSubscribed], () => {
   // 槽位上的筛选行在整页视图旁边仍然可见：改筛选 = 要看列表，先把整页视图退掉
   exitViews()
   reload()
@@ -3499,7 +4252,8 @@ async function confirmCancelSubscribe(): Promise<void> {
   subscribing.value = true
   subscribingId.value = work.media_id
   try {
-    const res = await pluginUnsubscribe(props, work.media_id)
+    // 带上标题：换过站时卡上是当前身份、清单里是旧身份，后端按同名找那条旧记录
+    const res = await pluginUnsubscribe(props, work.media_id, work.title)
     if (res && res.success === false) {
       toast(String(res.message || '取消订阅失败'), 'error')
       return
@@ -3507,6 +4261,12 @@ async function confirmCancelSubscribe(): Promise<void> {
     const next = new Set(subscribed.value)
     next.delete(work.media_id)
     subscribed.value = next
+    // 同名桥那份也清掉，否则同一部剧的卡还挂着「已订阅」
+    const titles = new Set(subscribedTitles.value)
+    titles.delete(titleKeyOf(work.title))
+    subscribedTitles.value = titles
+    // 列表行上的后端标注也要就地改掉（否则红心停在「已订阅」）
+    markWorkSubscribed(work.media_id, false)
     toast(`已取消订阅：${work.title}`)
     void loadSubscriptions()
   } catch (err) {
@@ -3518,16 +4278,6 @@ async function confirmCancelSubscribe(): Promise<void> {
   }
 }
 
-/**
- * 订阅一部剧。
- *
- * 现在**优先直连宿主订阅接口**：带上 `season` / `start_episode` / `total_episode`，
- * 宿主就不会再去做「补充识别」（那一步对插件来源必然失败 —— 识别结果里没有 seasons，
- * 直接报「媒体信息中没有季集信息」，这就是之前「点了没反应」的根因）。
- *
- * 直连失败且宿主注入了 `nativeSubscribe` 时，交回宿主的订阅弹窗（能选季 / 下载器）；
- * 两条路都走不通也一定给一句 toast —— 不再出现「点了什么都没有」。
- */
 /** 正在「立即搜索」的那部作品（空串 = 空闲；只有那张卡的按钮转圈） */
 const searchNowId = ref('')
 
@@ -3543,7 +4293,7 @@ async function searchNow(work: WorkItem): Promise<void> {
   searchNowId.value = work.media_id
   try {
     await ensureConfig()
-    if (!subscribed.value.has(work.media_id)) {
+    if (!isWorkSubscribed(work.media_id, work.title, work.subscribed)) {
       const sub = await pluginSubscribe(props, work)
       if (sub && sub.success === false) {
         toast(String(sub.message || '订阅失败'), 'error')
@@ -3552,6 +4302,7 @@ async function searchNow(work: WorkItem): Promise<void> {
       const next = new Set(subscribed.value)
       next.add(work.media_id)
       subscribed.value = next
+      markWorkSubscribed(work.media_id, true)
     }
     const result = await pluginSubscribeSearchNow(props, work.media_id)
     toast(result?.message || `已开始搜索《${work.title}》，结果稍后回填`)
@@ -3563,8 +4314,14 @@ async function searchNow(work: WorkItem): Promise<void> {
   }
 }
 
+/**
+ * 订阅 / 取消订阅一部剧（同一个按钮）。
+ *
+ * 订阅只记进**插件订阅清单**（宿主订阅 2026-11-02 起完全去除），由订阅搜索任务
+ * 全分类搜索、命中即下。换过数据源站点时，后端会按同名把旧记录换成当前站点身份。
+ */
 async function subscribe(work: WorkItem): Promise<void> {
-  if (subscribed.value.has(work.media_id)) {
+  if (isWorkSubscribed(work.media_id, work.title, work.subscribed)) {
     // 已订阅 ⇒ 再点一次是**取消订阅**（与系统详情页一致：那里点「已订阅」= 取消）。
     // 先弹确认层，避免误触把订阅删掉。
     askCancelSubscribe(work)
@@ -3585,6 +4342,7 @@ async function subscribe(work: WorkItem): Promise<void> {
     const next = new Set(subscribed.value)
     next.add(work.media_id)
     subscribed.value = next
+    markWorkSubscribed(work.media_id, true)
     toast(res?.message || `已订阅：${work.title}`)
     void loadSubscriptions()
   } catch (err) {
@@ -3674,13 +4432,35 @@ function openWorkDetail(work: WorkItem): void {
     // 这一步会把它盖掉 ⇒ 连带把演员页的返回目标降级成列表，免得退回去看到的不是原来那部。
     workOpenedFrom = 'actor'
     actorOpenedFrom = ''
-  } else {
-    workOpenedFrom = ''
-    detailScrollY = currentScrollY()
+    // 记下演员层读到哪了（覆盖层自己的滚动）：退回演员层时接着看
+    actorPageScrollY = fullViewScrollTop()
   }
+  // 列表入口（viewLayer === ''）：**什么都不记** —— 覆盖层盖上去，列表滚动原样保留，
+  // 返回时天然停在原地（学宿主探索页的 KeepAlive 语义，2026-11-03 用户口径）。
   detailWork.value = work
-  viewLayer.value = 'work'
-  scrollToPosition(0)
+  workPageScrollY = 0
+  enterViewLayer('work')
+}
+
+/**
+ * 发现页「站点 RSS」的**灰卡守卫**（2026-11-03）：未识别条目（``media_id`` 空，
+ * 百科暂未收录）不能进详情 / 订阅 / 自动订阅 —— 详情、订阅链路都拿 media_id 当
+ * 主键，空 ID 会开出空详情页或写脏订阅台账。点「搜索」不拦：那是按剧名跳站点
+ * 搜索，没有 ID 也能用。
+ */
+function openRankWork(work: WorkItem): void {
+  if (!work.media_id) return
+  openWorkDetail(work)
+}
+
+function subscribeRankWork(work: WorkItem): void {
+  if (!work.media_id) return
+  subscribe(work)
+}
+
+function searchNowRank(work: WorkItem): void {
+  if (!work.media_id) return
+  searchNow(work)
 }
 
 /**
@@ -3692,9 +4472,11 @@ function openWorkDetail(work: WorkItem): void {
 function openActorFromWork(item: ActorCandidate): void {
   actorQuery.value = ''
   actorOpenedFrom = 'work'
+  // 作品层读到哪了（覆盖层自己的滚动，退回时接着看）
+  workPageScrollY = fullViewScrollTop()
+  actorPageScrollY = 0
   detailActor.value = item
-  viewLayer.value = 'actor'
-  scrollToPosition(0)
+  enterViewLayer('actor')
 }
 
 /** 配置缓存：站点跳转与订阅提交共用（首次用时拉一次，之后复用） */
@@ -3731,6 +4513,29 @@ async function searchWork(work: WorkItem): Promise<void> {
 </script>
 
 <style scoped>
+/*
+ * 整页视图覆盖层：Teleport 到 body 的 fixed 全屏容器（2026-11-03）。
+ *
+ * 为什么 fixed + 覆盖而不是文档流里叠内容：宿主探索页「返回停在原地」靠的是
+ * `<KeepAlive>` —— 组件不卸载、列表滚动原样保留。插件面板没有 KeepAlive，就用
+ * 同构手段：详情盖在列表上面、**列表的 scrollTop 从头到尾不被触碰**，返回时天然
+ * 停在原地，不再依赖「保存 / 恢复」去和宿主路由的 popstate 滚动抢位。
+ * Teleport 到 body 是因为宿主面板容器带 `transform`（留在面板里 fixed 会退化成
+ * 相对它定位，回顶按钮当年就踩过这个坑）。
+ *
+ * z-index：高于宿主内容与 StickyBack 之下的层面、低于 Vuetify 对话框（2400）；
+ * StickyBack（1500）在详情层内，盖在本层之上 ✓。overscroll 防止滚到头把滚动
+ * 链给宿主页面。
+ */
+.sdas-fullview {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: rgb(var(--v-theme-background));
+}
+
 .sdas {
   --sdas-fg: rgb(var(--v-theme-on-surface));
   --sdas-fg-dim: rgba(var(--v-theme-on-surface), 0.62);
@@ -4071,6 +4876,12 @@ async function searchWork(work: WorkItem): Promise<void> {
 /* 演员页工具栏：贴齐筛选行的行高，垂直方向与作品页第一行对齐 */
 .sdas-actor-bar {
   min-height: 40px;
+}
+
+/* 发现页的男女榜行：与上面「目录」那行 chip 同节奏，只多留一点呼吸 */
+.sdas-actor-gender {
+  min-height: 36px;
+  margin-top: 2px;
 }
 
 /* 搜索行：常驻在标签条**上方**，两个标签页共用同一条搜索 */

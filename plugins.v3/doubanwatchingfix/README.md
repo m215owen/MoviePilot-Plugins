@@ -55,5 +55,9 @@ TypeError: RecognitionMixin.recognize_media() got an unexpected keyword argument
 
 ## 版本
 
+- `1.9.8` — 豆瓣请求健壮性：搜索接口无响应（`RequestUtils` 返回 `None`）时重试一次仍失败即返回空结果并告警，不再
+  `AttributeError: 'NoneType' object has no attribute 'status_code'` 打断整个事件；搜索结果解析跳过无标题/非 subject
+  链接的条目（原写法会在首个 `div.title` 不是条目时 `KeyError: 'subject_id'`）；写入状态接口返回 403 时日志明确提示
+  「豆瓣登录态失效/风控，需重新登录并更新 CookieCloud 或手填 cookie」；插件侧对 `get_subject_id` 的返回值做空值兜底。
 - `1.9.7` — v3.1.x API 兼容修复版（本仓库，ID 改为 `DouBanWatchingFix`）
 - `1.9.6` — 上游原版

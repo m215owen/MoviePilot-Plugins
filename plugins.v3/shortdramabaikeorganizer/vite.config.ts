@@ -19,7 +19,7 @@ import federation from '@originjs/vite-plugin-federation'
  * （表现为界面停在旧版或「无法加载组件」）。改目录名即可强制换 URL。
  * 改这里必须同步 `constants.FRONTEND_DIST` 的兜底值（当前 `dist/a1/assets`）。
  */
-const ASSETS_DIR = 'a21'
+const ASSETS_DIR = 'a28'
 
 const sharedVue = { requiredVersion: false, generate: false, singleton: true } as const
 

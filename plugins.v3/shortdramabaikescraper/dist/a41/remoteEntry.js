@@ -1,18 +1,15 @@
 const currentImports = {};
       const exportSet = new Set(['Module', '__esModule', 'default', '_export_sfc']);
       let moduleMap = {
-"./Page":()=>{
-      dynamicLoadingCss(["ActorWall-0SsojKOK.css"], false, './Page');
-      return __federation_import('./__federation_expose_Page-4oghUQLC.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
-"./Config":()=>{
-      dynamicLoadingCss(["__federation_expose_Config-B7NFbehR.css"], false, './Config');
-      return __federation_import('./__federation_expose_Config-CSWNhFC4.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
-"./Dashboard":()=>{
-      dynamicLoadingCss(["__federation_expose_Dashboard-D1iFnluH.css"], false, './Dashboard');
-      return __federation_import('./__federation_expose_Dashboard-DgEY1sUD.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./AppPage":()=>{
-      dynamicLoadingCss(["ActorWall-0SsojKOK.css"], false, './AppPage');
-      return __federation_import('./__federation_expose_AppPage-DtMMVGpd.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
+      dynamicLoadingCss(["PanelTabs-B58reUcy.css"], false, './AppPage');
+      return __federation_import('./__federation_expose_AppPage-BG14KPBM.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+"./Page":()=>{
+      dynamicLoadingCss(["PanelTabs-B58reUcy.css"], false, './Page');
+      return __federation_import('./__federation_expose_Page-BxM0jtou.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+"./Config":()=>{
+      dynamicLoadingCss(["__federation_expose_Config-Gk3dcGb3.css"], false, './Config');
+      return __federation_import('./__federation_expose_Config-Z-8vCGHX.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
       const seen = {};
       const dynamicLoadingCss = (cssFilePaths, dontAppendStylesToHead, exposeItemName) => {
         const metaUrl = import.meta.url;
@@ -23,7 +20,7 @@ const currentImports = {};
 
         const curUrl = metaUrl.substring(0, metaUrl.lastIndexOf('remoteEntry.js'));
         const base = '/';
-        'a51';
+        'a41';
 
         cssFilePaths.forEach(cssPath => {
          let href = '';
@@ -53,7 +50,7 @@ const currentImports = {};
          }
          
           if (dontAppendStylesToHead) {
-            const key = 'css__ShortDramaActorSubscribe__' + exposeItemName;
+            const key = 'css__ShortDramaBaikeScraper__' + exposeItemName;
             window[key] = window[key] || [];
             window[key].push(href);
             return;

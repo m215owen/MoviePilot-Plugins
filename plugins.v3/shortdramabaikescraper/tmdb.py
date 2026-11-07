@@ -64,3 +64,82 @@ async def tv_search(title: str, year: str) -> list[dict]:
         if normalized:
             out.append(normalized)
     return out
+
+
+# ── 影人（人物）通道：给 ``baike.tmdb`` 列绑 ``tmdbp:{pid}`` ─────────────────
+#
+# 宿主 ``TmdbApi`` 早就有 ``async_search_persons`` / ``async_get_person_credits``
+# （2026-11-03 用户提醒「系统有人物搜索的接口」），所以人物不该只有豆瓣一条腿。
+# 绑定判据与豆瓣侧同口径：**作品名交集**，零交集不绑（短剧演员重名极多）。
+
+
+def _normalize_person(item: Any) -> dict | None:
+    """TMDB ``search/person`` 的一条结果 → 归一化候选。"""
+    if not isinstance(item, dict):
+        return None
+    pid = str(item.get("id") or "").strip()
+    if not pid.isdigit():
+        return None
+    works = []
+    for work in item.get("known_for") or []:
+        if not isinstance(work, dict):
+            continue
+        title = str(work.get("name") or work.get("title") or "").strip()
+        if title:
+            works.append(title)
+    path = str(item.get("profile_path") or "").strip()
+    return {
+        "media_id": f"{constants.TMDB_PERSON}:{pid}",
+        "id": pid,
+        "name": str(item.get("name") or "").strip(),
+        "avatar": f"https://image.tmdb.org/t/p/w185{path}" if path else "",
+        # ``known_for`` 是 TMDB 给的代表作（5 部上下），先拿它算交集，
+        # 交集为零再去拉完整 credits —— 大多数情况省掉那次请求。
+        "works": works,
+    }
+
+
+async def person_search(name: str) -> list[dict]:
+    """按名搜 TMDB 影人；任何异常降级为空列表（与 ``tv_search`` 同纪律）。"""
+    word = (name or "").strip()
+    if not word:
+        return []
+    try:
+        api = _api()
+        try:
+            items = await api.async_search_persons(word)
+        except AttributeError:
+            items = api.search_persons(word)
+    except Exception as err:  # pragma: no cover - 网络/通道异常一律降级
+        logger.warning(f"{constants.SOURCE_NAME} TMDB 影人搜索失败 {word}：{err}")
+        return []
+    out: list[dict] = []
+    for item in items or []:
+        normalized = _normalize_person(item)
+        if normalized:
+            out.append(normalized)
+    return out
+
+
+async def person_credits(person_id: str) -> list[str]:
+    """影人作品**名字**清单（第 1 页，最多 24 条）；异常降级为空列表。"""
+    pid = str(person_id or "").strip()
+    if not pid.isdigit():
+        return []
+    try:
+        api = _api()
+        try:
+            items = await api.async_get_person_credits(int(pid))
+        except AttributeError:
+            items = api.get_person_credits(int(pid))
+    except Exception as err:  # pragma: no cover
+        logger.warning(f"{constants.SOURCE_NAME} TMDB 影人作品失败 {pid}：{err}")
+        return []
+    out: list[str] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("name") or item.get("title") or "").strip()
+        if title:
+            out.append(title)
+    return out

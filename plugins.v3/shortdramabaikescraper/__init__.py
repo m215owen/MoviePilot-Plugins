@@ -16,6 +16,7 @@ P0 范围（计划 §8）：
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any, Optional
@@ -26,8 +27,14 @@ from app.schemas.types import MediaSource, MediaType
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
 
-from . import classify, constants, pages, scrape, whitelist
+from . import classify, constants, douban, pages, scrape, whitelist
 from .api_models import (
+    BackfillData,
+    BaikeExtData,
+    BaikeExtIdsResponse,
+    BaikeExtPageData,
+    BaikeExtPageResponse,
+    BaikeExtResponse,
     BaikePageData,
     BaikePageResponse,
     CacheItem,
@@ -57,6 +64,7 @@ from .media_id import (
     is_novel,
     is_person,
     media_id_of,
+    set_use_baidu_proxy,
 )
 from .service import (
     DetailService,
@@ -64,7 +72,9 @@ from .service import (
     _name_key,
     _name_related,
     candidate_to_media_info,
+    is_excluded_item,
     run_sync,
+    set_exclude_manju,
     shutdown_sync_loop,
 )
 from .store import BaikeStore
@@ -80,7 +90,7 @@ class ShortDramaBaikeScraper(_PluginBase):
     plugin_name = constants.SOURCE_NAME
     plugin_desc = constants.SOURCE_DESC
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "0.1.6"
+    plugin_version = "0.1.8"
     plugin_author = "m216owen"
     author_url = "https://github.com/m215owen"
     plugin_config_prefix = "shortdramabaikescraper_"
@@ -88,6 +98,13 @@ class ShortDramaBaikeScraper(_PluginBase):
     auth_level = 1
 
     _enabled: bool = False
+    #: 主站：``net``（www.duanjubaike.net）/ ``org``（duanjubaike.org）
+    _site: str = constants.DEFAULT_SITE
+    #: 图片地址形态：True = 百度 gimg 中转（保留站点原样），False = 自家图床直链
+    _use_baidu_image_proxy: bool = True
+    #: 是否剔除漫剧（``manju`` / ``hema`` / ``huolong``）。配置 ``exclude_manju`` 控制：
+    #: 打开后识别候选、面板检索与榜单都不再出漫剧条目。
+    _exclude_manju: bool = True
     _cache: Optional[CacheFacade] = None
     _detail: Optional[DetailService] = None
     #: 宿主传进来的原始配置（`/config` 端点回读用；`update_config` 会触发
@@ -101,22 +118,46 @@ class ShortDramaBaikeScraper(_PluginBase):
         config = config or {}
         self._config = dict(config)
         self._enabled = bool(config.get("enabled", False))
+        # 主站：只影响检索 / 人物目录 / 榜单；详情解析按 media_id 前缀走（见 service）
+        previous_site = getattr(self, "_site", None)
+        self._site = constants.set_site(config.get("site", constants.DEFAULT_SITE))
+        self._use_baidu_image_proxy = bool(config.get("use_baidu_image_proxy", True))
+        self._exclude_manju = bool(config.get("exclude_manju", True))
+        # 同步给编排层：站内搜索结果里角标为「漫剧」的**不入 ID 库**
+        set_exclude_manju(self._exclude_manju)
+        # 出图形态走模块级开关：parser / service 里 image_url 是当纯函数调的
+        set_use_baidu_proxy(self._use_baidu_image_proxy)
 
         if self._cache is None:
             self._cache = CacheFacade()
         else:
             # 全插件统一 TTL 跟随系统设置：每次 init（含保存配置）重读一遍
             self._cache.refresh()
+        # 换站后旧的搜索缓存（含**负缓存**）是另一站的结论：不清就会出现
+        # 「新站明明有，却一直返回 0 条、也不发请求」（命中旧站的「无结果」负缓存）。
+        # 详情 / 人物缓存按 media_id 前缀区分，两站 id 空间不重叠，不动。
+        if previous_site and previous_site != self._site:
+            try:
+                region = self._cache.region(constants.REGION_SEARCH)
+                if region is not None:
+                    region.clear()
+                logger.info(
+                    f"{constants.SOURCE_NAME} 主站切换 {previous_site} → {self._site}，"
+                    f"已清空检索缓存"
+                )
+            except Exception as err:  # pragma: no cover - 清缓存失败不影响主功能
+                logger.warning(f"{constants.SOURCE_NAME} 清检索缓存失败：{err}")
         self._detail = DetailService(self._cache, self._store)
 
         try:
+            # 建表 + 老库的外部 id 列搬进 baike_ext（第一次启动搬家，之后是空操作）
             self._store.ensure_table()
         except Exception as err:  # pragma: no cover - 建表失败不阻断插件加载
             logger.error(f"{constants.SOURCE_NAME} 建表失败：{err}")
 
         # 海报要能显示：把图床域名登记进宿主的「安全图片域名」
         # （停用时撤回，见 stop_service；失败只 warning，不影响识别）
-        whitelist.sync(self._enabled)
+        whitelist.sync(self._enabled, self._use_baidu_image_proxy)
 
         logger.info(
             f"{constants.SOURCE_NAME} 已初始化：启用={self._enabled}"
@@ -187,6 +228,8 @@ class ShortDramaBaikeScraper(_PluginBase):
             "actor_profile": self.module_actor_profile,
             "actor_works": self.module_actor_works,
             "list_people": self.module_list_people,
+            "poster_url": self.module_poster_url,
+            "clear_cache": self.module_clear_cache,
             "list_ranks": self.module_list_ranks,
             "rank_medias": self.module_rank_medias,
             "metadata_nfo": self.metadata_nfo,
@@ -243,40 +286,100 @@ class ShortDramaBaikeScraper(_PluginBase):
         识别时逐个试而不是只取一个：``cn_name`` 偶发为空/不全（宿主版本差异），
         退到 ``title`` 由 :mod:`title_clean` 自己洗也能救回来。去重很关键——
         ``cn_name`` 与 ``title`` 洗净后是**同一个**名字，不折叠就会白跑一趟网络。
+
+        **副标题也参与**（2026-10-25 加）：发布组常把中文名只写在副标题里，主标题
+        是纯拼音，例如 AGSVPT 的
+        ``Quan Xi Wan Ku Dao Yan Bie Han Ka 2025 S01 …-GodDramas``
+        副标题 ``全息纨绔：导演别喊卡 | 全71集 | 2025年 | 类型：古装 穿越``。
+        不读 ``subtitle`` 就只会拿拼音去站内搜（本站只收中文），必然 0 结果。
         """
         out: list[str] = []
         seen_key: set[str] = set()
         seen_raw: set[str] = set()
-        for attr in ("cn_name", "title", "name", "original_title"):
-            value = getattr(meta, attr, None)
-            if not isinstance(value, str) or not value.strip():
-                continue
+
+        def push(value: Any) -> None:
+            """按「洗净后的剧名」去重后追加一条原始候选。"""
+            if not isinstance(value, str):
+                return
             text = value.strip()
-            if text in seen_raw:
-                continue
+            if not text or text in seen_raw:
+                return
             seen_raw.add(text)
             key = primary_name(text) or text
             if key in seen_key:
-                continue
+                return
             seen_key.add(key)
             out.append(text)
+
+        for attr in ("cn_name", "title", "name", "original_title"):
+            push(getattr(meta, attr, None))
         if isinstance(meta, dict):
             for name in ("cn_name", "title", "name", "original_title"):
-                value = meta.get(name)
-                if isinstance(value, str) and value.strip():
-                    text = value.strip()
-                    if text in seen_raw:
-                        continue
-                    seen_raw.add(text)
-                    key = primary_name(text) or text
-                    if key in seen_key:
-                        continue
-                    seen_key.add(key)
-                    out.append(text)
+                push(meta.get(name))
+        # 副标题：只取首个「像剧名」的段，别把「全71集 / 类型：…」当候选去搜
+        for subtitle in cls._meta_subtitles(meta):
+            for piece in cls._subtitle_name_pieces(subtitle):
+                push(piece)
+        # 别名（宿主 names / aka）：排最后，主标题与副标题都不中时才轮到
+        for alias in cls._meta_aliases(meta):
+            push(alias)
         # 本站只收**中文名**：只要有中文候选，纯 ASCII 的（拼音 / 英文原名）就不必试了，
         # 白跑一趟网络还会占掉「前几个候选」的预算。
         chinese = [name for name in out if re.search(r"[\u4e00-\u9fa5]", name)]
         return chinese or out
+
+    @staticmethod
+    def _meta_subtitles(meta: Any) -> list[str]:
+        """取宿主 ``subtitle``（可能是 str，也可能是 list）。"""
+        if meta is None:
+            return []
+        value = getattr(meta, "subtitle", None)
+        if value is None and isinstance(meta, dict):
+            value = meta.get("subtitle")
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if isinstance(value, (list, tuple)):
+            return [str(item).strip() for item in value if str(item or "").strip()]
+        return []
+
+    @staticmethod
+    def _subtitle_name_pieces(text: str) -> list[str]:
+        """副标题 → **首个像剧名的段**（没有就返回空）。
+
+        发布组固定格式：``中文名 | 全71集 | 2025年 | 网络收费短剧 | 类型：古装 穿越``。
+        逐段看：含中文、且不是「集数 / 年份 / 类型 / 主演 / 导演 / 剧种」这类描述，
+        第一个合格的段就是剧名；只取一个，避免拿「类型：…」去站内搜。
+        """
+        for piece in re.split(r"[|｜]", str(text or "")):
+            piece = piece.strip()
+            if not piece or not re.search(r"[\u4e00-\u9fa5]", piece):
+                continue
+            if re.match(
+                r"^(?:全?\s*\d+\s*[集话期]|\d{4}\s*年?"
+                r"|类型\s*[:：]|主演\s*[:：]|导演\s*[:：]"
+                r"|网络收费短剧|短剧|漫剧)",
+                piece,
+            ):
+                continue
+            return [piece]
+        return []
+
+    @staticmethod
+    def _meta_aliases(meta: Any) -> list[str]:
+        """取别名列表（宿主 ``names`` / ``aka`` / ``aliases``，str 或 list 都认）。"""
+        if meta is None:
+            return []
+        out: list[str] = []
+        for attr in ("names", "aka", "aliases"):
+            value = getattr(meta, attr, None)
+            if value is None and isinstance(meta, dict):
+                value = meta.get(attr)
+            if isinstance(value, str):
+                if value.strip():
+                    out.append(value.strip())
+            elif isinstance(value, (list, tuple)):
+                out.extend(str(item).strip() for item in value if str(item or "").strip())
+        return out
 
     @staticmethod
     def _meta_year(meta: Any) -> str:
@@ -425,6 +528,8 @@ class ShortDramaBaikeScraper(_PluginBase):
         wanted_keys = [key for key in (_name_key(name) for name in clean_candidates(title)) if key]
         if not wanted_keys:
             return ""
+        # 「从标签排除」：识别候选里先剔漫剧，免得刮削/订阅把漫剧当短剧收下
+        candidates = self._drop_manju(candidates)
         check = _name_related if self._looks_like_short_drama(meta, title) else _name_alike
         # ⚠️ "mixed" 必须算站内来源。``find_candidates`` 只要站内搜索有结果就把 origin
         # 标成 "mixed"（无论本地是否命中），而这里原先只认 ("local", "site") —— 漏掉
@@ -728,8 +833,24 @@ class ShortDramaBaikeScraper(_PluginBase):
                 "endpoint": self.api_baike_list,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "ID 库分页（原始 4 列，支持 q 模糊与 entity 过滤）",
+                "summary": "ID 库分页（站点行 media_id / name，支持 q 模糊与 entity 过滤）",
                 "response_model": BaikePageResponse,
+            },
+            {
+                "path": "/baike/extlist",
+                "endpoint": self.api_baike_extlist,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "外部 id 分页（名字 + 豆瓣 + TMDB；source=douban/tmdb 只看那一列）",
+                "response_model": BaikeExtPageResponse,
+            },
+            {
+                "path": "/baike/ext",
+                "endpoint": self.api_baike_ext,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "按名字取外部 id（豆瓣 / TMDB）",
+                "response_model": BaikeExtResponse,
             },
             {
                 "path": "/baike/del",
@@ -746,6 +867,22 @@ class ShortDramaBaikeScraper(_PluginBase):
                 "auth": "bear",
                 "summary": "清空 ID 库",
                 "response_model": OpResponse,
+            },
+            {
+                "path": "/baike/extids",
+                "endpoint": self.api_baike_extids,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "批量给 ID 库补豆瓣 / TMDB id（按名精确匹配，限速分批）",
+                "response_model": BaikeExtIdsResponse,
+            },
+            {
+                "path": "/baike/person_extids",
+                "endpoint": self.api_baike_person_extids,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "按豆瓣演职员表给人物补影人 id（同片同名即同一人）",
+                "response_model": BaikeExtIdsResponse,
             },
             {
                 "path": "/cache/del",
@@ -777,7 +914,7 @@ class ShortDramaBaikeScraper(_PluginBase):
         """``/status``：启用状态 + 各实体计数 + 可检索比例 + 缓存 region 清单与条数。"""
         counts: dict = {}
         try:
-            counts = self._store.counts()
+            counts = self._store.counts(exclude_manju=bool(self._exclude_manju))
         except Exception as err:  # pragma: no cover - 库未就绪时仍返回状态
             logger.error(f"{constants.SOURCE_NAME} 统计失败：{err}")
         # 缓存条数（面板「缓存分布」饼图）：缓存没起来就按全 0 报，不报错
@@ -791,9 +928,14 @@ class ShortDramaBaikeScraper(_PluginBase):
             enabled=self._enabled,
             version=self.plugin_version,
             media_source=constants.MEDIA_SOURCE_ID,
+            site=constants.site(),
+            exclude_manju=bool(self._exclude_manju),
             total=int(counts.get("total", 0)),
             searchable=int(counts.get("searchable", 0)),
             by_entity=dict(counts.get("by_entity", {})),
+            ext_total=int(counts.get("ext_total", 0)),
+            ext_douban=int(counts.get("ext_douban", 0)),
+            ext_tmdb=int(counts.get("ext_tmdb", 0)),
             regions=list(constants.ALL_REGIONS),
             by_region=dict(by_region),
         )
@@ -847,6 +989,8 @@ class ShortDramaBaikeScraper(_PluginBase):
                 include_novel=True,
                 # 手动查询：联网时把本地结果并入，用户要看全同名版本
                 merge_remote=bool(remote),
+                # .org 的作品 / 人物是两个检索端点，一次查全（.net 忽略这个参数）
+                site_kinds=("drama", "actor"),
             )
         except Exception as err:  # pragma: no cover
             logger.error(f"{constants.SOURCE_NAME} lookup 搜索失败 {keyword}：{err}")
@@ -884,7 +1028,21 @@ class ShortDramaBaikeScraper(_PluginBase):
                 message="取不到人物档案：页面无效（软 404）或抓取失败",
                 data=None,
             )
-        return schemas.Response(success=True, message="", data=PersonData(**person))
+        # 「排除漫剧」开关要管住所有出口：人物档案里的作品清单同样过筛
+        payload = dict(person)
+        payload["works"] = self._drop_manju(payload.get("works") or [])
+        # 侧栏「XX合作的演员」：解析层用 ``poster``，对外统一叫 ``avatar``
+        payload["people"] = [
+            {
+                "media_id": str(item.get("media_id") or "").strip(),
+                "name": str(item.get("name") or "").strip(),
+                "role": str(item.get("role") or "").strip(),
+                "avatar": str(item.get("avatar") or item.get("poster") or "").strip(),
+            }
+            for item in (payload.get("people") or [])
+            if isinstance(item, dict) and str(item.get("media_id") or "").strip()
+        ]
+        return schemas.Response(success=True, message="", data=PersonData(**payload))
 
     async def api_novel(self, media_id: str = "") -> NovelResponse:
         """``/novel``：原著档案 + 改编作品清单。
@@ -924,12 +1082,16 @@ class ShortDramaBaikeScraper(_PluginBase):
             )
         adaptations = []
         for work in novel.get("adaptations", []):
+            # 同 `api_person`：改编作品清单也受「排除」开关控制
+            # （老站漫剧 / 新站 AI 剧，判据见 service.is_excluded_item）
+            if self._exclude_manju and is_excluded_item(work):
+                continue
             adaptations.append(
                 NovelWork(
                     media_id=str(work.get("media_id") or ""),
                     name=str(work.get("name") or ""),
                     kind=str(work.get("kind") or ""),
-                    poster=image_url(work.get("media_id", "")),
+                    poster=str(work.get("poster") or "") or image_url(work.get("media_id", "")),
                     date=str(work.get("date") or ""),
                     episodes=int(work.get("episodes") or 0),
                 )
@@ -978,6 +1140,8 @@ class ShortDramaBaikeScraper(_PluginBase):
                     include_person=True,
                     include_novel=False,
                     merge_remote=True,
+                    # .org 的人物在 /actor/search 端点（作品端点搜不到人）
+                    site_kinds=("actor",),
                 )
             )
         except Exception as err:  # pragma: no cover - 检索失败按无候选处理
@@ -1090,6 +1254,10 @@ class ShortDramaBaikeScraper(_PluginBase):
             # 消费方（短剧演员订阅）按 ``douban:`` 前缀把来源分流到宿主豆瓣源。
             if kind not in constants.ENTITY_DRAMA and kind != constants.DOUBAN_WORK:
                 continue
+            # 「排除」管住演员作品清单：老站看卡上 ``kind`` 是否「漫剧」，
+            # 新站看 ``is_ai``（AI 短剧）。这是 `actor_works` 唯一的作品出口。
+            if self._exclude_manju and is_excluded_item(work):
+                continue
             tags = [str(tag).strip() for tag in (work.get("tags") or []) if str(tag).strip()]
             # 站点卡日期在 ``date``；豆瓣融合卡只有 ``year``（fusion 追加时 date 为空）
             date = str(work.get("date") or work.get("year") or "")
@@ -1109,6 +1277,12 @@ class ShortDramaBaikeScraper(_PluginBase):
                     "year": date[:4],
                     "genres": tags,
                     "genres_text": " / ".join(tags),
+                    # 状态角标（爆火 / 新剧 / 完结 / 预约…）：org 人物页的作品卡
+                    # 封面上就印着（parse_cards 已解析进 ``badges``），消费方
+                    # （短剧演员订阅）按它判「新剧」、在卡上印「爆火」——
+                    # 2026-11-04 修复：切到 org 后这层映射把它丢了，作品墙的
+                    # 「新剧 / 爆火」标签整墙消失（summary.new 恒 0）。
+                    "badges": [str(s).strip() for s in (work.get("badges") or []) if str(s).strip()],
                     # 站点人物卡不印热度 / 播放 / 出品方 / 平台 —— 按缺数据给
                     "heat": 0,
                     "play_count": 0,
@@ -1134,6 +1308,56 @@ class ShortDramaBaikeScraper(_PluginBase):
                 str(actor_id or "").strip(), str(name or "").strip()
             )
         )
+
+    def module_poster_url(self, media_id: str = "", **kwargs: Any) -> str:
+        """按**当前出图形态**给出这条身份的海报地址（契约名 ``poster_url``）。
+
+        跨插件消费（短剧演员订阅）：它的作品墙把海报**随快照落盘**，配置换过出图
+        形态后，存量行里仍留着旧形态的地址 —— 而宿主图片代理对「百度 gimg 中转」
+        主机的放行**时有时无**（实测同一批请求 1225 次返回 0 字节 / 527 次成功，
+        自家图床直链 535 / 541 成功），于是那些卡就是空白。
+
+        出墙前用本方法按 media_id **现算**一遍，形态永远跟随当前配置，零请求。
+        拼不出来（豆瓣身份 / 空 ID）返回空串，消费方保留原值即可。
+
+        ``.org`` 的海报是页面自带 CDN 地址、**不能按身份反拼**：退回详情缓存里
+        存着的 ``poster_path``（命中缓存才有，仍是零网络）。
+        """
+        target = str(media_id or "").strip()
+        url = image_url(target)
+        if url:
+            return url
+        if target and self._cache is not None:
+            try:
+                cached = self._cache.get_detail(target) or {}
+            except Exception:  # pragma: no cover - 缓存不可用就当没有
+                cached = {}
+            return str(cached.get("poster_path") or "")
+        return ""
+
+    def module_clear_cache(self, region: str = "", **kwargs: Any) -> dict:
+        """清数据源缓存（契约名 ``clear_cache``），供跨插件消费（短剧演员订阅）。
+
+        为什么暴露：订阅插件的作品内容**随快照落盘**，快照刷新走的是本插件的
+        get_person —— 那层带统一 TTL（默认 24h）的缓存。订阅侧「改了字段 /
+        想立刻看到站点最新状态」时，光让它 force 刷新没用（命中的还是本插件
+        缓存里的旧行），必须先把这里的缓存清掉再刷，两端才能对齐。
+
+        ``region`` 空串 = 清全部 region（与面板「清空缓存」同一口径）；
+        给了名字就只清那一区（如 ``djbaike.person``）。返回清掉的 region 列表。
+        """
+        if self._cache is None:
+            return {"cleared": []}
+        if region:
+            cache = self._cache.region(region)
+            if cache is None:
+                return {"cleared": []}
+            try:
+                cache.clear()
+            except Exception:  # noqa: BLE001 - 清缓存失败不该打断调用方
+                return {"cleared": []}
+            return {"cleared": [region]}
+        return {"cleared": list(self._cache.clear_all())}
 
     def module_list_people(
         self, kind: str = "yanyuan", page: int = 1, **kwargs: Any
@@ -1173,6 +1397,55 @@ class ShortDramaBaikeScraper(_PluginBase):
             "people": people,
         }
 
+    def _remember_ids(self, rows: Any, *, exclude: bool = True) -> int:
+        """把一批带身份的行登记进 **ID 库**（``baike`` 表），返回新增条数。
+
+        2026-11-03 用户口径：**发现页 / 详情页带出来的 id 都要入 ID 库**。
+        在这之前只有「点进详情」那条链路会登记（``DetailService._register``），
+        翻人物目录、翻榜单全是白翻 —— 实测库里只剩关注过的那 128 位演员，
+        ``drama:`` 一条都没有。
+
+        * ``rows`` 收 ``(media_id, name)`` 二元组或卡行 dict（``name`` / ``title``
+          都认，``poster`` 等字段忽略）；
+        * ``exclude=True``（默认）时按「排除」开关先过一遍 —— 与搜索结果同一条
+          口径（:func:`service.is_excluded_item`）：被排掉的条目一旦入库，下次就
+          以「本地命中」的身份复活，本地行没有角标 / AI 标，整条排除规则会被绕过；
+        * **名字为空的不入**（仓储层也会丢，这里提前挡掉省一次写）；
+        * 登记是顺手动作：失败只记日志，绝不影响这次取数。
+        """
+        pairs: list[tuple[str, str]] = []
+        ai_ids: list[str] = []
+        for row in list(rows or []):
+            if isinstance(row, dict):
+                item = dict(row)
+                media_id = str(item.get("media_id") or "").strip()
+                name = str(item.get("name") or item.get("title") or "").strip()
+            elif isinstance(row, (tuple, list)) and len(row) >= 2:
+                item = {"media_id": row[0], "name": row[1]}
+                media_id = str(row[0] or "").strip()
+                name = str(row[1] or "").strip()
+            else:
+                continue
+            if not media_id or not name:
+                continue
+            if exclude and self._exclude_manju and is_excluded_item(item):
+                continue
+            # 即使这次不排除，也把「AI / 漫剧」标注落库：开关打开后要靠 is_ai 列
+            # 在库里也判得出来（新站没有 manju 前缀）
+            if is_excluded_item(item):
+                ai_ids.append(media_id)
+            pairs.append((media_id, name))
+        if not pairs:
+            return 0
+        try:
+            added = self._store.upsert_many(rows=pairs)
+            if ai_ids:
+                self._store.mark_ai(media_ids=ai_ids)
+            return added
+        except Exception as err:  # pragma: no cover - 登记失败不影响取数
+            logger.error(f"{constants.SOURCE_NAME} 登记 ID 库失败：{err}")
+            return 0
+
     async def _people_page(self, kind: str, page: int) -> tuple[list[dict], bool]:
         """目录页 HTML → ``([人物行], has_more)``。
 
@@ -1188,14 +1461,18 @@ class ShortDramaBaikeScraper(_PluginBase):
                 "name": name,
                 "media_id": media_id,
                 "url": detail_url(media_id),
-                "poster": image_url(media_id) or "",
+                # .org 卡片自带 CDN 头像（不能按身份反拼）；.net 仍按图床模板反推
+                "poster": poster or image_url(media_id) or "",
                 "gender": "",
                 "job_title": "",
                 "works_count": 0,
             }
-            for media_id, name in cards
+            for media_id, name, poster in cards
             if name
         ]
+        # 翻目录就是索引生长入口（2026-11-03 用户口径）：这一页的人物 id 顺手入库，
+        # 否则「发现演员」翻几十页，ID 库里还是空的。人物不适用漫剧 / AI 排除。
+        self._remember_ids(people, exclude=False)
         return people, page < total_pages
 
     # ── 榜单（跨插件契约 list_ranks / rank_medias，2026-10-23 恢复） ──
@@ -1205,11 +1482,23 @@ class ShortDramaBaikeScraper(_PluginBase):
 
         纯静态目录、零网络。2026-10-23 用户口径：榜单解析归**数据源**统一供给，
         消费方（短剧演员订阅等）经跨插件模块方法取，不再各自抓页面。
+
+        ``exclude_manju`` 打开时**整条剔除** ``manjurebo`` / ``manjuxinju``
+        （2026-10-27 用户口径：这两个漫剧专属榜直接不要，不是逐条筛）；
+        .org 上同理剔除 ``top-comic``（漫剧热播）与 ``top-ai``（AI 热播，
+        2026-11-03 用户口径：AI 榜也受这个开关控制）。
+
+        目录**按主站分流**（2026-11-03）：.net 是 :data:`constants.RANK_CATALOG`
+        （推荐 + 五个排行榜 + 两个漫剧榜），.org 是
+        :data:`constants.ORG_RANK_CATALOG`（综合 / 真人 / AI / 漫剧热播榜 +
+        爽剧分类页，爽剧不是 ``/top`` 系的榜而是导航分类 ``/drama/feel-good``，
+        2026-11-03 用户要求进发现页）。
         """
         return {
             "ranks": [
                 {"key": key, "name": name}
-                for key, (name, _path) in constants.RANK_CATALOG.items()
+                for key, (name, _path) in constants.rank_catalog().items()
+                if not (self._exclude_manju and key in constants.MANJU_RANKS)
             ],
             "message": "",
         }
@@ -1230,18 +1519,43 @@ class ShortDramaBaikeScraper(_PluginBase):
 
         缓存有效期与全插件统一（见 ``cache.unified_ttl``）。抓取失败返回空列表。
         """
+        # 受「排除」开关管辖的专属榜（漫剧 / AI）：开关打开时整榜排除，连页面都不用抓
+        if self._exclude_manju and key in constants.MANJU_RANKS:
+            return [], "", False
         page_no = max(1, int(page or 1))
         size = max(1, int(page_size or 30))
         cache = self._cache.rank if self._cache is not None else None
+
+        # .org：四榜都是一页 100 部、**没有分页**（2026-11-03 实测）；爽剧分类页
+        # （top-feel-good）一页 15 部同样无分页。整份卡行缓存一次，再按 page_size
+        # 切片，消费方拿到的节奏与 .net 排行榜一致。
+        if constants.is_org_site():
+            cached = cache.get(key) if cache is not None else None
+            if isinstance(cached, list) and cached:
+                all_cards = cached
+            else:
+                html = await pages.fetch_rank_html(key, timeout=25)
+                all_cards = pages.parse_org_rank_cards(html, key) if html else []
+                if all_cards and cache is not None:
+                    cache.set(key, all_cards)
+            message = "" if all_cards else f"榜单页暂时取不到（{key}）"
+            start = (page_no - 1) * size
+            cards = all_cards[start:start + size]
+            has_more = bool(all_cards) and (start + size) < len(all_cards)
+            # 榜单也是索引生长入口（2026-11-03 用户口径）；排除项由登记口统一挡掉
+            self._remember_ids(cards)
+            return cards, message, has_more
+
         pageable = key in constants.PAGEABLE_RANKS
 
         if pageable:
             cache_key = key if page_no <= 1 else f"{key}:p{page_no}"
             cached = cache.get(cache_key) if cache is not None else None
             if isinstance(cached, dict) and cached.get("cards"):
+                self._remember_ids(cached["cards"])
                 return cached["cards"], "", bool(cached.get("has_more"))
             html = await pages.fetch_rank_html(key, page_no)
-            parser = pages.RANK_PARSERS.get(key, pages.DEFAULT_RANK_PARSER)
+            parser = pages.rank_parser(key)
             cards = parser(html) if html else []
             has_more = bool(
                 html
@@ -1251,6 +1565,7 @@ class ShortDramaBaikeScraper(_PluginBase):
             message = "" if cards else f"榜单页暂时取不到（{key}）"
             if cards and cache is not None:
                 cache.set(cache_key, {"cards": cards, "has_more": has_more})
+            self._remember_ids(cards)
             return cards, message, has_more
 
         # 不分页榜单：整份卡行缓存一次，按 page_size 切片模拟分页
@@ -1259,7 +1574,7 @@ class ShortDramaBaikeScraper(_PluginBase):
             all_cards = cached
         else:
             html = await pages.fetch_rank_html(key)
-            parser = pages.RANK_PARSERS.get(key, pages.DEFAULT_RANK_PARSER)
+            parser = pages.rank_parser(key)
             all_cards = parser(html) if html else []
             if all_cards and cache is not None:
                 cache.set(key, all_cards)
@@ -1267,6 +1582,7 @@ class ShortDramaBaikeScraper(_PluginBase):
         start = (page_no - 1) * size
         cards = all_cards[start:start + size]
         has_more = bool(all_cards) and (start + size) < len(all_cards)
+        self._remember_ids(cards)
         return cards, message, has_more
 
     def module_rank_medias(
@@ -1290,7 +1606,7 @@ class ShortDramaBaikeScraper(_PluginBase):
         """
         key = str(rank or "").strip().lower()
         page_no = max(1, int(page or 1))
-        name = constants.RANK_CATALOG.get(key, ("", ""))[0]
+        name = constants.rank_name(key)
         if not name:
             return {
                 "rank": key,
@@ -1322,10 +1638,12 @@ class ShortDramaBaikeScraper(_PluginBase):
                 "message": f"榜单获取失败：{err}",
             }
         # 缓存里只放必要字段；海报 / 链接由 media_id 现推（2026-10-23 用户口径：
-        # poster 和 url 能用 media_id 反推，不占缓存）
+        # poster 和 url 能用 media_id 反推，不占缓存）。
+        # .org 例外：海报是 CDN 绝对地址（含 UUID，反推不出来），卡行已带就用它。
         for card in medias:
             media_id = str(card.get("media_id") or "")
-            card["poster"] = image_url(media_id)
+            if not card.get("poster"):
+                card["poster"] = image_url(media_id)
             card["url"] = detail_url(media_id)
         return {
             "rank": key,
@@ -1402,15 +1720,38 @@ class ShortDramaBaikeScraper(_PluginBase):
         )
 
     @staticmethod
-    def _filter_by_type(candidates: list[dict], type: str) -> list[dict]:
-        """按 ``type=work|person`` 过滤候选；空值不过滤。"""
+    def _is_manju_candidate(item: dict) -> bool:
+        """单条候选是否属于「排除」目标（判据见 :func:`service.is_excluded_item`）。
+
+        老站（``duanju:`` / ``manju:`` …）看卡片右下角角标 ``kind`` 是否「漫剧」；
+        新站（``drama:`` / ``actor:``）看标题行 ``AI短剧`` 标 ``is_ai`` ——
+        2026-11-03 用户口径：新站没有漫剧角标这回事，同一个开关在新站排 AI 剧。
+        """
+        return is_excluded_item(item)
+
+    def _drop_manju(self, candidates: list[dict]) -> list[dict]:
+        """按配置剔除（老站漫剧 / 新站 AI 剧；开关关闭时原样返回）。
+
+        交给 :meth:`DetailService.drop_excluded`：它会用详情缓存给「本地命中、
+        行里没有 is_ai」的新站条目补一次判定（零网络），这里不再自己判一遍，
+        免得出现「插件面板一套判据、宿主搜索另一套」的分裂。
+        """
+        if self._detail is not None:
+            return self._detail.drop_excluded(candidates)
+        if not self._exclude_manju or not candidates:
+            return candidates
+        return [item for item in candidates if not is_excluded_item(item)]
+
+    def _filter_by_type(self, candidates: list[dict], type: str) -> list[dict]:
+        """先剔漫剧，再按 ``type=work|person`` 过滤候选；空值不过滤类型。"""
+        items = self._drop_manju(candidates)
         kind = (type or "").strip().lower()
         if kind not in ("work", "person"):
-            return candidates
+            return items
         want_person = kind == "person"
         return [
             item
-            for item in candidates
+            for item in items
             if (is_person(item["media_id"]) if want_person else is_drama(item["media_id"]))
         ]
 
@@ -1435,12 +1776,20 @@ class ShortDramaBaikeScraper(_PluginBase):
         offset: int = 0,
         limit: int = 50,
     ) -> BaikePageResponse:
-        """``/baike/list``：ID 库分页，返回**原始 4 列**（不翻译、不清洗）。"""
+        """``/baike/list``：站点库分页，返回**站点行自己的原始值**（media_id / name）。
+
+        不挂豆瓣 / TMDB：那两列属外部 id 表，面板有独立分类（``/baike/extlist``）。
+        """
         size = max(1, min(int(limit or 50), 200))
         start = max(0, int(offset or 0))
         try:
             total, rows = self._store.page(
-                q=(q or "").strip(), entity=(entity or "").strip(), offset=start, limit=size
+                q=(q or "").strip(),
+                entity=(entity or "").strip(),
+                offset=start,
+                limit=size,
+                # 排除开关打开时面板看不到漫剧类条目（只过滤、不删库）
+                exclude_manju=bool(self._exclude_manju),
             )
         except Exception as err:  # pragma: no cover - 库未就绪时返回空页
             logger.error(f"{constants.SOURCE_NAME} 读取 ID 库失败：{err}")
@@ -1449,6 +1798,68 @@ class ShortDramaBaikeScraper(_PluginBase):
             success=True,
             message="",
             data=BaikePageData(total=total, offset=start, limit=size, items=rows),
+        )
+
+    def api_baike_extlist(
+        self,
+        q: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        source: str = "",
+    ) -> BaikeExtPageResponse:
+        """``/baike/extlist``：外部 id 表分页，返回**表里的原始值**（名字 + 豆瓣 + TMDB）。
+
+        与站点库完全独立：一条记录对应一部作品 / 一个人，不分站；站点库清空后
+        这些记录仍在（2026-11-04 用户口径「外部 id 单独记录」）。
+
+        ``source`` = ``douban`` / ``tmdb`` 时只返回该列非空的行 —— 面板把它们当
+        「豆瓣 id」「TMDB id」两个分类各自分页（2026-11-04 用户口径）。
+        """
+        size = max(1, min(int(limit or 50), 200))
+        start = max(0, int(offset or 0))
+        try:
+            total, rows = self._store.ext_page(
+                q=(q or "").strip(),
+                offset=start,
+                limit=size,
+                source=(source or "").strip(),
+            )
+        except Exception as err:  # pragma: no cover - 库未就绪时返回空页
+            logger.error(f"{constants.SOURCE_NAME} 读取外部 id 表失败：{err}")
+            total, rows = 0, []
+        return schemas.Response(
+            success=True,
+            message="",
+            data=BaikeExtPageData(
+                total=total,
+                offset=start,
+                limit=size,
+                items=[BaikeExtData(**row) for row in rows],
+            ),
+        )
+
+    def api_baike_ext(self, name: str = "") -> BaikeExtResponse:
+        """``/baike/ext``：**按名字**取外部 id（豆瓣 / TMDB）。
+
+        外部 id 表主键就是名字（2026-11-04 用户口径「外部 id 记名字 + tmdb + 豆瓣，
+        按名取」），所以这里不接收 media_id、也不区分作品 / 人物。
+        """
+        key = (name or "").strip()
+        if not key:
+            return schemas.Response(
+                success=False,
+                message="缺少 name",
+                data=BaikeExtData(),
+            )
+        try:
+            data = self._store.external_ids(name=key)
+        except Exception as err:  # pragma: no cover - 库未就绪
+            logger.error(f"{constants.SOURCE_NAME} 按名取外部 id 失败 {key}：{err}")
+            return schemas.Response(
+                success=False, message=f"读库失败：{err}", data=BaikeExtData(name=key)
+            )
+        return schemas.Response(
+            success=True, message="", data=BaikeExtData(**data)
         )
 
     def api_baike_del(self, media_id: str = "") -> OpResponse:
@@ -1486,6 +1897,206 @@ class ShortDramaBaikeScraper(_PluginBase):
             )
         return schemas.Response(
             success=True, message="", data=OpResult(ok=True, affected=int(affected or 0))
+        )
+
+    async def api_baike_extids(
+        self, entity: str = "", limit: int = 20, after: str = ""
+    ) -> BaikeExtIdsResponse:
+        """``/baike/extids``：给库里「douban / tmdb 任一为空」的行批量补外部 id。
+
+        2026-11-03 用户口径「豆瓣 / TMDB 一个都没补上」：回填原本只在**取详情**
+        时发生，而库里绝大多数行来自榜单 / 人物作品 / 顺带登记，从没走过详情
+        —— 实测 3874 行里 ``drama:`` 的 douban 列 0 条有值。这个端点按名去豆瓣
+        （精确匹配，与详情链路同一判据）批量补一次，TMDB 因为要有年份、库里没有，
+        只有取过详情的行才补得上。
+
+        **限速**：豆瓣端有指数退避冷却（``code=103`` need_login，5min 起翻倍、
+        封顶 30min），这里一条一搜、串行走、每条之间歇 1 秒；豆瓣被风控时**只跳过
+        豆瓣那半条通道**，TMDB 照跑（两条通道互不相干），并在响应里回
+        ``throttled=true`` 提示用户过一会儿再点。
+        """
+        if not self._enabled or self._detail is None:
+            return schemas.Response(
+                success=False, message="插件未启用", data=BackfillData()
+            )
+        size = max(1, min(int(limit or 20), 100))
+        prefix = (entity or "").strip()
+        cursor_in = (after or "").strip()
+        try:
+            total, rows = self._store.pending_external(
+                entity=prefix, limit=size, after=cursor_in
+            )
+        except Exception as err:  # pragma: no cover - 库未就绪时按 0 处理
+            logger.error(f"{constants.SOURCE_NAME} 读待回填行失败：{err}")
+            return schemas.Response(
+                success=False, message=f"读库失败：{err}", data=BackfillData(entity=prefix)
+            )
+
+        scanned = hit_douban = hit_tmdb = 0
+        throttled = False
+        cursor_out = cursor_in
+        # 人物行**不能**走剧集搜索：``actor:`` / ``yanyuan:`` 的豆瓣绑定要按「影人作品
+        # 交集」消歧（``_fuse_douban_person``），TMDB 同理（``_fuse_tmdb_person``），
+        # 拿演员名去搜剧集不但搜不到，撞上同名剧集还会把 ``douban:<剧集sid>`` 写到
+        # 人物行上。所以这里**逐行按前缀分派**：人物走 ``get_person``（内部绑定
+        # ``doubanp:…`` / ``tmdbp:…``），作品走 ``fill_external_ids``。
+        person_scope = prefix in constants.ENTITY_PERSON
+        if prefix == constants.DOUBAN_PERSON:
+            return schemas.Response(
+                success=True,
+                message="doubanp 行本身就是豆瓣影人，没有可补的外部 id",
+                data=BackfillData(entity=prefix),
+            )
+        for row in rows:
+            media_id = str(row.get("media_id") or "").strip()
+            name = str(row.get("name") or "").strip()
+            # 游标跟着走：即使这一行没名字（跳过不搜）也要推进，否则下一批还是它
+            cursor_out = media_id or cursor_out
+            # 空名的行本来就不可检索，也就搜不到豆瓣，跳过不浪费配额
+            if not media_id or not name:
+                continue
+            scanned += 1
+            if media_id.split(":", 1)[0] in constants.ENTITY_PERSON:
+                # 人物两段式：
+                # ① 轻量通道（``bind_person_by_name``）——只做「唯一精确同名」直绑，
+                #    不出网抓人物页（快 3 倍；实测演员页一人要 5~6 秒，而页面带回来
+                #    的作品交集原料在库里基本是空的）；
+                # ② 只有同名候选多于一个时才抓人物页消歧（``get_person``）。
+                # 豆瓣冷却期里①必然空转，提前标 throttled，面板才会提示等一会儿。
+                if douban.search_blocked():
+                    throttled = True
+                try:
+                    got = await self._detail.bind_person_by_name(media_id, name)
+                except Exception as err:  # pragma: no cover - 单条失败不影响整轮
+                    logger.warning(
+                        f"{constants.SOURCE_NAME} 按名绑人物外部 id 失败 {media_id}：{err}"
+                    )
+                    got = {}
+                if got.get("douban"):
+                    hit_douban += 1
+                if got.get("tmdb"):
+                    hit_tmdb += 1
+                if got.get("need_page"):
+                    try:
+                        person = await self._detail.get_person(media_id)
+                    except Exception as err:  # pragma: no cover
+                        logger.warning(
+                            f"{constants.SOURCE_NAME} 回填人物外部 id 失败 {media_id}：{err}"
+                        )
+                        person = None
+                    if person and str(person.get("douban_id") or "") and not got.get("douban"):
+                        hit_douban += 1
+                    if person and str(person.get("tmdb_id") or "") and not got.get("tmdb"):
+                        hit_tmdb += 1
+                await asyncio.sleep(1.0)
+                continue
+            try:
+                got = await self._detail.fill_external_ids(
+                    media_id,
+                    name,
+                    douban_now=str(row.get("douban") or ""),
+                    tmdb_now=str(row.get("tmdb") or ""),
+                )
+            except Exception as err:  # pragma: no cover - 单条失败不影响整轮
+                logger.warning(f"{constants.SOURCE_NAME} 回填外部 id 失败 {media_id}：{err}")
+                continue
+            if got.get("throttled"):
+                # 豆瓣风控只跳过豆瓣那半条通道，TMDB 照跑，所以不中断整轮
+                throttled = True
+            if got.get("douban"):
+                hit_douban += 1
+            if got.get("tmdb"):
+                hit_tmdb += 1
+            # 两条通道都是外部站点，一条一搜之间留点间隔：豆瓣搜索大约 1 秒一次
+            # 才不容易触发 code=103（宿主会把它吞成 None，插件侧只能事后降温）
+            await asyncio.sleep(1.0)
+
+        try:
+            still, _ = self._store.pending_external(entity=prefix, limit=1)
+        except Exception:  # pragma: no cover - 兜底按估算值
+            still = max(0, int(total) - scanned)
+        if hit_douban or hit_tmdb:
+            logger.info(
+                f"{constants.SOURCE_NAME} 批量回填外部 id：扫 {scanned} 补豆瓣 {hit_douban} "
+                f"补 TMDB {hit_tmdb}，剩余 {still}{'（豆瓣限流，提前收工）' if throttled else ''}"
+            )
+        if throttled:
+            message = "豆瓣返回 need_login 风控（code=103），本轮只补了 TMDB；等 10 分钟以上再点"
+        elif person_scope:
+            message = "人物：先按「唯一精确同名」直接绑，同名多于一个才抓人物页消歧；绑不上的留待下轮"
+        else:
+            message = ""
+        return schemas.Response(
+            success=True,
+            message=message,
+            data=BackfillData(
+                entity=prefix,
+                scanned=scanned,
+                douban=hit_douban,
+                tmdb=hit_tmdb,
+                remaining=int(still),
+                cursor=cursor_out,
+                throttled=throttled,
+            ),
+        )
+
+    async def api_baike_person_extids(
+        self, limit: int = 20, after: str = ""
+    ) -> BaikeExtIdsResponse:
+        """``/baike/person_extids``：按豆瓣**演职员表**给人物补影人 id。
+
+        2026-11-03 用户口径「我只是想补全人物的豆瓣 id」。为什么单开一个端点
+        而不是塞进 ``/baike/extids``：两者的取货单位不一样 —— ``/extids`` 按
+        **人物行**一条一条搜，这个按**作品**一部一部拉演职员表；游标也是作品
+        media_id，混在一起会把游标推乱。
+
+        链路：库里已绑豆瓣 sid 的作品 → ``/tv/{sid}/celebrities``（唯一带影人
+        id 的入口，作品详情的 ``actors`` 只有名字）→ 同片同名的百科人物行写
+        ``doubanp:{pid}``。一部剧一次请求能覆盖几十号人，比逐个 ``person_search``
+        便宜得多，判据也更硬（同一部作品的同名 = 同一人）。
+
+        ``limit`` 是**作品条数**（1~50），``after`` 是上一批最后一部作品的
+        media_id。豆瓣限流时 ``throttled=true`` 且提前收工。
+        """
+        if not self._enabled or self._detail is None:
+            return schemas.Response(
+                success=False, message="插件未启用", data=BackfillData(entity="person")
+            )
+        size = max(1, min(int(limit or 20), 50))
+        try:
+            got = await self._detail.backfill_person_douban(
+                limit=size, after=(after or "").strip()
+            )
+        except Exception as err:  # pragma: no cover - 整轮失败也只报错不崩
+            logger.error(f"{constants.SOURCE_NAME} 演职员表回填人物 id 失败：{err}")
+            return schemas.Response(
+                success=False,
+                message=f"回填失败：{err}",
+                data=BackfillData(entity="person"),
+            )
+        scanned = int(got.get("scanned") or 0)
+        bound = int(got.get("bound") or 0)
+        throttled = bool(got.get("throttled"))
+        if throttled:
+            message = f"豆瓣演职员表被限流，本轮扫 {scanned} 部补上 {bound} 个人物；等 10 分钟以上再点"
+        elif scanned == 0:
+            message = "库里还没有绑定豆瓣 id 的作品，先补作品豆瓣 id 再点这个"
+        elif bound:
+            message = f"扫 {scanned} 部作品的演职员表，补上 {bound} 个人物豆瓣 id"
+        else:
+            message = f"扫了 {scanned} 部，演职员表里没有能和人物库对上号的同名演员"
+        return schemas.Response(
+            success=True,
+            message=message,
+            data=BackfillData(
+                entity="person",
+                scanned=scanned,
+                douban=bound,
+                tmdb=0,
+                remaining=int(got.get("remaining") or 0),
+                cursor=str(got.get("cursor") or ""),
+                throttled=throttled,
+            ),
         )
 
     def api_cache_del(self, region: str = "", key: str = "") -> OpResponse:
@@ -1538,7 +2149,7 @@ class ShortDramaBaikeScraper(_PluginBase):
             if isinstance(value, list) or isinstance(cards, list):
                 count = len(cards if isinstance(cards, list) else value)
                 rank_key, _, page_part = key.partition(":p")
-                rank_name = constants.RANK_CATALOG.get(rank_key.lower(), ("", ""))[0]
+                rank_name = constants.rank_name(rank_key)
                 page_no = int(page_part) if page_part.isdigit() else 0
                 if rank_name:
                     where = f" 第{page_no}页" if page_no else ""
@@ -1587,6 +2198,9 @@ class ShortDramaBaikeScraper(_PluginBase):
         """配置默认值：键必须与 `get_form()` 的字段一一对应。"""
         return {
             "enabled": False,
+            "site": constants.DEFAULT_SITE,
+            "use_baidu_image_proxy": True,
+            "exclude_manju": True,
         }
 
     def _live_config(self) -> dict:
@@ -1595,6 +2209,16 @@ class ShortDramaBaikeScraper(_PluginBase):
         merged = self._default_config()
         merged.update({key: raw[key] for key in list(merged) if key in raw})
         merged["enabled"] = bool(merged.get("enabled"))
+        merged["use_baidu_image_proxy"] = bool(
+            merged.get("use_baidu_image_proxy", True)
+        )
+        merged["exclude_manju"] = bool(merged.get("exclude_manju", True))
+        # 站点只认 net / org 两个值，非法值回落默认（回读时给的就是真正生效的那个）
+        merged["site"] = (
+            constants.SITE_ORG
+            if str(merged.get("site") or "").strip().lower() == constants.SITE_ORG
+            else constants.SITE_NET
+        )
         return merged
 
     def api_get_config(self) -> ConfigResponse:
@@ -1604,14 +2228,19 @@ class ShortDramaBaikeScraper(_PluginBase):
         )
 
     def api_update_config(self, payload: Optional[dict] = None) -> ConfigResponse:
-        """``PUT /config``：保存配置（**整体替换**语义，缺失键取默认值）。
+        """``PUT /config``：保存配置。
+
+        缺失键**沿用当前值**而不是回落默认值：老前端 / 第三方调用可能只发自己
+        认识的那几个键，整体替换语义会把 ``site`` 静默打回 ``net``（本插件真实
+        踩过：配置页没有站点选项时，每次保存都把主站重置了）。清空配置请显式
+        给 ``{"site": "net", ...}``。
 
         ``update_config`` 由基类负责持久化与回调；这里再显式调一次 ``init_plugin``
         是为了保证「本次进程内立即生效」，不依赖宿主的回调时序。
         """
         incoming = payload if isinstance(payload, dict) else {}
-        base = self._default_config()
-        merged = {key: incoming.get(key, base[key]) for key in base}
+        current = self._live_config()
+        merged = {key: incoming.get(key, current.get(key, default)) for key, default in self._default_config().items()}
         try:
             self.update_config(merged)
         except Exception as err:  # pragma: no cover - 持久化失败也要让内存态生效
@@ -1622,7 +2251,7 @@ class ShortDramaBaikeScraper(_PluginBase):
         )
 
     def get_form(self) -> tuple[list[dict], dict]:
-        """配置页：只有一个启用开关（探索页榜单功能已于 2026-10-23 移除）。"""
+        """配置页：启用开关 + 主站选择 + 出图形态 + 漫剧过滤。"""
         return [
             {
                 "component": "VForm",
@@ -1631,20 +2260,76 @@ class ShortDramaBaikeScraper(_PluginBase):
                         "component": "VSwitch",
                         "props": {"model": "enabled", "label": "启用插件"},
                     },
+                    {
+                        "component": "VSelect",
+                        "props": {
+                            "model": "site",
+                            "label": "主站",
+                            "items": [
+                                {"title": "duanjubaike.net（老站）", "value": "net"},
+                                {"title": "duanjubaike.org（新站）", "value": "org"},
+                            ],
+                            "hint": (
+                                "只决定检索 / 人物目录 / 榜单走哪个站；"
+                                "详情与图片按 media_id 前缀自动路由"
+                                "（drama: / actor: 恒走新站，duanju: 等恒走老站）"
+                            ),
+                        },
+                    },
+                    {
+                        "component": "VSwitch",
+                        "props": {
+                            "model": "use_baidu_image_proxy",
+                            "label": "保留使用百度图床代理（仅老站生效）",
+                            "hint": (
+                                "只对老站（.net）生效：打开 = 海报 / 头像用站点原始的"
+                                "百度 gimg 中转，关闭 = 直连 img.duanjubaike.net。"
+                                "新站（.org）的海报是页面自带的 cdn.duanjubaike.org "
+                                "绝对地址，与本开关无关"
+                            ),
+                        },
+                    },
+                    {
+                        "component": "VSwitch",
+                        "props": {
+                            "model": "exclude_manju",
+                            "label": "排除 AI 剧 / 漫剧（按主站）",
+                            "hint": (
+                                "打开后识别候选 / 面板检索 / 榜单 / 演员作品都按主站的分类剔除："
+                                "老站（.net）剔卡片角标为「漫剧」的条目；"
+                                "新站（.org）没有漫剧角标，改剔标题带「AI短剧」标的 AI 剧"
+                            ),
+                        },
+                    },
                 ],
             }
         ], {
             "enabled": False,
+            "site": constants.DEFAULT_SITE,
+            "use_baidu_image_proxy": True,
+            "exclude_manju": True,
         }
 
     def get_page(self) -> list[dict]:
         """详情页：一行文字概览（图表/面板留给 P2.5 的 Vue 远程组件）。"""
         try:
-            counts = self._store.counts()
+            counts = self._store.counts(exclude_manju=bool(self._exclude_manju))
         except Exception:  # pragma: no cover
             counts = {}
         by_entity = counts.get("by_entity", {}) or {}
         detail = "｜".join(f"{key} {value}" for key, value in by_entity.items() if value)
+        is_org = constants.is_org_site(self._site)
+        site_mode = "新站 org" if is_org else "老站 net"
+        # 图片形态：百度代理只对老站有意义，新站固定吃页面自带的 CDN 绝对地址
+        image_mode = (
+            "站点 CDN（新站固定）"
+            if is_org
+            else ("百度图床代理" if self._use_baidu_image_proxy else "站点图床直链")
+        )
+        # 「排除」开关在两个站的语义不同，状态条按主站写清楚它现在到底在排什么
+        exclude_mode = (
+            ("排 AI 剧" if is_org else "排漫剧") if self._exclude_manju else "不排除"
+        )
         return [
             {
                 "component": "VAlert",
@@ -1653,7 +2338,10 @@ class ShortDramaBaikeScraper(_PluginBase):
                     "variant": "tonal",
                     "text": (
                         f"来源标识 {constants.MEDIA_SOURCE_ID}｜"
+                        f"主站 {site_mode}｜"
+                        f"排除 {exclude_mode}｜"
                         f"ID 库 {counts.get('total', 0)} 条（可检索 {counts.get('searchable', 0)}）"
+                        f"｜图床 {image_mode}"
                         + (f"｜{detail}" if detail else "")
                     ),
                 },

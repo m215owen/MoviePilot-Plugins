@@ -11,6 +11,10 @@
       <v-icon icon="mdi-television-classic" class="mr-1" />
       <h3 class="text-subtitle-1 ma-0">短剧百科刮削源</h3>
       <v-chip size="x-small" variant="tonal" color="primary">djbaike</v-chip>
+      <!-- 主站标识跟随配置（弹窗里也要看得出当前走哪个站） -->
+      <v-chip size="x-small" variant="tonal" :color="siteKey === 'org' ? 'teal' : undefined">
+        {{ siteInfo.host }}
+      </v-chip>
       <v-spacer />
       <v-btn
         size="x-small"
@@ -30,9 +34,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { PLUGIN_ID } from './api'
 import PanelTabs from './PanelTabs.vue'
+import { ensureSite, siteInfo, siteKey } from './site'
 import type { PluginApi } from './types'
 
 const props = defineProps<{
@@ -49,5 +54,9 @@ const props = defineProps<{
 const appHref = computed(() => {
   const base = typeof window === 'undefined' ? '' : window.location.href.split('#')[0]
   return `${base}#/plugin-app/${PLUGIN_ID}/main`
+})
+
+onMounted(() => {
+  void ensureSite(props.api, true)
 })
 </script>

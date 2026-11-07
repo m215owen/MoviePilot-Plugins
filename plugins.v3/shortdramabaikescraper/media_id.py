@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from . import constants
 
 # 列表卡片 title / alt 的形态：``短剧《X》`` / ``漫剧《X》`` / ``小说《X》``
@@ -70,6 +72,14 @@ def is_known(media_id: str) -> bool:
     )
 
 
+def is_manju(media_id: str) -> bool:
+    """是否漫剧（站点 ``manju`` / ``hema`` / ``huolong`` 三个分区）。
+
+    配置 ``exclude_manju`` 打开时，识别候选、面板检索与榜单都按它剔除。
+    """
+    return entity_of(media_id) in constants.MANJU_ENTITIES
+
+
 def kind_of(media_id: str) -> str:
     """按前缀推断展示类型：「短剧」/「漫剧」/「原著」；人物与豆瓣条目返回空串。
 
@@ -82,30 +92,72 @@ def kind_of(media_id: str) -> str:
 def detail_url(media_id: str) -> str:
     """详情页 URL。百科八类按固定模板反推；豆瓣两个前缀走各自详情页。
 
+    ``.org`` 的两个实体（``drama`` / ``actor``）走新站地址
+    ``https://duanjubaike.org/zh-Hans/<kind>/<id>``。
+
     未知前缀**不编造** URL（返回空串），避免把 ``themoviedb:550`` 拼成本站页面。
     """
     entity, native_id = parse_media_id(media_id)
     if entity == constants.DOUBAN_WORK:
         return f"{constants.DOUBAN_MOVIE_BASE}/subject/{native_id}/"
     if entity == constants.DOUBAN_PERSON:
-        return f"{constants.DOUBAN_MOVIE_BASE}/personage/{native_id}/"
+        # 豆瓣影人页是 ``/celebrity/{pid}/``（``personage`` 是旧写法、打不开）。
+        # 这个地址还兼一个用途：面板按 url 反推人物 id（``personIdFromUrl``），
+        # 豆瓣作品里的演员要靠它变成可点的人物入口。
+        return f"{constants.DOUBAN_MOVIE_BASE}/celebrity/{native_id}/"
+    if entity in constants.ORG_ENTITIES:
+        if not native_id:
+            return ""
+        base = constants.SITE_DOMAINS[constants.SITE_ORG]
+        return f"{base}/{constants.ORG_LANG}/{entity}/{native_id}"
     if entity not in constants.ENTITY_ALL or not native_id:
         return ""
     return f"{constants.SITE_BASE}/{entity}/info-{native_id}.html"
 
 
-def image_url(media_id: str) -> str:
+#: 图片地址形态：True = 百度 gimg 中转（保留站点原样），False = 自家图床直链。
+#: 由插件 ``init_plugin`` 按配置 ``use_baidu_image_proxy`` 设置。用模块级开关是因为
+#: ``parser`` / ``service`` / ``__init__`` 里十几处把 ``image_url`` 当纯函数调用，
+#: 逐处传参改动面过大；宿主同一插件类只实例化一份，不存在多实例互相污染。
+_use_baidu_proxy: bool = True
+
+
+def set_use_baidu_proxy(value: bool) -> None:
+    """设置 ``image_url`` 的出图形态（百度 gimg 中转 / 自家图床直链）。"""
+    global _use_baidu_proxy
+    _use_baidu_proxy = bool(value)
+
+
+def use_baidu_proxy() -> bool:
+    """当前出图形态是否为百度 gimg 中转。"""
+    return _use_baidu_proxy
+
+
+def image_url(media_id: str, use_baidu: Optional[bool] = None) -> str:
     """海报 / 头像 URL。
 
     百科八类可由固定模板反推（实测 200）；豆瓣两个前缀无法反推图片，
     只能从详情缓存里取（因此返回空串，由调用方回退到缓存）。
+
+    ``use_baidu`` 为 ``None`` 时跟模块开关（配置 ``use_baidu_image_proxy``，默认开）：
+    打开 → 站点原始的百度 gimg 中转；关闭 → 自家图床 ``img.duanjubaike.net`` 直链。
+    传 ``True`` / ``False`` 可单次指定形态，不影响全局。
+
+    ⚠️ 这个开关**只对老站（.net）生效**：新站（.org）的海报是 CDN 绝对地址，
+    既不经百度中转、也不走 ``img.duanjubaike.net`` 模板（见下面的早退）。
     """
     entity, native_id = parse_media_id(media_id)
     if entity in (constants.DOUBAN_WORK, constants.DOUBAN_PERSON):
         return ""
+    if entity in constants.ORG_ENTITIES:
+        # .org 的海报地址含 UUID 路径，**不能按身份反拼** —— 一律回空串，
+        # 由调用方退回详情缓存里的 ``poster_path``（解析时就随记录落盘）。
+        return ""
     if entity not in constants.ENTITY_ALL or not native_id:
         return ""
-    return f"{constants.IMAGE_BASE}/{entity}/{native_id}.jpg"
+    path = f"{constants.IMAGE_HOST}/{entity}/{native_id}.jpg"
+    baidu = _use_baidu_proxy if use_baidu is None else bool(use_baidu)
+    return f"{constants.BAIDU_IMAGE_PROXY_PREFIX}{path}" if baidu else f"https://{path}"
 
 
 def scan_ids(html: str) -> list[tuple[str, str]]:

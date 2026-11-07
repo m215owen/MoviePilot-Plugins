@@ -1,3 +1,5 @@
+import { importShared } from './__federation_fn_import-JrT3xvdd.js';
+
 const PLUGIN_ID = "ShortDramaBaikeScraper";
 const API_BASE = `plugin/${PLUGIN_ID}`;
 let lastApi = null;
@@ -60,11 +62,17 @@ async function fetchStatus(props) {
 async function fetchBaikeList(props, params = {}) {
   return await get(props, "/baike/list", params);
 }
+async function fetchBaikeExtList(props, params = {}) {
+  return await get(props, "/baike/extlist", params);
+}
 async function deleteBaike(props, mediaId) {
   return await del(props, "/baike/del", { media_id: mediaId });
 }
 async function clearBaike(props) {
   return await post(props, "/baike/clear");
+}
+async function backfillExtIds(props, params = {}) {
+  return await post(props, "/baike/extids", params);
 }
 async function fetchCacheItems(props, region, limit = 100, search = "") {
   return await get(props, "/cache/items", { region, limit, search });
@@ -105,10 +113,9 @@ function proxyImage(url) {
   } catch {
     return text;
   }
-  if (host === "doubanio.com" || host.endsWith(".doubanio.com")) {
-    return `/api/v1/system/img/0?imgurl=${encodeURIComponent(text)}&cache=1`;
-  }
-  return text;
+  const hostCached = host === "doubanio.com" || host.endsWith(".doubanio.com") || host === "img.duanjubaike.net" || // 新站（.org）的海报是页面自带的 CDN 绝对地址，和老站图床同等对待
+  host === "cdn.duanjubaike.org" || host.endsWith(".duanjubaike.org") || host === "gimg0.baidu.com";
+  return hostCached ? `/api/v1/system/img/0?imgurl=${encodeURIComponent(text)}&cache=1` : text;
 }
 async function fetchConfig(props) {
   return await get(props, "/config");
@@ -117,4 +124,53 @@ async function saveConfig(props, payload) {
   return await put(props, "/config", payload);
 }
 
-export { PLUGIN_ID as P, fetchBaikeList as a, fetchCacheItems as b, clearBaike as c, deleteBaike as d, fetchStatus as e, fetchConfig as f, deleteCacheItem as g, clearCache as h, fetchNovel as i, fetchPerson as j, envelopeOf as k, lookupRaw as l, proxyImage as p, saveConfig as s };
+const {computed,ref} = await importShared('vue');
+const SITE_INFO = {
+  net: {
+    key: "net",
+    label: "duanjubaike.net（老站）",
+    host: "duanjubaike.net",
+    base: "https://www.duanjubaike.net",
+    excludeName: "漫剧",
+    sampleId: "duanju:7696"
+  },
+  org: {
+    key: "org",
+    label: "duanjubaike.org（新站）",
+    host: "duanjubaike.org",
+    base: "https://duanjubaike.org",
+    excludeName: "AI 剧",
+    sampleId: "drama:13502"
+  }
+};
+function toSiteKey(value) {
+  return String(value || "").trim().toLowerCase() === "org" ? "org" : "net";
+}
+const current = ref("net");
+const resolved = ref(false);
+let inflight = null;
+const siteKey = computed(() => current.value);
+const siteInfo = computed(() => SITE_INFO[current.value]);
+function setSite(value) {
+  const key = toSiteKey(value);
+  current.value = key;
+  resolved.value = true;
+  return key;
+}
+function ensureSite(api, force = false) {
+  if (resolved.value && !force) return Promise.resolve();
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      const status = await fetchStatus({ api });
+      if (status) setSite(status.site);
+    } catch {
+      resolved.value = true;
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
+}
+
+export { PLUGIN_ID as P, SITE_INFO as S, siteKey as a, setSite as b, saveConfig as c, fetchStatus as d, ensureSite as e, fetchConfig as f, fetchBaikeExtList as g, fetchBaikeList as h, backfillExtIds as i, deleteBaike as j, clearBaike as k, fetchCacheItems as l, deleteCacheItem as m, clearCache as n, fetchNovel as o, proxyImage as p, fetchPerson as q, lookupRaw as r, siteInfo as s, envelopeOf as t };

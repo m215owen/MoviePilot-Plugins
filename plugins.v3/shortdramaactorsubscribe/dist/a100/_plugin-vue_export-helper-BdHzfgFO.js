@@ -40,12 +40,21 @@ function retryProxyImage(url, attempt) {
   if (!url || attempt <= 0) return url;
   return `${url}${url.includes("?") ? "&" : "?"}retry=${attempt}`;
 }
-function proxyImage(url) {
+function proxiedImage(url) {
   const raw = String(url || "").trim();
   if (!raw) return "";
   if (!/^https?:\/\//i.test(raw)) return raw;
   if (raw.includes("/system/img/")) return raw;
   return `${apiPrefix()}system/img/0?imgurl=${encodeURIComponent(raw)}&cache=true`;
+}
+const DIRECT_IMAGE_HOSTS = [];
+function proxyImage(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  if (raw.includes("/system/img/")) return raw;
+  if (DIRECT_IMAGE_HOSTS.some((host) => raw.includes(`//${host}/`))) return raw;
+  return proxiedImage(raw);
 }
 function resourceSearchUrl(work, sites) {
   const query = new URLSearchParams();
@@ -114,21 +123,55 @@ async function fetchDownloadPaths(props) {
   }
 }
 async function fetchSubscriptions(props) {
+  const empty = {
+    items: [],
+    site: "",
+    stale_count: 0,
+    default_sites: "",
+    default_downloader: "",
+    default_save_path: "",
+    ok: false
+  };
   const api = resolveApi(props);
-  if (!api?.get) {
-    return { engine: "", items: [], default_sites: "", default_downloader: "", default_save_path: "" };
-  }
+  if (!api?.get) return empty;
   try {
     const data = readData(await api.get(`${API_BASE}/subscriptions`, { ...SILENT }));
     return {
-      engine: String(data?.engine || ""),
       items: Array.isArray(data?.items) ? data.items : [],
+      site: String(data?.site || ""),
+      stale_count: Number(data?.stale_count || 0),
       default_sites: String(data?.default_sites || ""),
       default_downloader: String(data?.default_downloader || ""),
-      default_save_path: String(data?.default_save_path || "")
+      default_save_path: String(data?.default_save_path || ""),
+      ok: true
     };
   } catch {
-    return { engine: "", items: [], default_sites: "", default_downloader: "", default_save_path: "" };
+    return empty;
+  }
+}
+async function fetchSubscribedIds(props) {
+  const empty = {
+    ids: [],
+    site: "",
+    stale_titles: [],
+    count: 0,
+    actor_ids: []
+  };
+  const api = resolveApi(props);
+  if (!api?.get) return empty;
+  try {
+    const data = readData(
+      await api.get(`${API_BASE}/subscribed_ids`, { ...SILENT })
+    );
+    return {
+      ids: Array.isArray(data?.ids) ? data.ids.map((item) => String(item || "")) : [],
+      site: String(data?.site || ""),
+      stale_titles: Array.isArray(data?.stale_titles) ? data.stale_titles.map((item) => String(item || "")) : [],
+      count: Number(data?.count || 0),
+      actor_ids: Array.isArray(data?.actor_ids) ? data.actor_ids.map((item) => String(item || "")) : []
+    };
+  } catch {
+    return empty;
   }
 }
 async function pluginSubscribe(props, work) {
@@ -149,11 +192,13 @@ async function pluginSubscribe(props, work) {
     )
   );
 }
-async function pluginUnsubscribe(props, mediaId) {
+async function pluginUnsubscribe(props, mediaId, title = "") {
   const api = resolveApi(props);
   if (!api?.post) throw new Error("缺少可用的 api 实例");
+  const body = { media_id: String(mediaId || "") };
+  if (title) body.title = String(title);
   return unwrap(
-    await api.post(`${API_BASE}/unsubscribe`, { media_id: String(mediaId || "") }, { ...SILENT })
+    await api.post(`${API_BASE}/unsubscribe`, body, { ...SILENT })
   );
 }
 async function pluginSubscribeUpdate(props, mediaId, targets) {
@@ -248,7 +293,10 @@ function normalizeWork(raw) {
     platform: String(raw?.platform || ""),
     kind: String(raw?.kind || ""),
     year: String(raw?.year || ""),
-    release_date: String(raw?.release_date || "")
+    release_date: String(raw?.release_date || ""),
+    // 状态角标（爆火 / 新剧 / 完结 / 预约…）：后端已经给了就直接透传，
+    // 旧快照（这个字段还没有时）统一补空数组，卡片据此不渲染任何标签
+    badges: Array.isArray(raw?.badges) ? raw.badges.filter((item) => !!item) : []
   };
 }
 async function fetchWorks(props, params = {}) {
@@ -263,6 +311,7 @@ async function fetchWorks(props, params = {}) {
   if (params.studio) query.set("studio", params.studio);
   if (params.platform) query.set("platform", params.platform);
   if (params.sort) query.set("sort", params.sort);
+  if (params.only_new) query.set("only_new", "1");
   if (params.only_not_in_library) query.set("only_not_in_library", "1");
   if (params.only_not_subscribed) query.set("only_not_subscribed", "1");
   if (params.keyword) query.set("keyword", params.keyword);
@@ -280,7 +329,6 @@ async function fetchWorks(props, params = {}) {
     page_size: Number(payload?.page_size || params.page_size || 60),
     has_more: Boolean(payload?.has_more),
     sort: String(payload?.sort || params.sort || "date"),
-    new_window_days: payload?.new_window_days ?? 7,
     summary: payload?.summary ?? {
       total: 0,
       new: 0,
@@ -288,6 +336,26 @@ async function fetchWorks(props, params = {}) {
       in_library: 0
     }
   };
+}
+async function refreshLibraryStatus(props) {
+  const api = resolveApi(props);
+  if (!api?.post) throw new Error("缺少可用的 api 实例");
+  const response = await api.post(`${API_BASE}/works/refresh_library`, {}, { ...SILENT });
+  readData(response);
+  const message = unwrap(response)?.message;
+  return typeof message === "string" ? message : "";
+}
+async function refreshWorks(props) {
+  const api = resolveApi(props);
+  if (!api?.post) throw new Error("缺少可用的 api 实例");
+  const response = await api.post(
+    `${API_BASE}/refresh?clear_cache=1`,
+    {},
+    { ...SILENT, timeout: 6e5 }
+  );
+  readData(response);
+  const message = unwrap(response)?.message;
+  return typeof message === "string" ? message : "";
 }
 async function fetchStatus(props) {
   const api = resolveApi(props);
@@ -309,10 +377,10 @@ function normalizeLookupWork(raw, index) {
     episode_count: Number(raw?.number_of_episodes || raw?.episodes || 0),
     url: String(raw?.detail_link || raw?.url || ""),
     genres: (Array.isArray(raw?.genres) ? raw.genres : []).map((item) => String(item?.name ?? item ?? "").trim()).filter(Boolean),
-    heat: 0,
-    play_count: 0,
+    heat: Number(raw?.heat || 0),
+    play_count: Number(raw?.play_count || 0),
     studio: "",
-    platform: "",
+    platform: String(raw?.platform || ""),
     kind: "",
     release_date: release,
     actor: "",
@@ -330,9 +398,9 @@ function normalizeLookupActor(raw) {
     // 站内搜索的结果未必与输入完全同名（可能是同名不同人），交给卡片让用户判断
     exact: false,
     profile: String(raw?.poster_path || raw?.poster || "").trim() || void 0,
-    works_count: 0,
-    job_title: void 0,
-    gender: void 0,
+    works_count: Number(raw?.works_count || 0),
+    job_title: String(raw?.job_title || "").trim() || void 0,
+    gender: String(raw?.gender || "").trim() || void 0,
     nationality: void 0,
     bio: void 0,
     followers: 0,
@@ -345,26 +413,51 @@ async function lookupSite(props, keyword) {
   if (!api?.get) throw new Error("缺少可用的 api 实例");
   const text = String(keyword || "").trim();
   if (!text) return { works: [], actors: [], source: "" };
-  const payload = unwrap(
-    await api.get(
+  const [payload, subs] = await Promise.all([
+    api.get(
       `plugin/ShortDramaBaikeScraper/lookup?name=${encodeURIComponent(text)}&remote=1`,
-      { ...SILENT, timeout: 6e4 }
-    )
-  );
-  const data = payload?.data;
-  const rows = Array.isArray(data) ? data : [];
+      {
+        ...SILENT,
+        timeout: 6e4
+      }
+    ).then((response) => unwrap(response)),
+    fetchSubscribedIds(props)
+  ]);
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
   const works = [];
   const actors = [];
   for (const raw of rows) {
     const mediaId = String(raw?.media_id || "");
-    const entity = mediaId.split(":")[0] || "";
-    if (["duanju", "manju", "hema", "huolong"].includes(entity)) {
+    const entity = mediaId.split(":")[0].toLowerCase();
+    if (["drama", "duanju", "manju", "hema", "huolong"].includes(entity)) {
       works.push(normalizeLookupWork(raw, works.length));
-    } else if (["yanyuan", "daoyan", "bianju"].includes(entity)) {
+    } else if (["actor", "yanyuan", "daoyan", "bianju"].includes(entity)) {
       actors.push(normalizeLookupActor(raw));
     }
   }
-  return { works, actors, source: "djbaike" };
+  if (subs.ids.length) {
+    const idSet = new Set(subs.ids);
+    for (const work of works) {
+      if (idSet.has(String(work.media_id || ""))) work.subscribed = true;
+    }
+  }
+  if (subs.actor_ids.length) {
+    const actorSet = new Set(subs.actor_ids);
+    for (const actor of actors) {
+      if (actorSet.has(String(actor.actor_id || actor.media_id || ""))) {
+        actor.subscribed = true;
+      }
+    }
+  }
+  return {
+    works,
+    actors,
+    // 数据源把站点命中与本地库合并返回（`remote=1`），分不出哪条来自哪边 ——
+    // 空串 = 不知道，界面不会错贴「站点无结果」。
+    source: "",
+    subscribed_ids: subs.ids,
+    stale_titles: subs.stale_titles
+  };
 }
 async function mutateActor(props, action, body, timeout) {
   const api = resolveApi(props);
@@ -459,10 +552,11 @@ async function subscribeAllActor(props, info) {
   );
   return normalizeActorSubscribeAll(res);
 }
-async function fetchRanks(props) {
+async function fetchRanks(props, includeAll = false) {
   const api = resolveApi(props);
   if (!api?.get) throw new Error("缺少可用的 api 实例");
-  return readData(await api.get(`${API_BASE}/ranks`, { ...SILENT })) || {
+  const path = includeAll ? `${API_BASE}/ranks?all=1` : `${API_BASE}/ranks`;
+  return readData(await api.get(path, { ...SILENT })) || {
     ranks: [],
     message: ""
   };
@@ -499,18 +593,19 @@ async function fetchLogs(props, limit = 80) {
     })
   ) || { items: [] };
 }
-async function fetchPeople(props, kind, page) {
+async function fetchPeople(props, kind, page, gender = "") {
   const api = resolveApi(props);
   if (!api?.get) throw new Error("缺少可用的 api 实例");
   const query = new URLSearchParams();
   query.set("kind", kind);
   query.set("page", String(page));
+  if (gender) query.set("gender", gender);
   return readData(
     await api.get(`${API_BASE}/people?${query.toString()}`, {
       ...SILENT,
       timeout: 6e4
     })
-  ) || { kind, page, has_more: false, message: "", people: [] };
+  ) || { kind, page, gender, has_more: false, message: "", people: [] };
 }
 async function fetchWorkDetail(props, work) {
   const api = resolveApi(props);
@@ -593,8 +688,10 @@ function toNumber(value) {
   return Number.isFinite(num) ? num : 0;
 }
 function personIdFromUrl(url) {
-  const hit = String(url || "").match(/\/(yanyuan|daoyan|bianju)\/info-(\d+)\.html/);
-  return hit ? `${hit[1]}:${hit[2]}` : "";
+  const hit = String(url || "").match(
+    /\/(?:zh-[A-Za-z]+\/)?(yanyuan|daoyan|bianju|actor)\/(?:info-)?([A-Za-z0-9][A-Za-z0-9_-]*?)(?:\.html)?(?=$|[/?#])/i
+  );
+  return hit ? `${hit[1].toLowerCase()}:${hit[2]}` : "";
 }
 function parseWordCount(text) {
   const raw = String(text || "").trim();
@@ -604,101 +701,90 @@ function parseWordCount(text) {
   if (!Number.isFinite(value)) return 0;
   return raw.includes("万") ? Math.round(value * 1e4) : Math.round(value);
 }
-function novelToAdaptedInfo(novel) {
-  const title = String(novel?.name || "").trim();
+function compactNum(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) return "";
+  const trim = (text) => text.replace(/\.?0+$/, "");
+  if (num >= 1e8) return `${trim((num / 1e8).toFixed(2))}亿`;
+  if (num >= 1e4) return `${trim((num / 1e4).toFixed(2))}万`;
+  return String(Math.round(num));
+}
+function novelDataToAdapted(data) {
+  const title = String(data?.name || "").trim();
   if (!title) return null;
   return {
     title,
-    author: String(novel?.author || "").trim(),
-    url: String(novel?.detail_url || "").trim(),
-    poster: String(novel?.poster || "").trim(),
-    media_id: String(novel?.media_id || "").trim(),
-    words: parseWordCount(novel?.words),
+    author: String(data?.author || "").trim(),
+    url: String(data?.detail_url || "").trim(),
+    poster: String(data?.poster || "").trim(),
+    media_id: String(data?.media_id || "").trim(),
+    words: parseWordCount(data?.words),
     genres: [],
-    summary: String(novel?.overview || "").trim(),
-    works: (Array.isArray(novel?.adaptations) ? novel.adaptations : []).filter((item) => String(item?.name || "").trim()).map((item) => {
-      const mediaId = String(item.media_id || "").trim();
-      const split = mediaId.split(":");
-      return {
-        media_id: mediaId,
-        title: String(item.name).trim(),
-        url: split[0] && split[1] ? `https://www.duanjubaike.net/${split[0]}/info-${split[1]}.html` : "",
-        poster: String(item.poster || "").trim(),
-        release_date: String(item.date || "").trim(),
-        episodes: toNumber(item.episodes),
-        genres: []
-      };
-    })
+    summary: String(data?.overview || "").trim(),
+    works: (Array.isArray(data?.adaptations) ? data.adaptations : []).filter((item) => String(item?.name || "").trim()).map((item) => ({
+      media_id: String(item.media_id || "").trim(),
+      title: String(item.name).trim(),
+      url: String(item.detail_url || "").trim(),
+      poster: String(item.poster || "").trim(),
+      release_date: String(item.date || "").trim(),
+      episodes: toNumber(item.episodes),
+      genres: []
+    }))
   };
 }
 async function fetchWorkSource(props, mediaId) {
   const api = resolveApi(props);
   if (!api?.get || !mediaId) return { ...EMPTY_SOURCE };
   try {
-    const payload = unwrap(
-      await api.get(
+    const [payload, novel] = await Promise.all([
+      api.get(
         `plugin/ShortDramaBaikeScraper/lookup?media_id=${encodeURIComponent(mediaId)}`,
-        { ...SILENT, timeout: 2e4 }
-      )
-    );
+        { ...SILENT, timeout: 3e4 }
+      ).then((response) => unwrap(response)),
+      api.get(`plugin/ShortDramaBaikeScraper/novel?media_id=${encodeURIComponent(mediaId)}`, {
+        ...SILENT,
+        timeout: 3e4
+      }).then((response) => unwrap(response)).catch(() => null)
+    ]);
     const info = payload?.data;
-    if (!info || typeof info !== "object") return { ...EMPTY_SOURCE };
+    if (!info || typeof info !== "object" || !String(info.media_id || info.title || "").trim()) {
+      return { ...EMPTY_SOURCE };
+    }
     const creditRows = (rows, kind, fallbackRole) => (Array.isArray(rows) ? rows : []).filter((item) => String(item?.name || "").trim()).map((item) => ({
       name: String(item.name).trim(),
-      media_id: personIdFromUrl(item.url),
-      role: String(item.character || item.job || "").trim() || fallbackRole,
+      media_id: String(item.media_id || "").trim() || personIdFromUrl(item.url),
+      role: String(item.role || item.character || "").trim() || String(item.job || "").trim() || fallbackRole,
       kind,
-      // 头像：数据源（MediaCredit）给的是宿主形体 ``profile_path``，同样收
-      // ``profile`` / ``poster`` 两种别名 —— 过去这里写死空串，导演/编剧卡
-      // 因此永远只能出人形占位（演员走详情端点那一份，同源缺陷在 2026-10-22 一并修）。
+      // 头像：数据源（MediaCredit / ActorRow）给的是 ``profile_path`` 或
+      // ``poster``，两种别名都收 —— 写死空串会让导演/编剧卡永远人形占位。
       profile: String(
         item.profile_path || item.profile || item.poster || ""
       ).trim()
     }));
-    const director = creditRows(info.directors, "daoyan", "导演");
-    const writer = [];
     const cast = creditRows(info.actors, "yanyuan", "");
-    let adapted = null;
-    let adaptedTitle = "";
-    let adaptedAuthor = "";
-    let adaptedUrl = "";
-    try {
-      const novelPayload = unwrap(
-        await api.get(
-          `plugin/ShortDramaBaikeScraper/novel?media_id=${encodeURIComponent(mediaId)}`,
-          { ...SILENT, timeout: 2e4 }
-        )
-      );
-      adapted = novelToAdaptedInfo(novelPayload?.data);
-      if (adapted) {
-        adaptedTitle = adapted.title;
-        adaptedAuthor = adapted.author;
-        adaptedUrl = adapted.url;
-      }
-    } catch {
-    }
+    const director = [];
+    const writer = [];
+    const adapted = novelDataToAdapted(novel?.data);
     const doubanId = String(info.douban_id || "").trim();
     const facts = info.classification_facts || {};
-    const factText = (key) => String(facts[key] || "").trim();
-    const runtimeMinutes = Number(info.runtime);
-    const platformName = String((info.networks || [])[0]?.name || "").trim();
+    const factNum = (name) => Number(facts[`extensions.djbaike.${name}`] || 0) || 0;
     return {
       director,
       writer,
       cast,
-      heat_text: factText("extensions.djbaike.heat"),
-      play_count_text: factText("extensions.djbaike.play_count"),
-      favorites_text: factText("extensions.djbaike.favorite_count"),
-      status: String(info.status || "").trim(),
-      duration_minutes: Number.isFinite(runtimeMinutes) && runtimeMinutes > 0 ? runtimeMinutes : 0,
+      heat_text: compactNum(factNum("heat")),
+      play_count_text: compactNum(factNum("play_count")),
+      favorites_text: compactNum(factNum("favorite_count")),
+      status: "",
+      duration_minutes: 0,
       duration_text: "",
       studio: "",
-      platform: platformName,
+      platform: "",
       douban_id: doubanId,
       douban_url: doubanId ? `https://movie.douban.com/subject/${doubanId}/` : "",
-      adapted_title: adaptedTitle,
-      adapted_author: adaptedAuthor,
-      adapted_url: adaptedUrl,
+      adapted_title: adapted?.title || "",
+      adapted_author: adapted?.author || "",
+      adapted_url: adapted?.url || "",
       adapted
     };
   } catch {
@@ -789,7 +875,7 @@ async function fetchAdaptedDetail(props, mediaId) {
         { ...SILENT, timeout: 2e4 }
       )
     );
-    return novelToAdaptedInfo(payload?.data);
+    return novelDataToAdapted(payload?.data);
   } catch {
     return null;
   }
@@ -843,4 +929,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { fetchWorks as A, pluginSubscribeRandom as B, pluginSubscribeSearchAll as C, fetchActorCards as D, pluginUnsubscribe as E, pluginSubscribe as F, subscribeAllActor as G, fetchConfig as H, resourceSearchUrl as I, _export_sfc as _, fetchDownloadPaths as a, fetchDownloaderOptions as b, fetchActorList as c, fetchStatus as d, fetchActorDetail as e, fetchSearchSites as f, fetchAdaptedDetail as g, fetchAdaptedInfo as h, pluginSubscribeSearchNow as i, pluginSubscribeUpdate as j, fetchSubscriptions as k, fetchPlayUrl as l, fetchWorkDetail as m, fetchWorkSource as n, fetchDoubanComments as o, proxyImage as p, fetchDoubanReviews as q, retryProxyImage as r, saveConfig as s, fetchPeople as t, fetchRankWorks as u, fetchRanks as v, fetchLogs as w, addActor as x, removeActor as y, lookupSite as z };
+export { lookupSite as A, refreshWorks as B, refreshLibraryStatus as C, fetchWorks as D, pluginSubscribeRandom as E, pluginSubscribeSearchAll as F, fetchActorCards as G, pluginUnsubscribe as H, pluginSubscribe as I, subscribeAllActor as J, fetchConfig as K, resourceSearchUrl as L, _export_sfc as _, fetchDownloadPaths as a, fetchDownloaderOptions as b, fetchActorList as c, fetchRanks as d, fetchStatus as e, fetchSearchSites as f, proxiedImage as g, fetchActorDetail as h, fetchAdaptedDetail as i, fetchAdaptedInfo as j, pluginSubscribeSearchNow as k, pluginSubscribeUpdate as l, fetchSubscriptions as m, fetchPlayUrl as n, fetchWorkDetail as o, proxyImage as p, fetchWorkSource as q, retryProxyImage as r, saveConfig as s, fetchDoubanComments as t, fetchDoubanReviews as u, fetchPeople as v, fetchRankWorks as w, fetchLogs as x, addActor as y, removeActor as z };

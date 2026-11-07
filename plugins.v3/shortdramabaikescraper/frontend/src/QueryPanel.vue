@@ -26,7 +26,7 @@
         hide-details
         clearable
         prepend-inner-icon="mdi-magnify"
-        placeholder="media_id（duanju:769…）或剧名 / 演员名，例如：以爱为家"
+        :placeholder="`media_id（${siteInfo.sampleId}）或剧名 / 演员名，例如：以爱为家`"
         @keydown.enter="submitSearch()"
       />
       <v-btn
@@ -134,6 +134,7 @@
             <div class="sdbs-row-sub mt-1" style="padding-inline-start: 0" :title="person.media_id">
               <span class="sdbs-key">{{ person.media_id }}</span>
               <span v-if="person.douban_id" class="sdbs-key">· {{ person.douban_id }}</span>
+              <span v-if="person.tmdb_id" class="sdbs-key">· {{ person.tmdb_id }}</span>
             </div>
             <div v-if="person.douban_info?.length" class="text-caption sdbs-dim mt-1" style="padding-inline-start: 0">
               {{ person.douban_info.join('　') }}
@@ -459,6 +460,7 @@
 import { computed, ref } from 'vue'
 import { envelopeOf, fetchNovel, fetchPerson, lookupByMediaId, lookupByName, lookupRaw, proxyImage } from './api'
 import { factIcon, factLabel, isPersonId, METRIC_FACTS } from './constants'
+import { siteInfo } from './site'
 import type { MediaInfo, NovelPayload, NovelWork, PersonPayload, PersonWork, PluginApi } from './types'
 
 const props = defineProps<{
@@ -578,9 +580,13 @@ const metricList = computed<MetricChip[]>(() => {
 /**
  * 演职条目 → 可点 chip。
  *
- * `/lookup` 返回的 `MediaCredit` **没有 media_id 字段**，只有站点链接
- * `url`（`https://www.duanjubaike.net/yanyuan/info-7411422549579420953.html`），
- * 所以人物的 `media_id` 得从 url 反推；反推不出来就退化成纯文本（不假装可点）。
+ * `/lookup` 返回的 `MediaCredit` **没有 media_id 字段**，只有链接 `url`，所以人物的
+ * `media_id` 得从 url 反推；反推不出来就退化成纯文本（不假装可点）。
+ *
+ * 三种链接形态都要认（少认一种，那一类作品的演员就点不开）：
+ * * 老站：`https://www.duanjubaike.net/yanyuan/info-7411422549579420953.html`
+ * * 新站：`https://duanjubaike.org/zh-Hans/actor/3105`
+ * * 豆瓣：`https://movie.douban.com/celebrity/1032068/`（豆瓣作品里的演员就是这种）
  */
 interface CreditChip {
   label: string
@@ -588,8 +594,13 @@ interface CreditChip {
 }
 
 function personIdFromUrl(url: string): string {
-  const matched = /[/](yanyuan|daoyan|bianju)\/info-(\d+)\.html/.exec(url || '')
-  return matched ? `${matched[1]}:${matched[2]}` : ''
+  const text = String(url || '')
+  const douban = /douban\.com\/(?:celebrity|personage)\/(\d+)/.exec(text)
+  if (douban) return `doubanp:${douban[1]}`
+  const org = /duanjubaike\.org\/[^/]+\/(actor)\/(\d+)/.exec(text)
+  if (org) return `${org[1]}:${org[2]}`
+  const net = /[/](yanyuan|daoyan|bianju)\/info-(\d+)\.html/.exec(text)
+  return net ? `${net[1]}:${net[2]}` : ''
 }
 
 function creditChips(items: CreditLike[] | undefined, withRole = false, limit = 0): CreditChip[] {

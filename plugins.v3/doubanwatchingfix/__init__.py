@@ -23,7 +23,7 @@ class DouBanWatchingFix(_PluginBase):
     # 插件图标
     plugin_icon = "DouBanWatchingFix.png"
     # 插件版本
-    plugin_version = "1.9.7"
+    plugin_version = "1.9.8"
     # 插件作者（原作者）
     plugin_author = "honue"
     # 作者主页
@@ -243,7 +243,8 @@ class DouBanWatchingFix(_PluginBase):
                         poster_path: str) -> bool:
         logger.info(f"开始尝试获取 {title} 豆瓣id")
         douban_helper = DoubanHelper(user_cookie=self._cookie)
-        subject_name, subject_id = douban_helper.get_subject_id(title=title)
+        # get_subject_id 在异常路径下可能返回 None，统一兜底成空结果
+        subject_name, subject_id = douban_helper.get_subject_id(title=title) or (None, None)
 
         if subject_id:
             logger.info(f"查询：{title} => 匹配豆瓣：{subject_name} https://movie.douban.com/subject/{subject_id}/")
